@@ -38,9 +38,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # POSIX only: the app build scripts end in `chmod +x`, which has no
-        # cmd.exe equivalent. Windows support is verified through the release
-        # artifact's .cmd launchers, not by running this workspace on Windows.
+        # The suite has not been validated on Windows, so this repository does
+        # not claim a green Windows leg it has never run. The build itself is
+        # portable. Windows users are served by the release artifact's .cmd
+        # launchers, which are exercised by the `artifact` job.
         os: [ubuntu-latest, macos-latest]
 
     steps:
