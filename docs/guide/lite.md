@@ -143,23 +143,31 @@ JSON and JSONL output carry the schema marker
 this output as a restorable evidence bundle because it does not contain copied
 raw parser input.
 
-## Parity Contract
+## Canonical Semantics Contract
 
-Full and Lite share adapter registration, logical-session assembly,
-`UserTurn`/context derivation, built-in masks, fallback project observations,
-project linking, read ordering, search matching/ranking, and usage aggregation.
-Related-work projection is also shared: delegated-session and automation-run
-rows are derived before Lite releases `session_relation` fragments.
-The fixture matrix verifies final sources, projects, sessions, turns, contexts,
-search results, and stats against a clean Full materialization.
+Adapter registration, logical-session assembly, `UserTurn`/context derivation,
+built-in masks, fallback project observations, project linking, read ordering,
+search matching/ranking, and usage aggregation all live in `packages/canonical`
+and `packages/source-adapters`. Related-work projection is derived there too:
+delegated-session and automation-run rows are built before Lite releases
+`session_relation` fragments. Lite never simplifies a parser or turn builder to
+obtain speed — the surfaces render what this shared pipeline derives.
 
-Two Full persistence-history fields are materializer-specific: an incremented
-`project_revision_id` and the database's first-seen `ProjectIdentity.created_at`
-can reflect the order in which Full persisted source payloads. Lite derives one
-complete ephemeral snapshot, so those lifecycle values can remain at the clean
-snapshot revision. Project identity, membership, link state, confidence,
-content, ordering, search, and stats must still match; Lite never simplifies a
-parser or turn builder to obtain speed.
+The fixture matrix in `packages/live-runtime` exercises that pipeline across
+every registered adapter and verifies sources, projects, sessions, turns,
+contexts, search results, and stats, including that the two Lite entry points —
+`scanLiteHistory` (scan from disk) and `buildLiveSnapshot` (materialize a probe
+payload) — produce identical snapshots.
+
+This code originated in the CC History monorepo, which also hosts the
+persistent-store "Full" profile. Cross-profile parity — that a clean Full
+materialization reads back the same canonical objects as a Lite snapshot — is
+verified there, against the store implementation. It cannot be checked from this
+repository, which contains no store. Two fields are materializer-specific and
+were never expected to match: an incremented `project_revision_id` and the
+first-seen `ProjectIdentity.created_at`, both of which reflect the order in
+which a store persisted source payloads. Lite derives one complete ephemeral
+snapshot, so those lifecycle values stay at the clean snapshot revision.
 
 Run the focused gate with:
 

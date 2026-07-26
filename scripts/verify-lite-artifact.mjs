@@ -41,6 +41,12 @@ async function main() {
     }
     const tuiHelp = await execFile(tui, ['--help'], { cwd: extractRoot });
     if (!/CC History Lite TUI/u.test(tuiHelp.stdout)) throw new Error('Installed Lite TUI help was unavailable.');
+    // Both binaries bake their version as a literal. Catch the two drifting apart
+    // here rather than shipping an artifact whose halves disagree.
+    const tuiReportedVersion = tuiHelp.stdout.match(/CC History Lite TUI\s+(\S+)/u)?.[1];
+    if (tuiReportedVersion !== expectedVersion) {
+      throw new Error(`Installed Lite TUI reports version ${tuiReportedVersion} but the CLI reports ${expectedVersion}.`);
+    }
 
     const fixtureRoot = path.join(repoRoot, 'mock_data', '.codex', 'sessions');
     const launchedTui = await execFile(

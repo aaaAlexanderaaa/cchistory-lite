@@ -38,7 +38,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # POSIX only: the app build scripts end in `chmod +x`, which has no
+        # cmd.exe equivalent. Windows support is verified through the release
+        # artifact's .cmd launchers, not by running this workspace on Windows.
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v5
