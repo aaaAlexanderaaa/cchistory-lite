@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "complements": [
+    "verify:lite",
+    "verify:lite-artifact"
+  ],
+  "rules": [
+    {
+      "id": "canonical-stays-storage-neutral",
+      "description": "Canonical semantics must stay storage-neutral and never reach for a persistent store.",
+      "includeRoots": ["packages/canonical/src"],
+      "extensions": [".ts", ".tsx", ".js", ".mjs"],
+      "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
+      "forbiddenPatterns": ["@cchistory/storage"]
+    },
+    {
+      "id": "source-adapters-stop-at-parse-boundary",
+      "description": "Source adapters must stop at the parse boundary and never depend on a store or the Lite materializer.",
+      "includeRoots": ["packages/source-adapters/src"],
+      "extensions": [".ts", ".tsx", ".js", ".mjs"],
+      "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
+      "forbiddenPatterns": ["@cchistory/storage", "@cchistory/live-runtime"]
+    },
+    {
+      "id": "lite-materializer-stays-zero-store",
+      "description": "The Lite materializer must stay zero-store: no persistent storage and no server-side application.",
+      "includeRoots": ["packages/live-runtime/src"],
+      "extensions": [".ts", ".tsx", ".js", ".mjs"],
+      "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
+      "forbiddenPatterns": ["@cchistory/storage", "@cchistory/api", "@cchistory/api-client"]
+    },
+    {
+      "id": "lite-surfaces-do-not-reach-full",
+      "description": "Lite CLI and TUI must read through the Lite runtime rather than any persistent store or server application.",
+      "includeRoots": ["apps/lite-cli/src", "apps/lite-tui/src"],
+      "extensions": [".ts", ".tsx", ".js", ".mjs"],
+      "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
+      "forbiddenPatterns": ["@cchistory/storage", "@cchistory/api", "@cchistory/api-client"]
+    }
+  ]
+}

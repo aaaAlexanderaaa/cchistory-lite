@@ -1,0 +1,44 @@
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Build caches
+.cache/
+coverage/
+
+# Local runtime data
+.cchistory/
+.cchistory-backups/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.pid
+
+# Python (mock-data tooling)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Env
+.env
+.env.local
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Real user archives must never be committed
+.realdata/
+tmp/

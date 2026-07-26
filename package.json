@@ -1,0 +1,33 @@
+{
+  "name": "cchistory-lite",
+  "version": "0.3.0",
+  "description": "Zero-store, read-only CLI and TUI that materializes AI coding-agent history straight from on-disk sources.",
+  "license": "MIT",
+  "packageManager": "pnpm@10.30.3",
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=10 <11"
+  },
+  "scripts": {
+    "build": "pnpm run build:lite",
+    "build:lite": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/canonical build && pnpm --filter @cchistory/source-adapters build && pnpm --filter @cchistory/live-runtime build && pnpm --filter @cchistory/lite-cli build && pnpm --filter @cchistory/lite-tui build",
+    "lite": "node apps/lite-cli/dist/index.js",
+    "lite:tui": "node apps/lite-tui/dist/index.js",
+    "lite:link": "pnpm --filter @cchistory/lite-cli build && cd apps/lite-cli && npm link",
+    "lite:tui:link": "pnpm --filter @cchistory/lite-tui build && cd apps/lite-tui && npm link",
+    "lite:artifact": "node scripts/build-lite-artifact.mjs",
+    "test": "pnpm run verify:lite",
+    "test:lite": "pnpm run verify:lite",
+    "verify:lite": "pnpm --filter @cchistory/domain test && pnpm --filter @cchistory/canonical test && pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/live-runtime test && pnpm --filter @cchistory/lite-cli test && pnpm --filter @cchistory/lite-tui test && node scripts/verify-lite-boundaries.mjs",
+    "verify:lite-artifact": "node scripts/verify-lite-artifact.mjs",
+    "verify:architecture-boundaries": "node scripts/verify-architecture-boundaries.mjs",
+    "test:governance": "node --test scripts/verify-architecture-boundaries.test.mjs",
+    "verify:governance": "pnpm run test:governance && pnpm run verify:architecture-boundaries",
+    "mock-data:validate": "python3 scripts/validate_mock_data.py",
+    "release:lite": "pnpm run verify:lite-artifact"
+  },
+  "devDependencies": {
+    "@types/node": "^24.2.0",
+    "typescript": "^5.9.3"
+  }
+}

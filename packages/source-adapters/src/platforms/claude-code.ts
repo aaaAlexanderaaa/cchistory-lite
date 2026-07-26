@@ -1,0 +1,10 @@
+import path from "node:path";
+import type { PlatformAdapter } from "./types.js";
+
+export const claudeCodeAdapter: PlatformAdapter = {
+  platform: "claude_code",
+  supportTier: "stable",
+  getDefaultBaseDirCandidates: (options) => [path.join(options.homeDir ?? "", ".claude", "projects")],
+  matchesSourceFile: (filePath) => filePath.endsWith(".jsonl") && path.basename(filePath) !== "history.jsonl",
+  logicalSessionGrouping: "source_session_id",
+};
