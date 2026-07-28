@@ -260,7 +260,11 @@ function applySearchQuery(
       focusPane: "projects",
       overlay: "none",
       searchQuery: query,
-      searchCommitted: forceCommit || query.length >= SEARCH_AUTO_COMMIT_LENGTH,
+      // A manual commit (Enter, or --search) is sticky: keep running the search
+      // while the user refines a short query, instead of blanking it the moment
+      // the length drops back below the auto-commit threshold. The length-based
+      // gate lives in `shouldRunSearch`, so this flag only tracks explicit commits.
+      searchCommitted: forceCommit || state.searchCommitted,
     },
     model,
   );

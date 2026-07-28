@@ -135,12 +135,44 @@ test("short queries wait for Enter and long queries auto-commit", async () => {
 
 test("backspacing below the auto-commit length stops running the search", async () => {
   const model = await buildModel();
-  let state = apply(model, createLiteBrowserState(model), { type: "open-search", query: "mock" });
+  // Type a 4-char query so it auto-commits by length alone (no manual Enter),
+  // then backspace below the threshold: the live length gate should stop it.
+  let state = apply(
+    model,
+    createLiteBrowserState(model),
+    { type: "enter-search-mode" },
+    { type: "append-search-char", value: "m" },
+    { type: "append-search-char", value: "o" },
+    { type: "append-search-char", value: "c" },
+    { type: "append-search-char", value: "k" },
+  );
+  assert.equal(state.searchQuery, "mock");
   assert.equal(shouldRunSearch(state), true);
   state = apply(model, state, { type: "backspace-search" });
   assert.equal(state.searchQuery, "moc");
   assert.equal(shouldRunSearch(state), false);
   assert.deepEqual(getSearchGroups(model, state), []);
+});
+
+test("a manual commit stays live while refining a short query", async () => {
+  const model = await buildModel();
+  // Enter on a sub-threshold query commits it; refining by typing or backspacing
+  // must keep the search running instead of blanking it until 4 chars return.
+  let state = apply(
+    model,
+    createLiteBrowserState(model),
+    { type: "enter-search-mode" },
+    { type: "append-search-char", value: "m" },
+    { type: "append-search-char", value: "o" },
+    { type: "commit-search" },
+  );
+  assert.equal(shouldRunSearch(state), true);
+  state = apply(model, state, { type: "append-search-char", value: "x" });
+  assert.equal(state.searchQuery, "mox");
+  assert.equal(shouldRunSearch(state), true, "typing into a committed query keeps the search live");
+  state = apply(model, state, { type: "backspace-search" });
+  assert.equal(state.searchQuery, "mo");
+  assert.equal(shouldRunSearch(state), true, "backspacing a committed query keeps the search live");
 });
 
 test("search groups matches by project and drives the turn pane", async () => {

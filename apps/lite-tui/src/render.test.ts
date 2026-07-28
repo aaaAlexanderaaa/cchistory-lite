@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { LiveHistorySnapshot, scanLiteHistory } from "@cchistory/live-runtime";
 import { configureColorPolicy, stripAnsi } from "./colors.js";
 import { LiteBrowserModel } from "./model.js";
-import { BANNER_SUBTITLE, BANNER_TITLE, renderLiteFrame, type LiteScrollReconciliation } from "./render.js";
+import { BANNER_SUBTITLE, BANNER_TITLE, renderLiteFrame, renderScrollablePane, type LiteScrollReconciliation } from "./render.js";
 import {
   createLiteBrowserState,
   reduceLiteBrowserState,
@@ -56,6 +56,23 @@ function apply(
 function frame(model: LiteBrowserModel, state: LiteBrowserState, width = 110, height = 34): string {
   return renderLiteFrame(model, state, { width, height, now: FIXED_NOW });
 }
+
+test("scrollable pane reaches the last row at the bottom of the scroll range", () => {
+  // viewport = maxLines - 1. With more rows than fit, scrolling to the bottom
+  // (Number.MAX_SAFE_INTEGER is the established jump-to-last sentinel) must show
+  // the final row rather than hiding it behind a phantom "more below" line.
+  const rows = Array.from({ length: 15 }, (_, index) => `row${index}`);
+  const bottom = renderScrollablePane(rows, "TITLE", 10, Number.MAX_SAFE_INTEGER);
+  assert.equal(bottom.length, 10, "pane is exactly maxLines tall");
+  assert.ok(bottom.some((line) => line.includes("row14")), "last row is reachable at the bottom");
+  assert.ok(!bottom.some((line) => line.includes("↓")), "no phantom below-indicator at the bottom");
+
+  // A middle offset still shows both indicators and a contiguous run of rows.
+  const middle = renderScrollablePane(rows, "TITLE", 10, 3);
+  assert.ok(middle.some((line) => line.includes("↑")), "above-indicator shown mid-scroll");
+  assert.ok(middle.some((line) => line.includes("↓")), "below-indicator shown mid-scroll");
+  assert.ok(!middle.some((line) => line.includes("row0")), "scrolled past the first row");
+});
 
 test("a frame is exactly the requested height and never exceeds the width", async () => {
   const model = await buildModel();

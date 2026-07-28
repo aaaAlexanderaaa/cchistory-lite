@@ -848,7 +848,7 @@ function alignedRow(
 }
 
 /** Title + scrollable viewport, always exactly `maxLines` tall. */
-function renderScrollablePane(
+export function renderScrollablePane(
   rows: string[],
   titleLine: string,
   maxLines: number,
@@ -868,8 +868,14 @@ function renderScrollablePane(
   const maxOffset = rows.length - viewport + 1;
   const offset = Math.min(Math.max(0, scrollOffset), maxOffset);
   const hasAbove = offset > 0;
-  const slots = viewport - (hasAbove ? 1 : 0) - 1;
-  const end = Math.min(offset + slots, rows.length);
+  // Body slot budget after the optional "above" indicator. Reserve a slot for
+  // the "below" indicator only when content actually extends past the window;
+  // otherwise the final row stays permanently hidden behind a phantom "more
+  // below" line at the bottom of the scroll range.
+  const capacity = viewport - (hasAbove ? 1 : 0);
+  const remaining = rows.length - offset;
+  const contentRows = remaining <= capacity ? remaining : Math.max(0, capacity - 1);
+  const end = offset + contentRows;
 
   if (hasAbove) lines.push(muted(` ↑ ${offset} more lines`));
   for (let index = offset; index < end; index += 1) lines.push(rows[index]!);
