@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The Lite CLI now has `latest [sessions|turns] [N]`, default 20-row limits for `ls`, `--all`,
+  and lexical `--dir <path>` filtering across session/project lists, latest results, search,
+  stats, and `tree projects`.
+- Human-readable list and detail output now uses responsive columns, relative times,
+  actionable short references, structured metadata, turn/context summaries, and explicit
+  truncation counts. Existing `show --json` payloads remain unchanged.
+
 ### Changed
 
 - CC History Lite now ships as an independent repository. It was extracted from the CC History
@@ -19,8 +28,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   persisted store. Full/Lite parity remains guarded in the monorepo.
 - Architecture rules were trimmed to the four that apply to this repository; the rule covering
   the API/presentation client contract moved out with those packages.
+- `show session` with a complete canonical id now scans only that native session. Fuzzy session
+  and turn references retain full context only for resolver candidates in a single scan. All
+  adapters declare and test file, container, or hybrid targeting, and target misses fail loudly.
 
 ### Fixed
+
+- Directory-scoped Codex and Claude Code commands now preflight logical-session metadata and
+  avoid fully parsing resolved non-matching sessions, while uncertain cwd evidence falls back to
+  the complete read-only probe.
 
 - `runSourceProbe restores Codex checkpoint baselines across appended JSONL` no longer depends on
   wall-clock timing. The incremental-append path is skipped when an appended file reports an

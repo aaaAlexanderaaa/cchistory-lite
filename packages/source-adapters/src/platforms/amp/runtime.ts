@@ -22,9 +22,11 @@ export function parseAmpRecord(
     helpers.coerceIso(parsed.timestamp) ??
     helpers.epochMillisToIso(helpers.isObject(meta) ? helpers.asNumber(meta.sentAt) : undefined) ??
     helpers.epochMillisToIso(helpers.asNumber(parsed.created)) ??
-    helpers.nowIso();
+    record.observed_at;
 
   if (record.record_path_or_offset === "root") {
+    draft.created_at = draft.created_at ?? timeKey;
+    draft.updated_at = draft.updated_at ?? timeKey;
     const title = helpers.asString(parsed.title);
     if (title) {
       draft.title = title;
@@ -44,6 +46,8 @@ export function parseAmpRecord(
     }
     return { fragments, lossAudits };
   }
+
+  if (!draft.updated_at || timeKey > draft.updated_at) draft.updated_at = timeKey;
 
   const role = helpers.asString(parsed.role) ?? "assistant";
   const actorKind = helpers.mapRoleToActor(role);

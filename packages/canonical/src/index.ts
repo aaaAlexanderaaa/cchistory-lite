@@ -51,6 +51,18 @@ export {
   compareTurnsByRecency,
 } from "./read-order.js";
 export {
+  buildDirectoryScopedProjectTreeProjection,
+  filterProjectsByDirectoryScope,
+  filterSessionsByDirectoryScope,
+  filterTurnsByDirectoryScope,
+  normalizeDirectoryScopePath,
+  pathMatchesDirectoryScope,
+  projectMatchesDirectoryScope,
+  sessionMatchesDirectoryScope,
+  type DirectoryScopeOptions,
+  type DirectoryScopedProjectTreeProjection,
+} from "./directory-scope.js";
+export {
   buildSessionRelatedWorkIndex,
   listSessionRelatedWork,
 } from "./related-work.js";

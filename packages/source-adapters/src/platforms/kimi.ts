@@ -52,6 +52,7 @@ export async function listKimiCompanionEvidencePaths(baseDir: string, filePath: 
 export const kimiAdapter: PlatformAdapter = {
   platform: "kimi",
   supportTier: "experimental",
+  sessionTargeting: "file",
   getDefaultBaseDirCandidates: (options) => [path.join(options.homeDir ?? "", ".kimi-code")],
   getSourceRoots: (baseDir) => listKimiSourceRoots(baseDir),
   matchesSourceFile: (filePath) => resolveKimiSessionDir(filePath) !== undefined,

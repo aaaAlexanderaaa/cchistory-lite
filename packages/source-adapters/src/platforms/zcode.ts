@@ -5,6 +5,7 @@ import type { PlatformAdapter } from "./types.js";
 export const zcodeAdapter: PlatformAdapter = {
   platform: "zcode",
   supportTier: "experimental",
+  sessionTargeting: "container",
   getDefaultBaseDirCandidates: (options) => [path.join(options.homeDir ?? "", ".zcode")],
   getSourceRoots: (baseDir) => resolveZcodeSourceRoots(baseDir),
   matchesSourceFile: (filePath) => path.basename(filePath) === "db.sqlite",

@@ -51,6 +51,7 @@ async function listOpenClawCompanionEvidencePaths(baseDir: string): Promise<stri
 export const openclawAdapter: PlatformAdapter = {
   platform: "openclaw",
   supportTier: "stable",
+  sessionTargeting: "file",
   getDefaultBaseDirCandidates: (options) => [path.join(options.homeDir ?? "", ".openclaw", "agents")],
   getSupplementalSourceRoots: (baseDir) => [path.join(resolveOpenClawHome(baseDir), "cron", "runs")],
   matchesSourceFile: (filePath) => {

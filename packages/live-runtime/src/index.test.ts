@@ -183,6 +183,43 @@ test("Lite materializer resolves canonical history across the fixture-backed ada
   }
 });
 
+test("Lite targeted probes preserve one-session parity across the fixture adapter matrix", async () => {
+  for (const [sourceRef, relativePath] of Object.entries(fixtureRoots)) {
+    const scanOptions = {
+      homeDir: path.join(mockDataRoot, "empty-home"),
+      hostname: `cchistory-lite-target-matrix-${sourceRef}`,
+      sourceRefs: [sourceRef],
+      sourceRoots: [{ sourceRef, baseDir: path.join(mockDataRoot, relativePath) }],
+      safeMode: true,
+    };
+    const full = await scanLiteHistory({ ...scanOptions, contextMode: "full" });
+    const target = full.listResolvedSessions().find((session) => session.source_session_id);
+    if (!target?.source_session_id) continue;
+
+    const targeted = await scanLiteHistory({
+      ...scanOptions,
+      contextMode: "full",
+      sessionRefs: [target.source_session_id],
+    });
+    assert.deepEqual(
+      targeted.listResolvedSessions().map(targetSessionParityFields),
+      full.listResolvedSessions().filter((session) => session.id === target.id).map(targetSessionParityFields),
+      `${sourceRef} session parity`,
+    );
+    assert.deepEqual(
+      targeted.listResolvedTurns().map(targetTurnParityFields),
+      full.listResolvedTurns().filter((turn) => turn.session_id === target.id).map(targetTurnParityFields),
+      `${sourceRef} turn parity`,
+    );
+    const targetTurnIds = new Set(full.listSessionTurns(target.id).map((turn) => turn.id));
+    assert.deepEqual(
+      targeted.data.contexts.map(targetContextParityFields),
+      full.data.contexts.filter((context) => targetTurnIds.has(context.turn_id)).map(targetContextParityFields),
+      `${sourceRef} context parity`,
+    );
+  }
+});
+
 test("Lite scans explicit roots without creating or reading a Full store", async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-no-store-"));
   try {
@@ -309,6 +346,259 @@ test("Lite targeted full-context scan materializes only the requested logical se
   const turn = detailed.listResolvedTurns()[0];
   assert.ok(turn);
   assert.ok(detailed.getTurnContext(turn.id));
+});
+
+test("Lite directory scope is consistent across sessions, turns, projects, search, and usage", async () => {
+  const snapshot = await scanLiteHistory({
+    homeDir: path.join(mockDataRoot, "empty-home"),
+    hostname: "cchistory-lite-directory-scope-host",
+    sourceRefs: ["codex"],
+    sourceRoots: [{ sourceRef: "codex", baseDir: path.join(mockDataRoot, fixtureRoots.codex) }],
+    safeMode: true,
+    contextMode: "none",
+  });
+  const targetSession = snapshot.listResolvedSessions().find((session) => session.working_directory);
+  assert.ok(targetSession?.working_directory);
+  const directoryScope = targetSession.working_directory;
+  const sessions = snapshot.listResolvedSessions({ directoryScope });
+  const sessionIds = new Set(sessions.map((session) => session.id));
+  const turns = snapshot.listResolvedTurns({ directoryScope });
+
+  assert.ok(sessions.length > 0);
+  assert.ok(sessions.every((session) => session.working_directory?.startsWith(directoryScope)));
+  assert.ok(turns.every((turn) => sessionIds.has(turn.session_id)));
+  assert.ok(snapshot.listProjects({ directoryScope }).length > 0);
+
+  const query = turns[0]?.canonical_text.split(/\s+/u).find((part) => part.length >= 4);
+  assert.ok(query);
+  const search = snapshot.search({ query, directoryScope, limit: 100 });
+  assert.ok(search.total > 0);
+  assert.ok(search.results.every((result) => sessionIds.has(result.turn.session_id)));
+  assert.equal(snapshot.getUsageOverview({ directory_scope: directoryScope }).total_turns, turns.length);
+  assert.equal(
+    snapshot.getUsageRollup("source", { directory_scope: directoryScope }).rows.reduce(
+      (total, row) => total + row.turn_count,
+      0,
+    ),
+    turns.length,
+  );
+});
+
+test("Lite resolves cwd changes and conservatively probes cross-file cwd conflicts", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-directory-pushdown-"));
+  const codexRoot = path.join(tempHome, "codex-sessions");
+  try {
+    await mkdir(codexRoot, { recursive: true });
+    const writeSession = async (
+      fileName: string,
+      sessionId: string,
+      initialDirectory: string,
+      finalDirectory: string,
+      day = "01",
+    ): Promise<void> => {
+      await writeFile(
+        path.join(codexRoot, fileName),
+        [
+          {
+            timestamp: `2026-07-${day}T00:00:00.000Z`,
+            type: "session_meta",
+            payload: { id: sessionId, cwd: initialDirectory },
+          },
+          {
+            timestamp: `2026-07-${day}T00:00:01.000Z`,
+            type: "turn_context",
+            payload: { cwd: finalDirectory, model: "gpt-5" },
+          },
+          {
+            timestamp: `2026-07-${day}T00:00:02.000Z`,
+            type: "response_item",
+            payload: {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text: `Question for ${sessionId}` }],
+            },
+          },
+          {
+            timestamp: `2026-07-${day}T00:00:03.000Z`,
+            type: "response_item",
+            payload: {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: `Answer for ${sessionId}` }],
+            },
+          },
+        ].map((row) => JSON.stringify(row)).join("\n"),
+        "utf8",
+      );
+    };
+    await writeSession("target.jsonl", "directory-target", "/workspace/app/subdir", "/workspace/app/subdir");
+    await writeSession("outside.jsonl", "directory-outside", "/workspace/application", "/workspace/application");
+    await writeSession("changed.jsonl", "directory-changed", "/workspace/elsewhere", "/workspace/app/moved");
+    await writeSession("split-a.jsonl", "directory-split", "/workspace/elsewhere", "/workspace/elsewhere");
+    await writeSession("split-b.jsonl", "directory-split", "/workspace/app/resumed", "/workspace/app/resumed", "02");
+
+    const common = {
+      homeDir: tempHome,
+      hostname: "cchistory-lite-directory-pushdown-host",
+      sourceRefs: ["codex"],
+      sourceRoots: [{ sourceRef: "codex", baseDir: codexRoot }],
+      safeMode: true,
+      contextMode: "none" as const,
+    };
+    const full = await scanLiteHistory(common);
+    const fullyParsedFiles: string[] = [];
+    const scoped = await scanLiteHistory({
+      ...common,
+      directoryScope: "/workspace/app",
+      onProgress: (event) => {
+        if (event.stage === "file_start" && event.file_path) fullyParsedFiles.push(path.basename(event.file_path));
+      },
+    });
+
+    assert.deepEqual(
+      scoped.listResolvedSessions({ directoryScope: "/workspace/app" }),
+      full.listResolvedSessions({ directoryScope: "/workspace/app" }),
+    );
+    assert.deepEqual(fullyParsedFiles.sort(), ["changed.jsonl", "split-a.jsonl", "split-b.jsonl", "target.jsonl"]);
+    assert.equal(fullyParsedFiles.includes("outside.jsonl"), false);
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("Lite matching-context scans retain only contexts needed by the requested ref", async () => {
+  const scanOptions = {
+    homeDir: path.join(mockDataRoot, "empty-home"),
+    hostname: "cchistory-lite-matching-context-host",
+    sourceRefs: ["codex"],
+    sourceRoots: [{ sourceRef: "codex", baseDir: path.join(mockDataRoot, fixtureRoots.codex) }],
+    safeMode: true,
+  } as const;
+  const full = await scanLiteHistory({ ...scanOptions, contextMode: "full" });
+  const targetSession = full.listResolvedSessions().find((session) => session.source_session_id);
+  assert.ok(targetSession);
+  const sessionRef = full.getSessionDisplayRef(targetSession.id);
+  assert.ok(sessionRef);
+
+  const bySession = await scanLiteHistory({
+    ...scanOptions,
+    contextMode: "matching",
+    contextTarget: { kind: "session", ref: sessionRef },
+  });
+  const targetTurnIds = new Set(full.listSessionTurns(targetSession.id).map((turn) => turn.id));
+  assert.ok(bySession.data.contexts.length > 0);
+  assert.ok(bySession.data.contexts.every((context) => targetTurnIds.has(context.turn_id)));
+  assert.deepEqual(bySession.listResolvedSessions(), full.listResolvedSessions());
+  assert.deepEqual(bySession.listResolvedTurns(), full.listResolvedTurns());
+
+  const targetTurn = full.listSessionTurns(targetSession.id)[0];
+  assert.ok(targetTurn);
+  const turnRef = full.getTurnDisplayRef(targetTurn.id);
+  assert.ok(turnRef);
+  const byTurn = await scanLiteHistory({
+    ...scanOptions,
+    contextMode: "matching",
+    contextTarget: { kind: "turn", ref: turnRef },
+  });
+  assert.deepEqual(byTurn.data.contexts.map((context) => context.turn_id), [targetTurn.id]);
+});
+
+test("Lite display refs extend through collisions and remain actionable", () => {
+  const host = {
+    id: "host-display-ref",
+    hostname: "display-ref",
+    first_seen: "2026-01-01T00:00:00.000Z",
+    last_seen: "2026-01-01T00:00:00.000Z",
+  };
+  const baseSession: SessionProjection = {
+    id: "sess:codex:abcdefgh-one",
+    source_id: "source-display-ref",
+    source_platform: "codex",
+    source_session_id: "abcdefgh-one",
+    host_id: host.id,
+    created_at: "2026-01-01T00:00:00.000Z",
+    updated_at: "2026-01-01T00:00:00.000Z",
+    turn_count: 1,
+    sync_axis: "current",
+  };
+  const sessions = [
+    baseSession,
+    { ...baseSession, id: "sess:codex:abcdefgh-two", source_session_id: "abcdefgh-two" },
+  ];
+  const turns = [
+    { ...createBlankRefTurn(sessions[0]!), id: "12345678aaaa", turn_id: "12345678aaaa" },
+    { ...createBlankRefTurn(sessions[1]!), id: "12345678bbbb", turn_id: "12345678bbbb" },
+  ];
+  const snapshot = new LiveHistorySnapshot({
+    host,
+    sources: [],
+    projects: [],
+    sessions,
+    turns,
+    contexts: [],
+    ask_user_question_turns: [],
+    loss_audits: [],
+  });
+
+  const sessionRef = snapshot.getSessionDisplayRef(sessions[0]!.id);
+  const turnRef = snapshot.getTurnDisplayRef(turns[0]!.id);
+  assert.equal(sessionRef, "abcdefgh-o");
+  assert.equal(turnRef, "12345678a");
+  assert.equal(snapshot.getSession(sessionRef)?.id, sessions[0]!.id);
+  assert.equal(snapshot.getTurn(turnRef)?.id, turns[0]!.id);
+});
+
+test("Lite direct canonical targeting narrows the source platform and fails loudly on misses", async () => {
+  const common = {
+    homeDir: path.join(mockDataRoot, "empty-home"),
+    hostname: "cchistory-lite-canonical-target-host",
+    sourceRefs: ["codex", "claude_code"],
+    sourceRoots: [
+      { sourceRef: "codex", baseDir: path.join(mockDataRoot, fixtureRoots.codex) },
+      { sourceRef: "claude_code", baseDir: path.join(mockDataRoot, fixtureRoots.claude_code) },
+    ],
+    safeMode: true,
+  } as const;
+  const base = await scanLiteHistory({ ...common, contextMode: "none" });
+  const target = base.listResolvedSessions().find((session) => session.source_platform === "codex");
+  assert.ok(target);
+  const targeted = await scanLiteHistory({
+    ...common,
+    contextMode: "full",
+    sessionRefs: [target.id],
+  });
+  assert.deepEqual(targeted.listSources().map((source) => source.platform), ["codex"]);
+  assert.deepEqual(targeted.listResolvedSessions().map((session) => session.id), [target.id]);
+
+  const nativeTargeted = await scanLiteHistory({
+    ...common,
+    contextMode: "full",
+    sessionRefs: [target.source_session_id!],
+  });
+  assert.deepEqual(nativeTargeted.listResolvedSessions().map((session) => session.id), [target.id]);
+
+  const codexTargets = base.listResolvedSessions()
+    .filter((session) => session.source_platform === "codex" && session.source_session_id)
+    .slice(0, 2);
+  assert.equal(codexTargets.length, 2);
+  const multiTargeted = await scanLiteHistory({
+    ...common,
+    contextMode: "full",
+    sessionRefs: codexTargets.map((session) => session.source_session_id!),
+  });
+  assert.deepEqual(
+    new Set(multiTargeted.listResolvedSessions().map((session) => session.id)),
+    new Set(codexTargets.map((session) => session.id)),
+  );
+
+  await assert.rejects(
+    scanLiteHistory({
+      ...common,
+      contextMode: "full",
+      sessionRefs: ["sess:codex:does-not-exist"],
+    }),
+    /requested session/,
+  );
 });
 
 test("Lite context-light Claude scanning assembles parent and subagent files before projection", async () => {
@@ -732,6 +1022,67 @@ function createBlankRefTurn(session: SessionProjection): UserTurnProjection {
 
 function sortById<T extends { id: string }>(values: T[]): T[] {
   return jsonNormalize(values).sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function targetTurnParityFields(turn: UserTurnProjection) {
+  return {
+    id: turn.id,
+    session_id: turn.session_id,
+    raw_text: turn.raw_text,
+    canonical_text: turn.canonical_text,
+    context_ref: turn.context_ref,
+    context_summary: turn.context_summary,
+  };
+}
+
+function targetContextParityFields(context: LiveHistorySnapshot["data"]["contexts"][number]) {
+  return {
+    turn_id: context.turn_id,
+    system_messages: context.system_messages.map((message) => ({
+      id: message.id,
+      content: message.content,
+      position: message.position,
+      sequence: message.sequence,
+    })),
+    assistant_replies: context.assistant_replies.map((reply) => ({
+      id: reply.id,
+      content: reply.content,
+      content_preview: reply.content_preview,
+      token_usage: reply.token_usage,
+      token_count: reply.token_count,
+      model: reply.model,
+      tool_call_ids: reply.tool_call_ids,
+      stop_reason: reply.stop_reason,
+    })),
+    tool_calls: context.tool_calls.map((tool) => ({
+      id: tool.id,
+      tool_name: tool.tool_name,
+      input: tool.input,
+      input_summary: tool.input_summary,
+      output: tool.output,
+      output_preview: tool.output_preview,
+      status: tool.status,
+      error_message: tool.error_message,
+      reply_id: tool.reply_id,
+      sequence: tool.sequence,
+    })),
+  };
+}
+
+function targetSessionParityFields(session: SessionProjection) {
+  return {
+    id: session.id,
+    source_id: session.source_id,
+    source_platform: session.source_platform,
+    host_id: session.host_id,
+    title: session.title,
+    turn_count: session.turn_count,
+    model: session.model,
+    working_directory: session.working_directory,
+    source_session_id: session.source_session_id,
+    primary_project_id: session.primary_project_id,
+    sync_axis: session.sync_axis,
+  };
 }
 
 function createProject(name: string, turns: number, sessions: number): ProjectIdentity {

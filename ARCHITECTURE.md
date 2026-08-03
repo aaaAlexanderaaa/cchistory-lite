@@ -71,9 +71,23 @@ Reading full assistant/tool context for every turn is the expensive path, so it 
 
 | Caller | Context mode |
 | --- | --- |
-| `sources`, `ls`, `tree`, `search`, `stats`, TUI startup | `none` — context dropped after deriving turns |
-| `show session`, `show turn`, JSON/JSONL `export` | `full` |
+| `sources`, `ls`, `latest`, `tree`, `search`, `show project`, `show source`, `stats`, TUI startup | `none` — context dropped after deriving turns |
+| `show session <complete-canonical-id>` | targeted `full` scan of that one logical session |
+| `show session <fuzzy-ref>`, `show turn <ref>` | one `matching` scan; context retained only for possible resolver matches |
+| JSON/JSONL `export` | `full` |
 | TUI `turn <ref>` | targeted `full` rescan of that one logical session |
+
+Every adapter declares whether session targeting happens by file, within a
+multi-session container, or as a hybrid. File-capable adapters narrow the file
+set before parsing; container adapters filter native rows/seeds before canonical
+projection. Target misses are errors and never fall back to a full result.
+
+Directory scope remains canonical semantics, but the runtime may use adapter
+metadata as a conservative scan plan. Codex and Claude Code inspect session ids,
+cwd fields, and their canonical ordering keys in a bounded worker pool before
+projection. A resolved non-matching logical session is skipped; missing,
+malformed, cross-file conflicting, or otherwise uncertain cwd evidence always
+falls back to the full read-only probe.
 
 ## Enforced boundaries
 

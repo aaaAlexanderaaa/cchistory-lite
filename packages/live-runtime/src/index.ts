@@ -26,6 +26,7 @@ import {
   type UserTurnProjection,
 } from "@cchistory/domain";
 import {
+  buildDirectoryScopedProjectTreeProjection,
   buildFallbackProjectObservationCandidates,
   buildProjectDisplayList,
   buildSessionRelatedWorkIndex,
@@ -35,7 +36,11 @@ import {
   computeUsageOverview,
   computeUsageRollup,
   deriveProjectLinkSnapshot,
+  filterProjectsByDirectoryScope,
+  filterSessionsByDirectoryScope,
+  filterTurnsByDirectoryScope,
   installRuntimeWarningFilter,
+  pathMatchesDirectoryScope,
   searchTurnsInMemory,
   type UsageFilters,
 } from "@cchistory/canonical";
@@ -68,11 +73,22 @@ export interface ScanLiteHistoryOptions extends ResolveLiteSourcesOptions {
   limitFiles?: number;
   safeMode?: boolean;
   contextMode?: LiteContextMode;
+  contextTarget?: LiteContextTarget;
   sessionRefs?: readonly string[];
+  directoryScope?: string;
   onProgress?: (event: SourceProbeProgressEvent) => void;
 }
 
-export type LiteContextMode = "full" | "none";
+export type LiteContextMode = "full" | "none" | "matching";
+
+export interface LiteContextTarget {
+  kind: "session" | "turn";
+  ref: string;
+}
+
+export interface LiveDirectoryScopeOptions {
+  directoryScope?: string;
+}
 
 type LiveSourcePayload = Pick<
   SourceSyncPayload,
@@ -111,6 +127,7 @@ export interface LiveSearchOptions {
   sourceIds?: readonly string[];
   limit?: number;
   offset?: number;
+  directoryScope?: string;
 }
 
 export class LiveHistorySnapshot {
@@ -148,16 +165,30 @@ export class LiveHistorySnapshot {
     return [...this.data.sources];
   }
 
-  listProjects(): ProjectIdentity[] {
-    return buildProjectDisplayList(this.data.projects);
+  listProjects(options: LiveDirectoryScopeOptions = {}): ProjectIdentity[] {
+    return buildProjectDisplayList(filterProjectsByDirectoryScope({
+      projects: this.data.projects,
+      sessions: this.data.sessions,
+      turns: this.data.turns,
+      directoryScope: options.directoryScope,
+    }));
   }
 
-  listResolvedSessions(): SessionProjection[] {
-    return [...this.data.sessions];
+  listResolvedSessions(options: LiveDirectoryScopeOptions = {}): SessionProjection[] {
+    return filterSessionsByDirectoryScope(this.data.sessions, options.directoryScope);
   }
 
-  listResolvedTurns(): UserTurnProjection[] {
-    return [...this.data.turns];
+  listResolvedTurns(options: LiveDirectoryScopeOptions = {}): UserTurnProjection[] {
+    return filterTurnsByDirectoryScope(this.data.turns, this.data.sessions, options.directoryScope);
+  }
+
+  getProjectsTreeProjection(options: LiveDirectoryScopeOptions = {}) {
+    return buildDirectoryScopedProjectTreeProjection({
+      projects: this.listProjects(),
+      sessions: this.data.sessions,
+      turns: this.data.turns,
+      directoryScope: options.directoryScope,
+    });
   }
 
   listSessionRelatedWork(sessionRef: string): SessionRelatedWorkProjection[] {
@@ -217,7 +248,26 @@ export class LiveHistorySnapshot {
         session.working_directory,
         path.basename(session.working_directory ?? ""),
       ],
+      (session) => [session.source_session_id],
     );
+  }
+
+  getSessionDisplayRef(sessionRef: string, minimumLength = 8): string | undefined {
+    const session = this.getSession(sessionRef);
+    if (!session) return undefined;
+    const nativeRef = session.source_session_id;
+    if (nativeRef) {
+      const minimum = Math.min(Math.max(1, minimumLength), nativeRef.length);
+      for (let length = minimum; length <= nativeRef.length; length += 1) {
+        const candidate = nativeRef.slice(0, length);
+        try {
+          if (this.getSession(candidate)?.id === session.id) return candidate;
+        } catch {
+          // Keep extending until the reference resolves uniquely.
+        }
+      }
+    }
+    return session.id;
   }
 
   getTurn(ref: string): UserTurnProjection | undefined {
@@ -226,15 +276,34 @@ export class LiveHistorySnapshot {
     return resolveUnique(this.data.turns, ref, (turn) => turn.id, () => []);
   }
 
+  getTurnDisplayRef(turnRef: string, minimumLength = 8): string | undefined {
+    const turn = this.getTurn(turnRef);
+    if (!turn) return undefined;
+    const minimum = Math.min(Math.max(1, minimumLength), turn.id.length);
+    for (let length = minimum; length <= turn.id.length; length += 1) {
+      const candidate = turn.id.slice(0, length);
+      try {
+        if (this.getTurn(candidate)?.id === turn.id) return candidate;
+      } catch {
+        // Keep extending until the reference resolves uniquely.
+      }
+    }
+    return turn.id;
+  }
+
   getTurnContext(turnRef: string): TurnContextProjection | undefined {
     const turn = this.getTurn(turnRef);
     return turn ? this.contextsByTurnId.get(turn.id) : undefined;
   }
 
-  listProjectTurns(projectRef: string): UserTurnProjection[] {
+  listProjectTurns(projectRef: string, options: LiveDirectoryScopeOptions = {}): UserTurnProjection[] {
     const project = this.getProject(projectRef);
     if (!project) return [];
-    return [...(this.projectTurnBuckets().get(project.project_id) ?? [])];
+    return filterTurnsByDirectoryScope(
+      this.projectTurnBuckets().get(project.project_id) ?? [],
+      this.data.sessions,
+      options.directoryScope,
+    );
   }
 
   listSessionTurns(sessionRef: string): UserTurnProjection[] {
@@ -246,12 +315,17 @@ export class LiveHistorySnapshot {
   search(options: LiveSearchOptions = {}): { results: TurnSearchResult[]; total: number } {
     const limit = Math.max(0, options.limit ?? 50);
     const offset = Math.max(0, options.offset ?? 0);
-    const cacheKey = JSON.stringify([options.query ?? "", options.projectId ?? null, options.sourceIds ?? null]);
+    const cacheKey = JSON.stringify([
+      options.query ?? "",
+      options.projectId ?? null,
+      options.sourceIds ?? null,
+      options.directoryScope ?? null,
+    ]);
     this.searchRankCache ??= new Map();
     let ranked = this.searchRankCache.get(cacheKey);
     if (!ranked) {
       ranked = searchTurnsInMemory({
-        turns: this.data.turns,
+        turns: filterTurnsByDirectoryScope(this.data.turns, this.data.sessions, options.directoryScope),
         sessions: this.data.sessions,
         projects: this.data.projects,
         candidates: this.searchCandidates,
@@ -317,7 +391,17 @@ export class LiveHistorySnapshot {
 }
 
 export async function scanLiteHistory(options: ScanLiteHistoryOptions = {}): Promise<LiveHistorySnapshot> {
-  const sources = await resolveLiteSources(options);
+  if (options.contextMode === "matching" && !options.contextTarget) {
+    throw new Error("matching context mode requires a contextTarget.");
+  }
+  let sources = await resolveLiteSources(options);
+  const exactPlatforms = exactCanonicalSessionPlatforms(options.sessionRefs ?? []);
+  if (exactPlatforms.size > 0) {
+    sources = sources.filter((source) => exactPlatforms.has(source.platform));
+    if (sources.length === 0) {
+      throw new Error(`No selected Lite source can resolve requested session ${options.sessionRefs?.join(", ")}.`);
+    }
+  }
   const sourceAdapters = await import("@cchistory/source-adapters");
   const contextMode = options.contextMode ?? "full";
   const payloads: LiveSourcePayload[] = [];
@@ -336,6 +420,7 @@ export async function scanLiteHistory(options: ScanLiteHistoryOptions = {}): Pro
           contextMode,
           sourceAdapters,
           (filePath) => sourceAdapters.deriveSourceFileLogicalSessionKey(source.platform, filePath),
+          (filePaths) => sourceAdapters.inspectSourceFilesLogicalSessionMetadata(source.platform, filePaths),
         )
       : await scanSourceWithCollector(source, options, contextMode, sourceAdapters);
     host ??= result.host;
@@ -347,7 +432,17 @@ export async function scanLiteHistory(options: ScanLiteHistoryOptions = {}): Pro
     host = emptyProbe.host;
   }
 
-  return buildLiveSnapshot({ host, sources: payloads });
+  const requestedSessionRefs = options.sessionRefs?.filter((ref) => ref.trim().length > 0) ?? [];
+  if (requestedSessionRefs.length === 0) return buildLiveSnapshot({ host, sources: payloads });
+
+  const combined = buildLiveSnapshot({ host, sources: payloads });
+  for (const ref of requestedSessionRefs) {
+    if (!combined.getSession(ref)) throw new Error(`Lite scan did not find requested session ${ref}.`);
+  }
+  return buildLiveSnapshot({
+    host,
+    sources: payloads.map((payload) => filterLiveSourcePayloadBySessions(payload, requestedSessionRefs)),
+  });
 }
 
 export function buildLiveSnapshot(probe: { host: Host; sources: readonly LiveSourcePayload[] }): LiveHistorySnapshot {
@@ -396,16 +491,20 @@ async function scanSourceWithCollector(
   options: ScanLiteHistoryOptions,
   contextMode: LiteContextMode,
   sourceAdapters: typeof import("@cchistory/source-adapters"),
+  sourceFiles?: readonly string[],
 ): Promise<{ host: Host; payload: LiveSourcePayload }> {
   const probe = await sourceAdapters.runSourceProbe(
-    buildProbeOptions(source, options),
+    {
+      ...buildProbeOptions(source, options),
+      ...(sourceFiles ? { source_file_paths: { [source.id]: sourceFiles } } : {}),
+    },
     [source],
   );
   const payload = probe.sources[0];
   if (!payload) {
     throw new Error(`Lite source probe produced no payload for ${source.display_name}.`);
   }
-  const compacted = compactSourcePayload(payload, contextMode);
+  const compacted = compactSourcePayload(payload, contextMode, options.contextTarget);
   return {
     host: probe.host,
     payload: options.sessionRefs?.length
@@ -420,30 +519,81 @@ async function scanLogicalSessionGroups(
   contextMode: LiteContextMode,
   sourceAdapters: typeof import("@cchistory/source-adapters"),
   getGroupKey: (filePath: string) => Promise<string>,
+  inspectGroupFiles: (
+    filePaths: readonly string[],
+  ) => Promise<import("@cchistory/source-adapters").SourceFileLogicalSessionMetadata[]>,
 ): Promise<{ host: Host; payload: LiveSourcePayload }> {
   const files = await sourceAdapters.listSourceFiles(source.platform, source.base_dir, options.limitFiles);
   if (files.length === 0) {
     return scanSourceWithCollector(source, options, contextMode, sourceAdapters);
   }
 
-  const filesByGroup = new Map<string, string[]>();
-  for (const filePath of files) {
-    const key = await getGroupKey(filePath);
+  const filesByGroup = new Map<string, {
+    files: string[];
+    workingDirectoryState: "known" | "absent" | "uncertain";
+    workingDirectory?: string;
+  }>();
+  const inspectedFiles = options.directoryScope ? await inspectGroupFiles(files) : undefined;
+  for (const [fileIndex, filePath] of files.entries()) {
+    const metadata = inspectedFiles
+      ? inspectedFiles[fileIndex]!
+      : {
+          sessionKey: await getGroupKey(filePath),
+          workingDirectoryState: "absent" as const,
+          workingDirectory: undefined,
+        };
+    const key = metadata.sessionKey;
     const group = filesByGroup.get(key);
-    if (group) group.push(filePath);
-    else filesByGroup.set(key, [filePath]);
+    if (group) {
+      group.files.push(filePath);
+      if (
+        group.workingDirectoryState === "uncertain" ||
+        metadata.workingDirectoryState === "uncertain" ||
+        (
+          group.workingDirectoryState === "known" &&
+          metadata.workingDirectoryState === "known" &&
+          group.workingDirectory !== metadata.workingDirectory
+        )
+      ) {
+        group.workingDirectoryState = "uncertain";
+        group.workingDirectory = undefined;
+      } else if (group.workingDirectoryState === "absent" && metadata.workingDirectoryState === "known") {
+        group.workingDirectoryState = metadata.workingDirectoryState;
+        group.workingDirectory = metadata.workingDirectory;
+      }
+    } else {
+      filesByGroup.set(key, {
+        files: [filePath],
+        workingDirectoryState: metadata.workingDirectoryState,
+        workingDirectory: metadata.workingDirectory,
+      });
+    }
   }
 
   const requestedSessionRefs = options.sessionRefs?.filter((ref) => ref.trim().length > 0) ?? [];
-  const selectedGroupFiles = requestedSessionRefs.length === 0
-    ? [...filesByGroup.values()]
-    : [...filesByGroup.entries()]
-        .filter(([groupKey]) => requestedSessionRefs.some((ref) => sessionRefMatchesGroup(ref, groupKey, source)))
-        .map(([, groupFiles]) => groupFiles);
-  if (requestedSessionRefs.length > 0 && selectedGroupFiles.length === 0) {
-    throw new Error(
-      `Lite source ${source.display_name} does not contain requested session ${requestedSessionRefs.join(", ")}.`,
-    );
+  const matchingGroupEntries = [...filesByGroup.entries()]
+    .filter(([groupKey]) => requestedSessionRefs.some((ref) => sessionRefMatchesGroup(ref, groupKey, source)));
+  const targetGroups = requestedSessionRefs.length === 0 || matchingGroupEntries.length === 0
+    ? [...filesByGroup.entries()]
+    : matchingGroupEntries;
+  const selectedGroupFiles = targetGroups
+    .filter(([, group]) =>
+      !options.directoryScope ||
+      group.workingDirectoryState !== "known" ||
+      !group.workingDirectory ||
+      pathMatchesDirectoryScope(group.workingDirectory, options.directoryScope),
+    )
+    .map(([groupKey, group]) => ({
+      files: group.files,
+      targetSessionRefs: matchingGroupEntries.length > 0
+        ? requestedSessionRefs.filter((ref) => sessionRefMatchesGroup(ref, groupKey, source))
+        : requestedSessionRefs.length > 0
+          ? []
+          : undefined,
+    }));
+
+  if (selectedGroupFiles.length === 0) {
+    return scanSourceWithCollector(source, options, contextMode, sourceAdapters, []);
   }
 
   const blobsById = new Map<string, SourceSyncPayload["blobs"][number]>();
@@ -462,11 +612,11 @@ async function scanLogicalSessionGroups(
   let forwardedSourceStart = false;
   let host: Host | undefined;
 
-  for (const groupFiles of selectedGroupFiles) {
+  for (const group of selectedGroupFiles) {
     const probe = await sourceAdapters.runSourceProbe(
       {
-        ...buildProbeOptions(source, options),
-        source_file_paths: { [source.id]: groupFiles },
+        ...buildProbeOptions(source, options, group.targetSessionRefs),
+        source_file_paths: { [source.id]: group.files },
         on_progress: (event) => {
           if (event.stage === "source_start") {
             if (forwardedSourceStart) return;
@@ -500,8 +650,8 @@ async function scanLogicalSessionGroups(
       sessionsById.set(session.id, session);
     }
     for (const turn of groupPayload.turns) turnsById.set(turn.id, turn);
-    if (contextMode === "full") {
-      for (const context of groupPayload.contexts) contextsByTurnId.set(context.turn_id, context);
+    for (const context of selectPayloadContexts(groupPayload, contextMode, options.contextTarget)) {
+      contextsByTurnId.set(context.turn_id, context);
     }
     for (const askTurn of groupPayload.ask_user_question_turns) askTurnsById.set(askTurn.id, askTurn);
     sessionRelationFragments.push(
@@ -560,16 +710,25 @@ async function scanLogicalSessionGroups(
   };
 }
 
-function buildProbeOptions(source: SourceDefinition, options: ScanLiteHistoryOptions) {
+function buildProbeOptions(
+  source: SourceDefinition,
+  options: ScanLiteHistoryOptions,
+  targetSessionRefs: readonly string[] | undefined = options.sessionRefs,
+) {
   return {
     source_ids: [source.id],
+    target_session_refs: targetSessionRefs,
     limit_files_per_source: options.limitFiles,
     safe_mode: options.safeMode,
     on_progress: options.onProgress,
   };
 }
 
-function compactSourcePayload(payload: SourceSyncPayload, contextMode: LiteContextMode): LiveSourcePayload {
+function compactSourcePayload(
+  payload: SourceSyncPayload,
+  contextMode: LiteContextMode,
+  contextTarget?: LiteContextTarget,
+): LiveSourcePayload {
   return {
     source: payload.source,
     blobs: payload.blobs,
@@ -577,10 +736,65 @@ function compactSourcePayload(payload: SourceSyncPayload, contextMode: LiteConte
     sessions: payload.sessions,
     related_work: flattenRelatedWorkIndex(buildSessionRelatedWorkIndex(payload.sessions, payload.fragments)),
     turns: payload.turns,
-    contexts: contextMode === "full" ? payload.contexts : [],
+    contexts: selectPayloadContexts(payload, contextMode, contextTarget),
     ask_user_question_turns: payload.ask_user_question_turns,
     loss_audits: payload.loss_audits,
   };
+}
+
+function selectPayloadContexts(
+  payload: Pick<SourceSyncPayload, "sessions" | "turns" | "contexts">,
+  contextMode: LiteContextMode,
+  contextTarget?: LiteContextTarget,
+): TurnContextProjection[] {
+  if (contextMode === "full") return [...payload.contexts];
+  if (contextMode === "none") return [];
+  if (!contextTarget) throw new Error("matching context mode requires a contextTarget.");
+
+  let turnIds: Set<string>;
+  if (contextTarget.kind === "turn") {
+    turnIds = new Set(
+      payload.turns
+        .filter((turn) => turn.id === contextTarget.ref || turn.id.startsWith(contextTarget.ref))
+        .map((turn) => turn.id),
+    );
+  } else {
+    const sessionIds = new Set(
+      payload.sessions
+        .filter((session) => sessionPotentiallyMatchesRef(session, contextTarget.ref))
+        .map((session) => session.id),
+    );
+    turnIds = new Set(payload.turns.filter((turn) => sessionIds.has(turn.session_id)).map((turn) => turn.id));
+  }
+  return payload.contexts.filter((context) => turnIds.has(context.turn_id));
+}
+
+function sessionPotentiallyMatchesRef(session: SessionProjection, ref: string): boolean {
+  const normalizedRef = normalizeLookup(ref);
+  if (!normalizedRef) return false;
+  const exactAliases = [
+    session.source_session_id,
+    session.title,
+    session.working_directory,
+    path.basename(session.working_directory ?? ""),
+  ];
+  return (
+    session.id === ref ||
+    session.id.startsWith(ref) ||
+    exactAliases.some((alias) => normalizeLookup(alias) === normalizedRef) ||
+    normalizeLookup(session.source_session_id).startsWith(normalizedRef)
+  );
+}
+
+function exactCanonicalSessionPlatforms(refs: readonly string[]): Set<SourcePlatform> {
+  if (refs.length === 0) return new Set();
+  const platforms = new Set<SourcePlatform>();
+  for (const ref of refs) {
+    const match = ref.match(/^sess:([^:]+):.+$/u);
+    if (!match?.[1]) return new Set();
+    platforms.add(match[1] as SourcePlatform);
+  }
+  return platforms;
 }
 
 function filterLiveSourcePayloadBySessions(
@@ -748,6 +962,7 @@ function resolveUnique<T>(
   ref: string,
   getId: (value: T) => string,
   getAliases: (value: T) => readonly (string | undefined)[],
+  getPrefixAliases: (value: T) => readonly (string | undefined)[] = () => [],
 ): T | undefined {
   const normalizedRef = normalizeLookup(ref);
   // A blank ref would otherwise match every alias-less object (and every id
@@ -762,7 +977,11 @@ function resolveUnique<T>(
     throw new Error(`Ambiguous reference ${JSON.stringify(ref)} matched ${exact.length} objects.`);
   }
 
-  const prefix = values.filter((value) => getId(value).startsWith(ref));
+  const prefix = values.filter(
+    (value) =>
+      getId(value).startsWith(ref) ||
+      getPrefixAliases(value).some((alias) => normalizeLookup(alias).startsWith(normalizedRef)),
+  );
   if (prefix.length === 1) return prefix[0];
   if (prefix.length > 1) {
     throw new Error(`Ambiguous ID prefix ${JSON.stringify(ref)} matched ${prefix.length} objects.`);

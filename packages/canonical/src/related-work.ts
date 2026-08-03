@@ -100,7 +100,7 @@ function buildSessionRelationEdge(
   const childRef = relationChildRef(payload);
   const parentSession = parentRef ? resolveRelatedSession(parentRef, evidenceSession, sessionsByAlias) : undefined;
   const childSession = childRef
-    ? resolveRelatedSession(childRef, evidenceSession, sessionsByAlias) ?? evidenceSession
+    ? resolveRelatedSession(childRef, evidenceSession, sessionsByAlias)
     : relationKind === "delegated_session"
       ? evidenceSession
       : undefined;

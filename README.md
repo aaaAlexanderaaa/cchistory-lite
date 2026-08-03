@@ -90,7 +90,8 @@ cchistory-lite <command> [options]
 | Command | What it does |
 | --- | --- |
 | `sources` | List resolved adapters with sync status, session/turn counts, and root |
-| `ls [projects\|sessions\|sources]` | Flat list of one collection (default `projects`) |
+| `ls [projects\|sessions\|sources]` | Flat list of one collection, newest/most active first (default `projects`, 20 rows) |
+| `latest [sessions\|turns] [N]` | Show the newest sessions or turns (default `sessions 20`; `latest 50` is accepted) |
 | `tree [projects\|project <ref>\|session <ref>]` | Hierarchical view including Related Work |
 | `search <query>` | Search canonical turn text and paths |
 | `show project\|session\|turn\|source <ref>` | Full detail for exactly one object |
@@ -109,14 +110,27 @@ cchistory-lite <command> [options]
 | `--safe` | Safe mode: skip the Antigravity live probe, companion-evidence capture, and git evidence reads |
 | `--json` | Machine-readable output, schema `cchistory-lite/v1` |
 | `--project <ref>` | Scope to one project (`search`, `stats`) |
-| `--limit <n>` / `--offset <n>` | Paging (`search`; default 50 / 0) |
+| `--dir <path>` | Keep sessions under a working directory (`latest`, supported `ls` views, `search`, `stats`, `tree projects`) |
+| `--limit <n>` | Row limit (`ls`, default 20; `search`, default 50) |
+| `--all` | Disable the default `ls` limit; mutually exclusive with `--limit` |
+| `--offset <n>` | Search offset (default 0) |
 | `--by <dimension>` | Usage rollup dimension (`stats`) |
 | `--format` / `--out` | Export encoding and destination (`export`; default `jsonl`, stdout) |
 | `--version` / `--help` | Version, or the synopsis |
 
 References — sources, projects, sessions, turns — resolve by exact id, then by alias (slug,
 display name, workspace path, source session id, …), then by unique id prefix. An ambiguous
-reference is an explicit error rather than a silent pick.
+reference is an explicit error rather than a silent pick. Session lists print an actionable
+native-session prefix of at least eight characters and extend it when collisions require more.
+
+`--dir` expands `~`, resolves relative paths from the current directory, and uses a lexical path
+segment boundary (`/work/app` does not match `/work/apple`). It is case-insensitive on macOS and
+Windows. Sessions without a working directory are excluded; projects match either their own path
+or a contained matching session.
+
+For Codex and Claude Code, `--dir` performs a lightweight metadata preflight and avoids fully
+parsing logical sessions with a resolved non-matching working directory. Uncertain metadata and
+other adapters retain the full read-only probe followed by the same canonical filter.
 
 Exit codes: `0` success, `2` usage error, `1` any other failure.
 

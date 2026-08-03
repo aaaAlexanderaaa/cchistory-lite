@@ -27,6 +27,10 @@ test("platform adapter registry provides exactly one adapter per supported platf
     "zcode",
   ]);
   assert.equal(new Set(platforms).size, adapters.length);
+  assert.ok(
+    adapters.every((adapter) => ["file", "container", "hybrid"].includes(adapter.sessionTargeting)),
+    "every registered adapter must declare its targeted-session strategy",
+  );
 });
 
 test("platform adapter registry distinguishes stable and experimental support tiers", () => {

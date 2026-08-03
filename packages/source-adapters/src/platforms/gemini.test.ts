@@ -228,6 +228,17 @@ test("[gemini] multiple chat files under one hash remain separate sessions witho
     assert.ok(payload.turns.some((turn) => turn.canonical_text.includes("validation commands")));
     assert.ok(payload.turns.some((turn) => turn.canonical_text.includes("ready tasks")));
     assert.ok(payload.turns.some((turn) => turn.canonical_text.includes("missing companion metadata")));
+
+    const [targeted] = (
+      await runSourceProbe(
+        { target_session_refs: ["gemini-scale-b"] },
+        [geminiSource],
+      )
+    ).sources;
+    assert.ok(targeted);
+    assert.deepEqual(targeted.sessions.map((session) => session.source_session_id), ["gemini-scale-b"]);
+    assert.equal(targeted.turns.length, 1);
+    assert.match(targeted.turns[0]?.canonical_text ?? "", /ready tasks/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -253,4 +264,3 @@ test("[gemini] source enumeration narrows ~/.gemini roots to tmp chat data", () 
   assert.deepEqual(listGeminiSourceRoots(geminiRoot), [path.join(geminiRoot, "tmp")]);
   assert.deepEqual(listGeminiSourceRoots(path.join(geminiRoot, "tmp")), [path.join(geminiRoot, "tmp")]);
 });
-

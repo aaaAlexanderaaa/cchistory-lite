@@ -9,6 +9,7 @@ import type {
   UserTurnProjection,
 } from "@cchistory/domain";
 import { nowIso } from "@cchistory/domain";
+import { sessionMatchesDirectoryScope } from "./directory-scope.js";
 
 export interface UsageFilters {
   project_id?: string;
@@ -17,6 +18,7 @@ export interface UsageFilters {
   host_ids?: string[];
   after_date?: string; // YYYY-MM-DD — only include turns on or after this date
   include_known_zero_token?: boolean;
+  directory_scope?: string;
 }
 
 export interface UsageAggregationRow {
@@ -129,6 +131,11 @@ export function buildUsageRows(params: {
   const projectsById = new Map(listProjects().map((project) => [project.project_id, project]));
 
   return turns
+    .filter((turn) =>
+      filters.directory_scope
+        ? sessionMatchesDirectoryScope(sessionsById.get(turn.session_id), filters.directory_scope)
+        : true,
+    )
     .filter((turn) => (filters.project_id ? turn.project_id === filters.project_id : true))
     .filter((turn) =>
       filters.project_ids && filters.project_ids.length > 0
@@ -271,4 +278,3 @@ export function computeUsageRollup(params: {
     excluded_zero_token_turns: excludedCount > 0 ? excludedCount : undefined,
   };
 }
-

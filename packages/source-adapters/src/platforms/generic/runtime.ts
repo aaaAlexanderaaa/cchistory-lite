@@ -13,6 +13,7 @@ export interface GenericSessionMetadata {
   model?: string;
   title?: string;
   parentUuid?: string;
+  childSessionId?: string;
   isSidechain?: boolean;
   parentToolRef?: string;
   childAgentKey?: string;
@@ -65,6 +66,7 @@ export function parseGenericConversationRecord(
     fragments.push(
       helpers.createFragment(context, record, fragments.length, "session_relation", timeKey, {
         parent_uuid: meta.parentUuid,
+        child_session_id: meta.childSessionId,
         is_sidechain: meta.isSidechain,
         parent_tool_ref: meta.parentToolRef,
         agent_id: meta.childAgentKey,
@@ -277,6 +279,11 @@ export function extractGenericSessionMetadata(
       helpers.asString(session?.parent_id) ??
       helpers.asString(session?.callingSessionId) ??
       helpers.asString(session?.calling_session_id),
+    childSessionId:
+      helpers.asString(parsed.childSessionId) ??
+      helpers.asString(parsed.child_session_id) ??
+      helpers.asString(session?.childSessionId) ??
+      helpers.asString(session?.child_session_id),
     isSidechain:
       helpers.asBoolean(parsed.isSidechain) ??
       helpers.asBoolean(parsed.sidechain) ??

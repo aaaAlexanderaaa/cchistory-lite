@@ -9,6 +9,7 @@ import type {
   UserTurnProjection,
 } from "@cchistory/domain";
 import {
+  buildDirectoryScopedProjectTreeProjection,
   buildSessionRelatedWorkIndex,
   boundSearchCanonicalText,
   buildProjectDisplayList,
@@ -18,11 +19,15 @@ import {
   compareTurnsByRecency,
   computeUsageOverview,
   deriveProjectLinkSnapshot,
+  filterProjectsByDirectoryScope,
+  filterSessionsByDirectoryScope,
+  filterTurnsByDirectoryScope,
   matchesSearchCandidatePlan,
   materializeSearchCandidate,
   SEARCH_CANONICAL_TEXT_SCAN_BYTES,
   SEARCH_TRUNCATION_MARKER,
   searchTurnsInMemory,
+  sessionMatchesDirectoryScope,
   stripSearchTruncationMarker,
 } from "./index.js";
 
@@ -155,6 +160,35 @@ test("shared canonical related-work projection resolves delegated sessions and a
       ["delegated_session", "inbound", parent.id],
       ["automation_run", "self", parent.id],
     ],
+  );
+});
+
+test("shared canonical related-work projection preserves an outbound edge with an absent child endpoint", () => {
+  const source = createSource();
+  const parent = createSession(source);
+  const fragments: SourceFragment[] = [{
+    id: "fragment-parent-outbound",
+    source_id: source.id,
+    session_ref: parent.id,
+    record_id: "record-parent-outbound",
+    seq_no: 1,
+    fragment_kind: "session_relation",
+    time_key: "2026-01-01T00:00:01.000Z",
+    payload: {
+      parent_uuid: parent.id,
+      child_session_id: "sess:factory_droid:child-native",
+      is_sidechain: true,
+    },
+    raw_refs: [],
+    source_format_profile_id: "factory:test:v1",
+  }];
+
+  assert.deepEqual(
+    buildSessionRelatedWorkIndex([parent], fragments).get(parent.id)?.map((entry) => [
+      entry.direction,
+      entry.target_session_ref,
+    ]),
+    [["outbound", "sess:factory_droid:child-native"]],
   );
 });
 
@@ -315,6 +349,81 @@ test("search plan helpers are exported so Full and Lite interpret one query iden
   assert.ok(!stripped.endsWith(SEARCH_TRUNCATION_MARKER));
   assert.ok(stripped.startsWith("needle "));
   assert.equal(stripSearchTruncationMarker("plain text"), "plain text");
+});
+
+test("directory scope uses path boundaries and canonical session relationships", () => {
+  const source = createSource();
+  const apiSession = {
+    ...createSession(source),
+    id: "session-api",
+    working_directory: "/work/app/api/",
+    primary_project_id: "project-app",
+  };
+  const webSession = {
+    ...createSession(source),
+    id: "session-web",
+    working_directory: "/work/app2/web",
+    primary_project_id: "project-other",
+  };
+  const unknownSession = { ...createSession(source), id: "session-unknown", working_directory: undefined };
+  const apiTurn = { ...createTurn(source, apiSession), id: "turn-api", turn_id: "turn-api", project_id: "project-app" };
+  const webTurn = { ...createTurn(source, webSession), id: "turn-web", turn_id: "turn-web", project_id: "project-other" };
+  const appProject = {
+    ...createProject("app", { committedTurns: 1, sessions: 1 }),
+    primary_workspace_path: "/work/app",
+  };
+  const otherProject = {
+    ...createProject("other", { committedTurns: 1, sessions: 1 }),
+    primary_workspace_path: "/work/app2",
+  };
+
+  assert.equal(sessionMatchesDirectoryScope(apiSession, "/work/app"), true);
+  assert.equal(sessionMatchesDirectoryScope(webSession, "/work/app"), false);
+  assert.equal(sessionMatchesDirectoryScope(unknownSession, "/work/app"), false);
+  assert.equal(sessionMatchesDirectoryScope(apiSession, "/WORK/APP", { platform: "darwin" }), true);
+  assert.deepEqual(
+    filterSessionsByDirectoryScope([webSession, unknownSession, apiSession], "/work/app").map((entry) => entry.id),
+    ["session-api"],
+  );
+  assert.deepEqual(
+    filterTurnsByDirectoryScope([webTurn, apiTurn], [apiSession, webSession], "/work/app").map((entry) => entry.id),
+    ["turn-api"],
+  );
+  assert.deepEqual(
+    filterProjectsByDirectoryScope({
+      projects: [otherProject, appProject],
+      sessions: [apiSession, webSession],
+      turns: [apiTurn, webTurn],
+      directoryScope: "/work/app/api",
+    }).map((entry) => entry.project_id),
+    ["project-app"],
+  );
+  const tree = buildDirectoryScopedProjectTreeProjection({
+    projects: [otherProject, appProject],
+    sessions: [apiSession, webSession, unknownSession],
+    turns: [apiTurn, webTurn],
+    directoryScope: "/work/app/api",
+  });
+  assert.deepEqual(tree.projects.map((entry) => entry.project.project_id), ["project-app"]);
+  assert.deepEqual(tree.projects[0]?.sessions.map((entry) => entry.id), ["session-api"]);
+  assert.deepEqual(tree.unlinkedSessions, []);
+});
+
+test("usage directory scope filters turns through their sessions", () => {
+  const source = createSource();
+  const includedSession = { ...createSession(source), id: "session-in", working_directory: "/workspace/parser" };
+  const excludedSession = { ...createSession(source), id: "session-out", working_directory: "/workspace/parser2" };
+  const includedTurn = { ...createTurn(source, includedSession), id: "turn-in", turn_id: "turn-in" };
+  const excludedTurn = { ...createTurn(source, excludedSession), id: "turn-out", turn_id: "turn-out" };
+  const overview = computeUsageOverview({
+    filters: { directory_scope: "/workspace/parser", include_known_zero_token: true },
+    listResolvedTurns: () => [includedTurn, excludedTurn],
+    listResolvedSessions: () => [includedSession, excludedSession],
+    listSources: () => [source],
+    listProjects: () => [],
+  });
+  assert.equal(overview.total_turns, 1);
+  assert.equal(overview.total_tokens, 15);
 });
 
 function createSource(): SourceStatus {

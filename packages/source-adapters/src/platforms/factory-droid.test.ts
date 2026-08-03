@@ -108,6 +108,54 @@ test("runSourceProbe uses file mtime as session end when factory_droid records s
   }
 });
 
+test("runSourceProbe anchors undated Factory metadata to transcript activity instead of scan time", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-factory-undated-meta-"));
+  try {
+    const factoryDir = path.join(tempRoot, "factory");
+    await mkdir(factoryDir, { recursive: true });
+    const filePath = path.join(factoryDir, "session.jsonl");
+    await writeFile(filePath, [
+      { type: "session_start", id: "factory-undated", sessionTitle: "Undated metadata" },
+      { timestamp: "2026-03-04T06:18:25.471Z", type: "message", message: { role: "user", content: [{ type: "text", text: "Review." }] } },
+      { timestamp: "2026-03-04T07:39:48.898Z", type: "message", message: { role: "assistant", content: [{ type: "text", text: "Reviewed." }] } },
+    ].map((line) => JSON.stringify(line)).join("\n"), "utf8");
+    await writeFile(path.join(factoryDir, "session.settings.json"), JSON.stringify({ model: "test-model" }), "utf8");
+    const copiedAt = new Date("2026-06-29T05:57:50.000Z");
+    await utimes(filePath, copiedAt, copiedAt);
+
+    const [payload] = (await runSourceProbe({}, [createSourceDefinition("src-factory-undated", "factory_droid", factoryDir)])).sources;
+    assert.ok(payload);
+    assert.equal(payload.sessions[0]?.created_at, "2026-03-04T06:18:25.471Z");
+    assert.equal(payload.sessions[0]?.updated_at, "2026-03-04T07:39:48.898Z");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe does not treat a much later copied mtime as Factory activity", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-factory-copied-"));
+  try {
+    const factoryDir = path.join(tempRoot, "factory");
+    await mkdir(factoryDir, { recursive: true });
+    const eventTime = "2026-03-04T06:18:25.471Z";
+    const filePath = path.join(factoryDir, "session.jsonl");
+    await writeFile(filePath, [
+      { type: "session_start", id: "factory-copied" },
+      { timestamp: eventTime, type: "message", message: { role: "user", content: [{ type: "text", text: "Review." }] } },
+      { timestamp: eventTime, type: "message", message: { role: "assistant", content: [{ type: "text", text: "Reviewed." }] } },
+    ].map((line) => JSON.stringify(line)).join("\n"), "utf8");
+    const copiedAt = new Date("2026-06-29T05:57:50.000Z");
+    await utimes(filePath, copiedAt, copiedAt);
+
+    const [payload] = (await runSourceProbe({}, [createSourceDefinition("src-factory-copied", "factory_droid", factoryDir)])).sources;
+    assert.ok(payload);
+    assert.equal(payload.sessions[0]?.created_at, eventTime);
+    assert.equal(payload.sessions[0]?.updated_at, eventTime);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("runSourceProbe classifies Factory lifecycle records as hidden source metadata", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-factory-lifecycle-"));
 

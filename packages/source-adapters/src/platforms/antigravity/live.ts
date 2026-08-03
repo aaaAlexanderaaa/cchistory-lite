@@ -42,6 +42,7 @@ interface AntigravityLiveSummary {
 interface AntigravityLiveCollectionHelpers {
   appDataDir?: string;
   limit?: number;
+  sessionRefs?: readonly string[];
   discoverLiveEndpoint?: (appDataDir: string) => Promise<AntigravityLiveEndpoint | undefined>;
   listConversationPbIds?: (conversationDir: string) => Promise<string[]>;
   callLanguageServer?: (
@@ -89,7 +90,12 @@ export async function extractAntigravityLiveSeeds(
   }
 
   const limit = typeof helpers.limit === "number" ? Math.max(helpers.limit, 0) : undefined;
-  const cascadeIds = uniqueStrings([...summaries.keys(), ...pbIds]).sort();
+  const requestedCascadeIds = new Set(
+    (helpers.sessionRefs ?? []).map((ref) => ref.replace(/^sess:antigravity:/u, "")),
+  );
+  const cascadeIds = uniqueStrings([...summaries.keys(), ...pbIds])
+    .filter((cascadeId) => requestedCascadeIds.size === 0 || requestedCascadeIds.has(cascadeId))
+    .sort();
   const selectedCascadeIds = typeof limit === "number" ? cascadeIds.slice(0, limit) : cascadeIds;
   if (selectedCascadeIds.length === 0) {
     return undefined;
@@ -746,5 +752,4 @@ function uniqueStrings(values: string[]): string[] {
   }
   return unique;
 }
-
 

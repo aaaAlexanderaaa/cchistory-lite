@@ -7,10 +7,14 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+import { normalizeLocalPathIdentity } from "@cchistory/domain";
 import type {
+  LossAuditRecord,
   ProjectIdentity,
   SessionProjection,
+  SessionRelatedWorkProjection,
   SourceStatus,
+  TurnContextProjection,
   UsageStatsDimension,
   UserTurnProjection,
 } from "@cchistory/domain";
@@ -19,6 +23,7 @@ import {
   scanLiteHistory,
   type LiteSourceRoot,
   type LiveHistorySnapshot,
+  type ScanLiteHistoryOptions,
 } from "@cchistory/live-runtime";
 
 const VERSION = "0.3.0";
@@ -34,8 +39,9 @@ const VALUE_FLAGS = new Set([
   "by",
   "format",
   "out",
+  "dir",
 ]);
-const BOOLEAN_FLAGS = new Set(["safe", "json", "help", "version"]);
+const BOOLEAN_FLAGS = new Set(["safe", "json", "help", "version", "all"]);
 const FORBIDDEN_COMMANDS = new Set([
   "sync",
   "import",
@@ -47,7 +53,7 @@ const FORBIDDEN_COMMANDS = new Set([
   "migration",
   "agent",
 ]);
-const KNOWN_COMMANDS = new Set(["sources", "ls", "tree", "search", "show", "stats", "export", "tui"]);
+const KNOWN_COMMANDS = new Set(["sources", "ls", "latest", "tree", "search", "show", "stats", "export", "tui"]);
 
 export interface LiteCliIo {
   cwd: string;
@@ -57,6 +63,9 @@ export interface LiteCliIo {
   stderr: (value: string) => void;
   isTTY: boolean;
   spawnTui?: (args: string[]) => Promise<number>;
+  scan?: (options: ScanLiteHistoryOptions) => Promise<LiveHistorySnapshot>;
+  now?: () => number;
+  columns?: number;
 }
 
 interface ParsedArgs {
@@ -95,29 +104,12 @@ export async function runLiteCli(argv: string[], io: LiteCliIo = defaultIo()): P
     }
 
     validateCommandShape(parsed);
-    const sourceRoots = values(parsed, "source-root").map((value) => parseSourceRoot(value, io.cwd));
-    const sourceRefs = values(parsed, "source");
     const json = parsed.booleans.has("json");
-    const snapshot = await scanLiteHistory({
-      homeDir: io.homeDir,
-      hostname: io.hostname,
-      sourceRoots,
-      sourceRefs,
-      safeMode: parsed.booleans.has("safe"),
-      limitFiles: optionalInteger(parsed, "limit-files", 1),
-      contextMode: requiresFullContextSnapshot(parsed) ? "full" : "none",
-      onProgress: io.isTTY && !json
-        ? (event) => {
-            if (event.stage === "source_start") {
-              io.stderr(`Scanning ${event.display_name} (${event.slot_id})…\n`);
-            } else if (event.stage === "source_missing") {
-              io.stderr(`Source missing: ${event.display_name} (${event.slot_id})\n`);
-            } else if (event.stage === "file_error") {
-              io.stderr(`Read error in ${event.display_name}: ${event.message ?? event.file_path ?? "unknown file"}\n`);
-            }
-          }
-        : undefined,
-    });
+    if (parsed.command === "show" && (parsed.positionals[0] === "session" || parsed.positionals[0] === "turn")) {
+      await runShowWithContext(parsed, io, json);
+      return 0;
+    }
+    const snapshot = await scan(parsed, io, requiresFullContextSnapshot(parsed) ? "full" : "none", json);
 
     switch (parsed.command) {
       case "sources":
@@ -125,6 +117,9 @@ export async function runLiteCli(argv: string[], io: LiteCliIo = defaultIo()): P
         return 0;
       case "ls":
         runList(parsed, snapshot, io, json);
+        return 0;
+      case "latest":
+        runLatest(parsed, snapshot, io, json);
         return 0;
       case "tree":
         runTree(parsed, snapshot, io, json);
@@ -150,33 +145,132 @@ export async function runLiteCli(argv: string[], io: LiteCliIo = defaultIo()): P
   }
 }
 
+async function scan(
+  parsed: ParsedArgs,
+  io: LiteCliIo,
+  contextMode: ScanLiteHistoryOptions["contextMode"],
+  json: boolean,
+  overrides: Partial<ScanLiteHistoryOptions> = {},
+): Promise<LiveHistorySnapshot> {
+  const scanHistory = io.scan ?? scanLiteHistory;
+  return scanHistory({
+    homeDir: io.homeDir,
+    hostname: io.hostname,
+    sourceRoots: values(parsed, "source-root").map((entry) => parseSourceRoot(entry, io.cwd)),
+    sourceRefs: values(parsed, "source"),
+    safeMode: parsed.booleans.has("safe"),
+    limitFiles: optionalInteger(parsed, "limit-files", 1),
+    contextMode,
+    directoryScope: resolveDirectoryScope(parsed, io),
+    onProgress: io.isTTY && !json ? (event) => {
+      if (event.stage === "source_start") {
+        io.stderr(`Scanning ${event.display_name} (${event.slot_id})…\n`);
+      } else if (event.stage === "source_missing") {
+        io.stderr(`Source missing: ${event.display_name} (${event.slot_id})\n`);
+      } else if (event.stage === "file_error") {
+        io.stderr(`Read error in ${event.display_name}: ${event.message ?? event.file_path ?? "unknown file"}\n`);
+      }
+    } : undefined,
+    ...overrides,
+  });
+}
+
+async function runShowWithContext(parsed: ParsedArgs, io: LiteCliIo, json: boolean): Promise<void> {
+  const [kind, ref] = parsed.positionals as ["session" | "turn", string];
+  let snapshot: LiveHistorySnapshot;
+  if (kind === "session" && /^sess:[^:]+:.+$/u.test(ref)) {
+    const resolution = await scan(parsed, io, "none", json);
+    const session = requireSession(resolution, ref);
+    const source = requireSource(resolution, session.source_id);
+    snapshot = await scan(parsed, io, "full", json, {
+      sourceRefs: [source.id],
+      sessionRefs: [session.id],
+      limitFiles: undefined,
+    });
+  } else {
+    snapshot = await scan(parsed, io, "matching", json, { contextTarget: { kind, ref } });
+  }
+  runShow(parsed, snapshot, io, json);
+}
+
 function runList(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliIo, json: boolean): void {
   const target = parsed.positionals[0] ?? "projects";
+  const directoryScope = resolveDirectoryScope(parsed, io);
+  if (parsed.booleans.has("all") && value(parsed, "limit") !== undefined) {
+    throw new UsageError("--all and --limit cannot be used together.");
+  }
+  const limit = parsed.booleans.has("all") ? Infinity : optionalInteger(parsed, "limit", 1) ?? 20;
   if (target === "projects") {
-    const projects = snapshot.listProjects();
-    output(io, json, { schema: JSON_SCHEMA, kind: "projects", total: projects.length, projects }, renderProjects(projects));
+    const allProjects = snapshot.listProjects({ directoryScope });
+    const projects = allProjects.slice(0, limit);
+    output(
+      io,
+      json,
+      { schema: JSON_SCHEMA, kind: "projects", total: allProjects.length, shown: projects.length, projects },
+      renderProjects(projects, collectionRenderOptions(io, "Projects", allProjects.length, "use --limit <n> or --all")),
+    );
     return;
   }
   if (target === "sessions") {
-    const sessions = snapshot.listResolvedSessions();
-    output(io, json, { schema: JSON_SCHEMA, kind: "sessions", total: sessions.length, sessions }, renderSessions(sessions));
+    const allSessions = snapshot.listResolvedSessions({ directoryScope });
+    const sessions = allSessions.slice(0, limit);
+    output(
+      io,
+      json,
+      { schema: JSON_SCHEMA, kind: "sessions", total: allSessions.length, shown: sessions.length, sessions },
+      renderSessions(snapshot, sessions, collectionRenderOptions(io, "Sessions", allSessions.length, "use --limit <n> or --all")),
+    );
     return;
   }
   if (target === "sources") {
-    output(io, json, buildSourcesPayload(snapshot), renderSources(snapshot.listSources()));
+    if (directoryScope) throw new UsageError("--dir is not valid for ls sources.");
+    const allSources = snapshot.listSources();
+    const sources = allSources.slice(0, limit);
+    output(
+      io,
+      json,
+      { schema: JSON_SCHEMA, kind: "sources", total: allSources.length, shown: sources.length, sources },
+      renderSources(sources, collectionRenderOptions(io, "Sources", allSources.length, "use --limit <n> or --all")),
+    );
     return;
   }
   throw new UsageError(`ls target must be projects, sessions, or sources; received ${JSON.stringify(target)}.`);
 }
 
+function runLatest(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliIo, json: boolean): void {
+  const { kind, limit } = parseLatestPositionals(parsed.positionals);
+  const directoryScope = resolveDirectoryScope(parsed, io);
+  if (kind === "sessions") {
+    const allSessions = snapshot.listResolvedSessions({ directoryScope });
+    const sessions = allSessions.slice(0, limit);
+    output(
+      io,
+      json,
+      { schema: JSON_SCHEMA, kind: "sessions", total: allSessions.length, shown: sessions.length, sessions },
+      renderSessions(snapshot, sessions, collectionRenderOptions(io, "Latest sessions", allSessions.length, "request a larger N")),
+    );
+    return;
+  }
+  const allTurns = snapshot.listResolvedTurns({ directoryScope });
+  const turns = allTurns.slice(0, limit);
+  output(
+    io,
+    json,
+    { schema: JSON_SCHEMA, kind: "turns", total: allTurns.length, shown: turns.length, turns },
+    renderTurns(snapshot, turns, collectionRenderOptions(io, "Latest turns", allTurns.length, "request a larger N")),
+  );
+}
+
 function runTree(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliIo, json: boolean): void {
   const target = parsed.positionals[0] ?? "projects";
+  const directoryScope = resolveDirectoryScope(parsed, io);
   if (target === "projects") {
-    const tree = buildProjectsTree(snapshot);
+    const tree = buildProjectsTree(snapshot, directoryScope);
     output(io, json, { schema: JSON_SCHEMA, kind: "project_tree", ...tree }, renderProjectTree(tree));
     return;
   }
   const ref = parsed.positionals[1];
+  if (directoryScope) throw new UsageError(`--dir is only valid for tree projects, not tree ${target}.`);
   if (!ref) {
     throw new UsageError(`tree ${target} requires a reference.`);
   }
@@ -209,6 +303,7 @@ function runSearch(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCl
     sourceIds,
     limit: optionalInteger(parsed, "limit", 1) ?? 50,
     offset: optionalInteger(parsed, "offset", 0) ?? 0,
+    directoryScope: resolveDirectoryScope(parsed, io),
   });
   output(
     io,
@@ -223,37 +318,45 @@ function runShow(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
   if (!kind || !ref) {
     throw new UsageError("show requires project|session|turn|source and a reference.");
   }
-  let detail: Record<string, unknown>;
   if (kind === "project") {
     const project = requireProject(snapshot, ref);
-    detail = buildProjectNode(snapshot, project);
-  } else if (kind === "session") {
+    const detail = buildProjectNode(snapshot, project);
+    output(io, json, { schema: JSON_SCHEMA, kind: "project_detail", ...detail }, renderProjectDetail(snapshot, detail, io));
+    return;
+  }
+  if (kind === "session") {
     const session = requireSession(snapshot, ref);
     const turns = snapshot.listSessionTurns(session.id);
-    detail = {
+    const detail = {
       session,
       related_work: snapshot.listSessionRelatedWork(session.id),
       turns: turns.map((turn) => ({ turn, context: snapshot.getTurnContext(turn.id) })),
     };
-  } else if (kind === "turn") {
+    output(io, json, { schema: JSON_SCHEMA, kind: "session_detail", ...detail }, renderSessionDetail(snapshot, detail, io));
+    return;
+  }
+  if (kind === "turn") {
     const turn = requireTurn(snapshot, ref);
-    detail = {
+    const detail = {
       turn,
       session: snapshot.getSession(turn.session_id),
       project: turn.project_id ? snapshot.getProject(turn.project_id) : undefined,
       context: snapshot.getTurnContext(turn.id),
     };
-  } else if (kind === "source") {
+    output(io, json, { schema: JSON_SCHEMA, kind: "turn_detail", ...detail }, renderTurnDetail(snapshot, detail, io));
+    return;
+  }
+  if (kind === "source") {
     const source = requireSource(snapshot, ref);
-    detail = {
+    const detail = {
       source,
       sessions: snapshot.listResolvedSessions().filter((session) => session.source_id === source.id),
       loss_audits: snapshot.listLossAudits().filter((audit) => audit.source_id === source.id),
     };
-  } else {
-    throw new UsageError(`show target must be project, session, turn, or source; received ${JSON.stringify(kind)}.`);
+    output(io, json, { schema: JSON_SCHEMA, kind: "source_detail", ...detail }, renderSourceDetail(snapshot, detail, io));
+    return;
   }
-  output(io, json, { schema: JSON_SCHEMA, kind: `${kind}_detail`, ...detail }, `${titleCase(kind)} detail\n${JSON.stringify(detail, null, 2)}\n`);
+  throw new UsageError(`show target must be project, session, turn, or source; received ${JSON.stringify(kind)}.`);
 }
 
 function runStats(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliIo, json: boolean): void {
@@ -262,6 +365,7 @@ function runStats(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCli
   const filters = {
     project_id: projectRef ? requireProject(snapshot, projectRef).project_id : undefined,
     source_ids: sourceIds.length > 0 ? sourceIds : undefined,
+    directory_scope: resolveDirectoryScope(parsed, io),
   };
   const overview = snapshot.getUsageOverview(filters);
   const by = value(parsed, "by");
@@ -276,9 +380,6 @@ function runStats(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCli
 }
 
 function requiresFullContextSnapshot(parsed: ParsedArgs): boolean {
-  if (parsed.command === "show") {
-    return parsed.positionals[0] === "session" || parsed.positionals[0] === "turn";
-  }
   if (parsed.command === "export") {
     return (value(parsed, "format") ?? "jsonl") !== "markdown";
   }
@@ -321,26 +422,28 @@ function buildSourcesPayload(snapshot: LiveHistorySnapshot): Record<string, unkn
   return { schema: JSON_SCHEMA, kind: "sources", total: sources.length, sources };
 }
 
-function buildProjectsTree(snapshot: LiveHistorySnapshot): {
+function buildProjectsTree(snapshot: LiveHistorySnapshot, directoryScope?: string): {
   projects: ReturnType<typeof buildProjectNode>[];
   unlinked: ReturnType<typeof buildSessionNode>[];
 } {
-  const projects = snapshot.listProjects().map((project) => buildProjectNode(snapshot, project));
-  const linkedSessionIds = new Set(projects.flatMap((project) => project.sessions.map((session) => session.session.id)));
-  const unlinked = snapshot.listResolvedSessions()
-    .filter((session) => !linkedSessionIds.has(session.id))
-    .map((session) => buildSessionNode(snapshot, session));
+  const projection = snapshot.getProjectsTreeProjection({ directoryScope });
+  const projects = projection.projects.map(({ project, sessions, turns }) => ({
+    project,
+    sessions: sessions.map((session) => buildSessionNode(snapshot, session, project.project_id)),
+    turns,
+  }));
+  const unlinked = projection.unlinkedSessions.map((session) => buildSessionNode(snapshot, session));
   return { projects, unlinked };
 }
 
-function buildProjectNode(snapshot: LiveHistorySnapshot, project: ProjectIdentity): {
+function buildProjectNode(snapshot: LiveHistorySnapshot, project: ProjectIdentity, directoryScope?: string): {
   project: ProjectIdentity;
   sessions: ReturnType<typeof buildSessionNode>[];
   turns: UserTurnProjection[];
 } {
-  const turns = snapshot.listProjectTurns(project.project_id);
+  const turns = snapshot.listProjectTurns(project.project_id, { directoryScope });
   const sessionIds = new Set(turns.map((turn) => turn.session_id));
-  const sessions = snapshot.listResolvedSessions()
+  const sessions = snapshot.listResolvedSessions({ directoryScope })
     .filter((session) => sessionIds.has(session.id))
     .map((session) => buildSessionNode(snapshot, session, project.project_id));
   return { project, sessions, turns };
@@ -399,38 +502,408 @@ function* iterateJsonlRows(snapshot: LiveHistorySnapshot): Iterable<unknown> {
   for (const value of data.loss_audits) yield { schema: EXPORT_SCHEMA, kind: "loss_audit", value };
 }
 
-function renderSources(sources: SourceStatus[]): string {
-  const lines = [`Sources (${sources.length})`];
+interface CollectionRenderOptions {
+  heading: string;
+  total: number;
+  now: number;
+  homeDir: string;
+  columns: number;
+  footerHint?: string;
+}
+
+function collectionRenderOptions(
+  io: LiteCliIo,
+  heading: string,
+  total: number,
+  footerHint?: string,
+): CollectionRenderOptions {
+  return {
+    heading,
+    total,
+    now: (io.now ?? Date.now)(),
+    homeDir: io.homeDir ?? os.homedir(),
+    columns: Math.max(40, io.columns ?? 100),
+    footerHint,
+  };
+}
+
+function renderSources(sources: SourceStatus[], options?: CollectionRenderOptions): string {
+  const renderOptions = options ?? {
+    heading: "Sources",
+    total: sources.length,
+    now: Date.now(),
+    homeDir: os.homedir(),
+    columns: 100,
+  };
+  const lines = [renderCollectionHeading(renderOptions, sources.length)];
   for (const source of sources) {
     lines.push(
       `- ${source.display_name} [${source.slot_id}] ${source.sync_status} · ${source.total_sessions} sessions · ${source.total_turns} turns`,
-      `  ${source.base_dir}`,
+      `  ${singleLine(foldHome(source.base_dir, renderOptions.homeDir), Math.max(20, renderOptions.columns - 2))}`,
     );
     if (source.error_message) lines.push(`  error: ${source.error_message}`);
   }
+  appendCollectionFooter(lines, renderOptions, sources.length);
   return `${lines.join("\n")}\n`;
 }
 
-function renderProjects(projects: ProjectIdentity[]): string {
-  const lines = [`Projects (${projects.length})`];
+function renderProjects(projects: ProjectIdentity[], options: CollectionRenderOptions): string {
+  const lines = [renderCollectionHeading(options, projects.length, "most active first")];
+  if (options.columns >= 88) {
+    lines.push(formatColumns([
+      ["ACTIVITY", 8],
+      ["LINKAGE", 10],
+      ["SESS", 5],
+      ["TURNS", 5],
+      ["DIRECTORY", 20],
+      ["PROJECT", Infinity],
+    ], options.columns));
+  }
   for (const project of projects) {
+    const directory = foldHome(project.primary_workspace_path ?? project.repo_root ?? "-", options.homeDir);
+    const activity = project.project_last_activity_at ?? project.updated_at;
+    if (options.columns >= 88) {
+      lines.push(formatColumns([
+        [formatRelativeTime(activity, options.now), 8],
+        [project.linkage_state, 10],
+        [`${project.session_count}`, 5],
+        [`${project.committed_turn_count + project.candidate_turn_count}`, 5],
+        [directory, 20],
+        [project.display_name, Infinity],
+      ], options.columns));
+      continue;
+    }
     lines.push(
       `- ${project.display_name} [${project.linkage_state}] · ${project.committed_turn_count + project.candidate_turn_count} turns · ${project.session_count} sessions`,
-      `  ${project.primary_workspace_path ?? project.repo_root ?? project.project_id}`,
+      `  ${formatRelativeTime(activity, options.now)} · ${singleLine(directory, Math.max(20, options.columns - 2))}`,
     );
+  }
+  appendCollectionFooter(lines, options, projects.length);
+  return `${lines.join("\n")}\n`;
+}
+
+function renderSessions(
+  snapshot: LiveHistorySnapshot,
+  sessions: SessionProjection[],
+  options: CollectionRenderOptions,
+): string {
+  const lines = [renderCollectionHeading(options, sessions.length, "newest first")];
+  if (options.columns >= 88) {
+    lines.push(formatColumns([
+      ["UPDATED", 8],
+      ["SOURCE", 12],
+      ["TURNS", 6],
+      ["SESSION", 12],
+      ["DIRECTORY", 20],
+      ["TITLE", Infinity],
+    ], options.columns));
+  }
+  for (const session of sessions) {
+    const directory = foldHome(session.working_directory ?? "-", options.homeDir);
+    const ref = snapshot.getSessionDisplayRef(session.id) ?? session.id;
+    if (options.columns >= 88) {
+      lines.push(formatColumns([
+        [formatRelativeTime(session.updated_at, options.now), 8],
+        [session.source_platform, 12],
+        [`${session.turn_count}`, 6],
+        [ref, 12],
+        [directory, 20],
+        [session.title ?? "-", Infinity],
+      ], options.columns));
+      continue;
+    }
+    lines.push(
+      `- ${session.title ?? "Untitled session"} · ${session.source_platform} · ${session.turn_count} turns · ${ref}`,
+      `  ${formatRelativeTime(session.updated_at, options.now)} · ${singleLine(directory, Math.max(20, options.columns - 2))}`,
+    );
+  }
+  appendCollectionFooter(lines, options, sessions.length);
+  return `${lines.join("\n")}\n`;
+}
+
+function renderTurns(
+  snapshot: LiveHistorySnapshot,
+  turns: UserTurnProjection[],
+  options: CollectionRenderOptions,
+): string {
+  const lines = [renderCollectionHeading(options, turns.length, "newest first")];
+  if (options.columns >= 88) {
+    lines.push(formatColumns([
+      ["SUBMITTED", 8],
+      ["SOURCE", 12],
+      ["SESSION", 12],
+      ["TURN", 10],
+      ["PROMPT", Infinity],
+    ], options.columns));
+  }
+  for (const turn of turns) {
+    const session = snapshot.getSession(turn.session_id);
+    const sessionRef = session ? snapshot.getSessionDisplayRef(session.id) ?? session.id : turn.session_id;
+    const turnRef = snapshot.getTurnDisplayRef(turn.id) ?? turn.id;
+    if (options.columns >= 88) {
+      lines.push(formatColumns([
+        [formatRelativeTime(turn.submission_started_at, options.now), 8],
+        [session?.source_platform ?? "unknown", 12],
+        [sessionRef, 12],
+        [turnRef, 10],
+        [singleLine(turn.canonical_text, options.columns), Infinity],
+      ], options.columns));
+      continue;
+    }
+    lines.push(
+      `- ${session?.source_platform ?? "unknown"} · ${sessionRef}/${turnRef} · ${formatRelativeTime(turn.submission_started_at, options.now)}`,
+      `  ${singleLine(turn.canonical_text, Math.max(20, options.columns - 2))}`,
+    );
+  }
+  appendCollectionFooter(lines, options, turns.length);
+  return `${lines.join("\n")}\n`;
+}
+
+function renderCollectionHeading(options: CollectionRenderOptions, shown: number, order?: string): string {
+  const count = shown === options.total ? `${options.total}` : `${shown} of ${options.total}`;
+  return `${options.heading} (${count}${order ? `, ${order}` : ""})`;
+}
+
+function appendCollectionFooter(lines: string[], options: CollectionRenderOptions, shown: number): void {
+  const remaining = options.total - shown;
+  if (remaining > 0) lines.push(`… and ${remaining} more${options.footerHint ? ` (${options.footerHint})` : ""}`);
+}
+
+function formatColumns(columns: Array<readonly [string, number]>, maxColumns: number): string {
+  const fixed = columns.filter(([, width]) => Number.isFinite(width));
+  const fixedWidth = fixed.reduce((total, [, width]) => total + width, 0);
+  const separators = Math.max(0, columns.length - 1) * 2;
+  const flexibleWidth = Math.max(8, maxColumns - fixedWidth - separators);
+  return columns.map(([value, width]) => {
+    const actualWidth = Number.isFinite(width) ? width : flexibleWidth;
+    const fitted = singleLine(value, actualWidth);
+    return Number.isFinite(width) ? padToDisplayWidth(fitted, actualWidth) : fitted;
+  }).join("  ").trimEnd();
+}
+
+function formatRelativeTime(value: string, now: number): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value.slice(0, 10);
+  const elapsed = Math.max(0, now - timestamp);
+  if (elapsed < 60_000) return "just now";
+  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m ago`;
+  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h ago`;
+  if (elapsed < 31_536_000_000) return `${Math.floor(elapsed / 86_400_000)}d ago`;
+  return `${Math.floor(elapsed / 31_536_000_000)}y ago`;
+}
+
+function foldHome(value: string, homeDir: string): string {
+  const normalizedValue = normalizeLocalPathIdentity(value);
+  const normalizedHome = normalizeLocalPathIdentity(homeDir);
+  if (!normalizedValue || !normalizedHome) return value;
+  const comparisonValue = process.platform === "darwin" || process.platform === "win32"
+    ? normalizedValue.toLowerCase()
+    : normalizedValue;
+  const comparisonHome = process.platform === "darwin" || process.platform === "win32"
+    ? normalizedHome.toLowerCase()
+    : normalizedHome;
+  if (comparisonValue === comparisonHome) return "~";
+  if (comparisonValue.startsWith(`${comparisonHome}/`)) return `~${normalizedValue.slice(normalizedHome.length)}`;
+  return value;
+}
+
+function renderProjectDetail(
+  snapshot: LiveHistorySnapshot,
+  detail: ReturnType<typeof buildProjectNode>,
+  io: LiteCliIo,
+): string {
+  const { project, sessions, turns } = detail;
+  const now = (io.now ?? Date.now)();
+  const homeDir = io.homeDir ?? os.homedir();
+  const lines = [
+    `Project: ${project.display_name}`,
+    ...renderMeta([
+      ["ID", project.project_id],
+      ["Linkage", `${project.linkage_state} (${Math.round(project.confidence * 100)}%, ${project.link_reason})`],
+      ["Directory", foldHome(project.primary_workspace_path ?? project.repo_root ?? "-", homeDir)],
+      ["Repository", project.repo_remote ?? project.repo_root ?? "-"],
+      ["Platforms", project.source_platforms.join(", ") || "-"],
+      ["Activity", formatDateTime(project.project_last_activity_at ?? project.updated_at, now)],
+      ["Sessions", String(sessions.length)],
+      ["Turns", String(turns.length)],
+    ]),
+  ];
+  if (sessions.length > 0) {
+    lines.push("", `Sessions (${sessions.length})`);
+    for (const node of sessions) {
+      const sessionRef = snapshot.getSessionDisplayRef(node.session.id) ?? node.session.id;
+      lines.push(
+        `- ${formatRelativeTime(node.session.updated_at, now)}  ${sessionRef}  ${node.session.title ?? "Untitled session"} (${node.turns.length} turns)`,
+      );
+    }
+  }
+  const related = sessions.flatMap((node) => node.related_work);
+  appendRelatedWork(lines, related);
+  return `${lines.join("\n")}\n`;
+}
+
+function renderSessionDetail(
+  snapshot: LiveHistorySnapshot,
+  detail: {
+    session: SessionProjection;
+    related_work: SessionRelatedWorkProjection[];
+    turns: Array<{ turn: UserTurnProjection; context: TurnContextProjection | undefined }>;
+  },
+  io: LiteCliIo,
+): string {
+  const { session, turns } = detail;
+  const now = (io.now ?? Date.now)();
+  const source = snapshot.getSource(session.source_id);
+  const project = session.primary_project_id ? snapshot.getProject(session.primary_project_id) : undefined;
+  const sessionRef = snapshot.getSessionDisplayRef(session.id) ?? session.id;
+  const lines = [
+    `Session: ${session.title ?? sessionRef}`,
+    ...renderMeta([
+      ["Reference", sessionRef],
+      ["ID", session.id],
+      ["Source", source ? `${source.display_name} (${source.slot_id})` : session.source_platform],
+      ["Directory", foldHome(session.working_directory ?? "-", io.homeDir ?? os.homedir())],
+      ["Project", project?.display_name ?? session.primary_project_id ?? "-"],
+      ["Created", formatDateTime(session.created_at, now)],
+      ["Updated", formatDateTime(session.updated_at, now)],
+      ["Model", session.model ?? "-"],
+      ["Turns", String(turns.length)],
+    ]),
+  ];
+  if (turns.length > 0) {
+    lines.push("", `Turns (${turns.length}, oldest first)`);
+    for (const { turn, context } of turns) {
+      const turnRef = snapshot.getTurnDisplayRef(turn.id) ?? turn.id;
+      const tokens = formatTokenSummary(turn.context_summary);
+      const contextLabel = context
+        ? `${context.assistant_replies.length} replies, ${context.tool_calls.length} tools`
+        : "context unavailable";
+      lines.push(
+        `- ${turn.submission_started_at}  ${turnRef}  ${tokens}  ${contextLabel}`,
+        `  ${singleLine(turn.canonical_text, Math.max(30, (io.columns ?? 100) - 2))}`,
+      );
+    }
+  }
+  appendRelatedWork(lines, detail.related_work);
+  return `${lines.join("\n")}\n`;
+}
+
+function renderTurnDetail(
+  snapshot: LiveHistorySnapshot,
+  detail: {
+    turn: UserTurnProjection;
+    session: SessionProjection | undefined;
+    project: ProjectIdentity | undefined;
+    context: TurnContextProjection | undefined;
+  },
+  io: LiteCliIo,
+): string {
+  const { turn, session, project, context } = detail;
+  const now = (io.now ?? Date.now)();
+  const source = snapshot.getSource(turn.source_id);
+  const turnRef = snapshot.getTurnDisplayRef(turn.id) ?? turn.id;
+  const sessionRef = session ? snapshot.getSessionDisplayRef(session.id) ?? session.id : turn.session_id;
+  const lines = [
+    `Turn: ${turnRef}`,
+    ...renderMeta([
+      ["ID", turn.id],
+      ["Session", session ? `${session.title ?? "Untitled session"} (${sessionRef})` : sessionRef],
+      ["Project", project?.display_name ?? turn.project_id ?? "-"],
+      ["Source", source ? `${source.display_name} (${source.slot_id})` : turn.source_id],
+      ["Submitted", formatDateTime(turn.submission_started_at, now)],
+      ["Model", turn.context_summary.primary_model ?? session?.model ?? "-"],
+      ["Tokens", formatTokenSummary(turn.context_summary)],
+      ["Context", context ? `${context.assistant_replies.length} replies, ${context.tool_calls.length} tool calls` : "unavailable"],
+    ]),
+    "",
+    "Prompt",
+    indentBlock(turn.canonical_text, "  "),
+  ];
+  if (context?.assistant_replies.length) {
+    lines.push("", `Assistant replies (${context.assistant_replies.length})`);
+    for (const reply of context.assistant_replies) {
+      lines.push(
+        `- ${reply.created_at}  ${reply.model}${reply.stop_reason ? `  ${reply.stop_reason}` : ""}`,
+        `  ${singleLine(reply.content_preview || reply.content, Math.max(30, (io.columns ?? 100) - 2))}`,
+      );
+    }
+  }
+  if (context?.tool_calls.length) {
+    lines.push("", `Tool calls (${context.tool_calls.length})`);
+    for (const tool of context.tool_calls) {
+      lines.push(`- ${tool.tool_name} [${tool.status}]  ${singleLine(tool.input_summary, Math.max(24, (io.columns ?? 100) - 20))}`);
+    }
   }
   return `${lines.join("\n")}\n`;
 }
 
-function renderSessions(sessions: SessionProjection[]): string {
-  const lines = [`Sessions (${sessions.length})`];
-  for (const session of sessions) {
-    lines.push(
-      `- ${session.title ?? session.source_session_id ?? session.id} · ${session.source_platform} · ${session.turn_count} turns · ${session.updated_at}`,
-      `  ${session.working_directory ?? session.id}`,
-    );
+function renderSourceDetail(
+  snapshot: LiveHistorySnapshot,
+  detail: { source: SourceStatus; sessions: SessionProjection[]; loss_audits: LossAuditRecord[] },
+  io: LiteCliIo,
+): string {
+  const { source, sessions, loss_audits: audits } = detail;
+  const now = (io.now ?? Date.now)();
+  const lines = [
+    `Source: ${source.display_name}`,
+    ...renderMeta([
+      ["ID", source.id],
+      ["Slot", source.slot_id],
+      ["Platform", source.platform],
+      ["Root", foldHome(source.base_dir, io.homeDir ?? os.homedir())],
+      ["Status", source.error_message ? `${source.sync_status}: ${source.error_message}` : source.sync_status],
+      ["Last scan", source.last_sync ? formatDateTime(source.last_sync, now) : "-"],
+      ["Sessions", String(source.total_sessions)],
+      ["Turns", String(source.total_turns)],
+      ["Loss audits", String(audits.length)],
+    ]),
+  ];
+  if (sessions.length > 0) {
+    lines.push("", `Sessions (${sessions.length}, newest first)`);
+    for (const session of sessions) {
+      const ref = snapshot.getSessionDisplayRef(session.id) ?? session.id;
+      lines.push(`- ${formatRelativeTime(session.updated_at, now)}  ${ref}  ${session.title ?? "Untitled session"} (${session.turn_count} turns)`);
+    }
+  }
+  if (audits.length > 0) {
+    lines.push("", `Loss audits (${audits.length})`);
+    for (const audit of audits) {
+      lines.push(`- ${audit.severity}  ${audit.diagnostic_code}  ${singleLine(audit.detail, Math.max(30, (io.columns ?? 100) - 8))}`);
+    }
   }
   return `${lines.join("\n")}\n`;
+}
+
+function renderMeta(entries: ReadonlyArray<readonly [string, string]>): string[] {
+  const width = entries.reduce((maximum, [label]) => Math.max(maximum, label.length), 0);
+  return entries.map(([label, value]) => `${label.padEnd(width)}  ${value}`);
+}
+
+function formatDateTime(value: string, now: number): string {
+  return `${value} (${formatRelativeTime(value, now)})`;
+}
+
+function formatTokenSummary(summary: UserTurnProjection["context_summary"]): string {
+  const usage = summary.token_usage;
+  const total = usage?.total_tokens ?? summary.total_tokens;
+  if (total === undefined) return summary.zero_token_reason ? `0 (${summary.zero_token_reason.replace(/_/gu, " ")})` : "unknown";
+  const parts = [`${formatNumber(total)} total`];
+  if (usage?.input_tokens !== undefined) parts.push(`${formatNumber(usage.input_tokens)} in`);
+  if (usage?.cached_input_tokens !== undefined) parts.push(`${formatNumber(usage.cached_input_tokens)} cached`);
+  if (usage?.output_tokens !== undefined) parts.push(`${formatNumber(usage.output_tokens)} out`);
+  return parts.join(", ");
+}
+
+function indentBlock(value: string, prefix: string): string {
+  return value.split(/\r?\n/u).map((line) => `${prefix}${line}`).join("\n");
+}
+
+function appendRelatedWork(lines: string[], relatedWork: readonly SessionRelatedWorkProjection[]): void {
+  if (relatedWork.length === 0) return;
+  lines.push("", `Related work (${relatedWork.length})`);
+  for (const related of relatedWork) {
+    lines.push(`- ${formatRelatedWorkLabel(related)}  ${related.direction ?? "unknown"}${related.status ? `  ${related.status}` : ""}`);
+  }
 }
 
 function renderSearch(query: string, total: number, results: ReturnType<LiveHistorySnapshot["search"]>["results"]): string {
@@ -594,6 +1067,10 @@ function validateCommandShape(parsed: ParsedArgs): void {
     case "ls":
       if (parsed.positionals.length > 1) throw new UsageError("ls accepts at most one target.");
       break;
+    case "latest":
+      if (parsed.positionals.length > 2) throw new UsageError("latest accepts at most a kind and count.");
+      parseLatestPositionals(parsed.positionals);
+      break;
     case "tree": {
       const target = parsed.positionals[0] ?? "projects";
       const expected = target === "projects" ? 1 : 2;
@@ -616,10 +1093,16 @@ function validateCommandShape(parsed: ParsedArgs): void {
 
 function validateCommandOptions(parsed: ParsedArgs): void {
   const allowedValues = new Set(["source-root", "source", "limit-files"]);
-  if (parsed.command === "search") {
-    for (const name of ["limit", "offset", "project"]) allowedValues.add(name);
+  if (parsed.command === "ls") {
+    for (const name of ["limit", "dir"]) allowedValues.add(name);
+  } else if (parsed.command === "latest") {
+    allowedValues.add("dir");
+  } else if (parsed.command === "tree") {
+    allowedValues.add("dir");
+  } else if (parsed.command === "search") {
+    for (const name of ["limit", "offset", "project", "dir"]) allowedValues.add(name);
   } else if (parsed.command === "stats") {
-    for (const name of ["project", "by"]) allowedValues.add(name);
+    for (const name of ["project", "by", "dir"]) allowedValues.add(name);
   } else if (parsed.command === "export") {
     for (const name of ["format", "out"]) allowedValues.add(name);
   }
@@ -627,6 +1110,18 @@ function validateCommandOptions(parsed: ParsedArgs): void {
     if (!allowedValues.has(name)) {
       throw new UsageError(`--${name} is not valid for ${parsed.command}.`);
     }
+  }
+  if (parsed.booleans.has("all") && parsed.command !== "ls") {
+    throw new UsageError(`--all is not valid for ${parsed.command}.`);
+  }
+  if (parsed.booleans.has("all") && parsed.values.has("limit")) {
+    throw new UsageError("--all and --limit cannot be used together.");
+  }
+  if (parsed.values.has("dir") && parsed.command === "ls" && (parsed.positionals[0] ?? "projects") === "sources") {
+    throw new UsageError("--dir is not valid for ls sources.");
+  }
+  if (parsed.values.has("dir") && parsed.command === "tree" && (parsed.positionals[0] ?? "projects") !== "projects") {
+    throw new UsageError("--dir is only valid for tree projects.");
   }
 }
 
@@ -665,6 +1160,35 @@ function optionalInteger(parsed: ParsedArgs, name: string, minimum: number): num
     throw new UsageError(`--${name} must be an integer >= ${minimum}.`);
   }
   return parsedValue;
+}
+
+function parseLatestPositionals(positionals: readonly string[]): { kind: "sessions" | "turns"; limit: number } {
+  const first = positionals[0];
+  const second = positionals[1];
+  let kind: "sessions" | "turns" = "sessions";
+  let rawLimit: string | undefined;
+  if (first && /^\d+$/u.test(first)) {
+    if (second) throw new UsageError("latest <N> does not accept a second positional argument.");
+    rawLimit = first;
+  } else if (first) {
+    if (first === "session" || first === "sessions") kind = "sessions";
+    else if (first === "turn" || first === "turns") kind = "turns";
+    else throw new UsageError(`latest kind must be sessions or turns; received ${JSON.stringify(first)}.`);
+    rawLimit = second;
+  }
+  const limit = rawLimit === undefined ? 20 : Number(rawLimit);
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new UsageError("latest count must be an integer >= 1.");
+  return { kind, limit };
+}
+
+function resolveDirectoryScope(parsed: ParsedArgs, io: LiteCliIo): string | undefined {
+  const raw = value(parsed, "dir");
+  if (!raw) return undefined;
+  const homeDir = io.homeDir ?? os.homedir();
+  let expanded = raw;
+  if (raw === "~") expanded = homeDir;
+  else if (raw.startsWith("~/") || raw.startsWith("~\\")) expanded = path.join(homeDir, raw.slice(2));
+  return path.resolve(io.cwd, expanded);
 }
 
 function parseStatsDimension(value: string): UsageStatsDimension {
@@ -708,13 +1232,24 @@ Lite never reads or creates a CC History Full store.
 
 Usage:
   cchistory-lite sources [options]
-  cchistory-lite ls [projects|sessions|sources] [options]
-  cchistory-lite tree [projects|project <ref>|session <ref>] [options]
-  cchistory-lite search <query> [--project <ref>] [--limit <n>] [options]
+  cchistory-lite ls [projects|sessions|sources] [--limit <n>|--all] [--dir <path>] [options]
+  cchistory-lite latest [sessions|turns] [N] [--dir <path>] [options]
+  cchistory-lite tree [projects|project <ref>|session <ref>] [--dir <path>] [options]
+  cchistory-lite search <query> [--project <ref>] [--dir <path>] [--limit <n>] [options]
   cchistory-lite show project|session|turn|source <ref> [options]
-  cchistory-lite stats [--by source|project|model|day] [options]
+  cchistory-lite stats [--by source|project|model|day] [--dir <path>] [options]
   cchistory-lite export --format jsonl|json|markdown [--out <file>|-] [options]
   cchistory-lite tui [options]
+
+Browsing options:
+  --dir <path>                       Keep history under this working directory
+  --limit <n>                        Show at most n rows (ls defaults to 20)
+  --all                              Show every ls row; cannot be combined with --limit
+
+latest defaults to the 20 newest sessions. Use latest 50 or latest turns 50 to choose a count.
+Directory paths are resolved from the current directory and support ~. Sessions without a
+working directory are excluded when --dir is present. --dir applies only to collection views,
+search, stats, and tree projects.
 
 Source options:
   --source-root <slot-or-id>=<path>  Override one registered adapter root; repeatable
@@ -734,19 +1269,56 @@ There is no sync, import, backup, restore, merge, GC, migration, --store, or --d
 function defaultIo(): LiteCliIo {
   return {
     cwd: process.cwd(),
+    homeDir: os.homedir(),
     stdout: (value) => process.stdout.write(value),
     stderr: (value) => process.stderr.write(value),
     isTTY: Boolean(process.stdout.isTTY),
+    now: Date.now,
+    columns: process.stdout.columns ?? 100,
   };
 }
 
 function singleLine(value: string, maxLength: number): string {
   const normalized = value.replace(/\s+/gu, " ").trim();
-  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
+  if (displayWidth(normalized) <= maxLength) return normalized;
+  if (maxLength <= 1) return "…";
+  let width = 0;
+  let result = "";
+  for (const character of normalized) {
+    const characterWidth = isWide(character.codePointAt(0) ?? 0) ? 2 : 1;
+    if (width + characterWidth + 1 > maxLength) break;
+    result += character;
+    width += characterWidth;
+  }
+  return `${result}…`;
 }
 
-function titleCase(value: string): string {
-  return value.slice(0, 1).toUpperCase() + value.slice(1);
+function padToDisplayWidth(value: string, targetWidth: number): string {
+  return value + " ".repeat(Math.max(0, targetWidth - displayWidth(value)));
+}
+
+function displayWidth(value: string): number {
+  let width = 0;
+  for (const character of value) {
+    width += isWide(character.codePointAt(0) ?? 0) ? 2 : 1;
+  }
+  return width;
+}
+
+function isWide(code: number): boolean {
+  return (
+    (code >= 0x1100 && code <= 0x115f) ||
+    (code >= 0x2e80 && code <= 0x303e) ||
+    (code >= 0x3040 && code <= 0x33bf) ||
+    (code >= 0x3400 && code <= 0x4dbf) ||
+    (code >= 0x4e00 && code <= 0xa4cf) ||
+    (code >= 0xac00 && code <= 0xd7af) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe30 && code <= 0xfe6f) ||
+    (code >= 0xff01 && code <= 0xff60) ||
+    (code >= 0xffe0 && code <= 0xffe6) ||
+    (code >= 0x20000 && code <= 0x2fa1f)
+  );
 }
 
 function formatNumber(value: number): string {

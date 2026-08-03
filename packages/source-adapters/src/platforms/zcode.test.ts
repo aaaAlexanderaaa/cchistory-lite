@@ -58,6 +58,25 @@ test("[zcode] reads ~/.zcode CLI SQLite messages, parts, tools, and token usage"
     assert.ok(relation);
     assert.equal(relation.payload.parent_uuid, "sess_zcode_main");
     assert.equal(relation.payload.agent_id, "reviewer");
+
+    const [targeted] = (
+      await runSourceProbe(
+        { source_ids: [zcodeSource.id], target_session_refs: ["sess_zcode_main"] },
+        [zcodeSource],
+      )
+    ).sources;
+    assert.ok(targeted);
+    assert.deepEqual(targeted.sessions.map((session) => session.source_session_id), ["sess_zcode_main"]);
+    assert.equal(targeted.turns.length, 1);
+    assert.equal(targeted.turns[0]?.canonical_text, mainTurn.canonical_text);
+    assert.equal(targeted.contexts[0]?.assistant_replies[0]?.content, mainContext.assistant_replies[0]?.content);
+    const targetedRelation = targeted.fragments.find(
+      (fragment) =>
+        fragment.fragment_kind === "session_relation" &&
+        fragment.session_ref === "sess:zcode:sess_zcode_main",
+    );
+    assert.ok(targetedRelation);
+    assert.equal(targetedRelation.payload.child_session_id, "sess:zcode:sess_zcode_child");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -161,6 +161,23 @@ test("[kimi] main wire sessions produce user turns while history and subagent wi
     assert.ok(blobPaths.has(path.join(kimiRoot, "session_index.jsonl")));
     assert.ok(blobPaths.has(path.join(kimiRoot, "workspaces.json")));
     assert.ok(blobPaths.has(path.join(historyDir, "fixture.jsonl")));
+
+    const [targeted] = (
+      await runSourceProbe(
+        { source_ids: [source.id], target_session_refs: [sessionId] },
+        [source],
+      )
+    ).sources;
+    assert.ok(targeted);
+    assert.deepEqual(targeted.sessions.map((session) => session.source_session_id), [sessionId]);
+    assert.deepEqual(targeted.turns.map((turn) => turn.id), payload.turns.map((turn) => turn.id));
+    await assert.rejects(
+      runSourceProbe(
+        { source_ids: [source.id], target_session_refs: ["session_missing"] },
+        [source],
+      ),
+      /requested session/,
+    );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -16,7 +16,7 @@ export function parseFactoryRecord(
   const fragments: SourceFragment[] = [];
   const lossAudits: LossAuditRecord[] = [];
   const recordType = helpers.asString(parsed.type) ?? "unknown";
-  const timeKey = helpers.coerceIso(parsed.timestamp) ?? helpers.nowIso();
+  const timeKey = helpers.coerceIso(parsed.timestamp) ?? record.observed_at;
 
   if (record.record_path_or_offset === "settings") {
     if (helpers.asString(parsed.model)) {

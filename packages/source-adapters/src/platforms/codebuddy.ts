@@ -21,6 +21,7 @@ export function listCodeBuddyCompanionEvidencePaths(baseDir: string): string[] {
 export const codebuddyAdapter: PlatformAdapter = {
   platform: "codebuddy",
   supportTier: "stable",
+  sessionTargeting: "file",
   getDefaultBaseDirCandidates: (options) => [path.join(options.homeDir ?? "", ".codebuddy")],
   getSourceRoots: (baseDir) => [path.join(baseDir, "projects"), baseDir],
   matchesSourceFile: (filePath) => filePath.endsWith(".jsonl"),

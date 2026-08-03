@@ -149,17 +149,26 @@ test("runSourceProbe handles LobeChat export with multiple conversations in a si
       "utf8",
     );
 
+    const source = createSourceDefinition("src-lobechat-multi", "lobechat", lobechatDir, "conversational_export");
     const [payload] = (
-      await runSourceProbe(
-        { source_ids: ["src-lobechat-multi"] },
-        [createSourceDefinition("src-lobechat-multi", "lobechat", lobechatDir, "conversational_export")],
-      )
+      await runSourceProbe({ source_ids: [source.id] }, [source])
     ).sources;
 
     assert.ok(payload, "should produce a payload");
     assert.equal(payload.source.sync_status, "healthy");
     assert.ok(payload.sessions.length >= 1, "should produce at least one session from a multi-conversation export");
     assert.ok(payload.turns.length >= 1, "should produce at least one turn from a multi-conversation export");
+
+    const [targeted] = (
+      await runSourceProbe(
+        { source_ids: [source.id], target_session_refs: ["lobechat-conv-b"] },
+        [source],
+      )
+    ).sources;
+    assert.ok(targeted);
+    assert.deepEqual(targeted.sessions.map((session) => session.source_session_id), ["lobechat-conv-b"]);
+    assert.equal(targeted.turns.length, 1);
+    assert.match(targeted.turns[0]?.canonical_text ?? "", /Second conversation question/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

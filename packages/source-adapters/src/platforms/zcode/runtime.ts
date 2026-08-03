@@ -62,12 +62,14 @@ interface ZcodeSessionTaskLinkRow {
   agent_type: unknown;
   model: unknown;
   status: unknown;
+  time_created: unknown;
 }
 
 export function extractZcodeSqliteSeeds(
   platform: SourcePlatform,
   filePath: string,
   helpers: ZcodeRuntimeHelpers,
+  targetSessionRefs: readonly string[] = [],
 ): ExtractedSessionSeed[] | undefined {
   const db = new DatabaseSync(filePath, { readOnly: true });
   try {
@@ -75,27 +77,35 @@ export function extractZcodeSqliteSeeds(
       return undefined;
     }
 
+    const targetIds = targetSessionRefs.map((ref) => ref.replace(/^sess:zcode:/u, ""));
+    const placeholders = targetIds.map(() => "?").join(", ");
     const sessionRows = db.prepare(`
       SELECT id, parent_id, directory, path, title, task_type, time_created, time_updated, time_archived, trace_id
       FROM session
+      ${targetIds.length > 0 ? `WHERE id IN (${placeholders})` : ""}
       ORDER BY time_created, id
-    `).all() as unknown as ZcodeSessionRow[];
+    `).all(...targetIds) as unknown as ZcodeSessionRow[];
     const messageRows = db.prepare(`
       SELECT id, session_id, time_created, time_updated, data
       FROM message
+      ${targetIds.length > 0 ? `WHERE session_id IN (${placeholders})` : ""}
       ORDER BY session_id, time_created, id
-    `).all() as unknown as ZcodeMessageRow[];
+    `).all(...targetIds) as unknown as ZcodeMessageRow[];
     const partRows = db.prepare(`
       SELECT id, message_id, session_id, time_created, time_updated, data
       FROM part
+      ${targetIds.length > 0 ? `WHERE session_id IN (${placeholders})` : ""}
       ORDER BY session_id, time_created, id
-    `).all() as unknown as ZcodePartRow[];
+    `).all(...targetIds) as unknown as ZcodePartRow[];
     const taskLinkRows = tableExists(db, "session_task_link")
       ? db.prepare(`
-          SELECT parent_session_id, child_session_id, role, label, agent_type, model, status
+          SELECT parent_session_id, child_session_id, role, label, agent_type, model, status, time_created
           FROM session_task_link
+          ${targetIds.length > 0
+            ? `WHERE parent_session_id IN (${placeholders}) OR child_session_id IN (${placeholders})`
+            : ""}
           ORDER BY time_created, child_session_id
-        `).all() as unknown as ZcodeSessionTaskLinkRow[]
+        `).all(...targetIds, ...targetIds) as unknown as ZcodeSessionTaskLinkRow[]
       : [];
 
     const partsByMessageId = groupRows(partRows, (row) => helpers.asString(row.message_id));
@@ -105,10 +115,24 @@ export function extractZcodeSqliteSeeds(
         .map((row) => [helpers.asString(row.child_session_id), row] as const)
         .filter((entry): entry is readonly [string, ZcodeSessionTaskLinkRow] => Boolean(entry[0])),
     );
+    const relationsByParentSessionId = groupRows(
+      taskLinkRows,
+      (row) => helpers.asString(row.parent_session_id),
+    );
+    const targetIdSet = new Set(targetIds);
 
     const seeds = sessionRows
       .map((session) =>
-        buildZcodeSessionSeed(platform, session, messagesBySessionId, partsByMessageId, relationByChildSessionId, helpers),
+        buildZcodeSessionSeed(
+          platform,
+          session,
+          messagesBySessionId,
+          partsByMessageId,
+          relationByChildSessionId,
+          relationsByParentSessionId,
+          targetIdSet,
+          helpers,
+        ),
       )
       .filter((seed): seed is ExtractedSessionSeed => seed !== undefined);
     return seeds.length > 0 ? seeds : undefined;
@@ -123,6 +147,8 @@ function buildZcodeSessionSeed(
   messagesBySessionId: Map<string, ZcodeMessageRow[]>,
   partsByMessageId: Map<string, ZcodePartRow[]>,
   relationByChildSessionId: Map<string, ZcodeSessionTaskLinkRow>,
+  relationsByParentSessionId: Map<string, ZcodeSessionTaskLinkRow[]>,
+  targetIds: ReadonlySet<string>,
   helpers: ZcodeRuntimeHelpers,
 ): ExtractedSessionSeed | undefined {
   const sourceSessionId = helpers.asString(session.id);
@@ -164,6 +190,24 @@ function buildZcodeSessionSeed(
       }),
     },
   ];
+
+  if (targetIds.has(sourceSessionId)) {
+    for (const [index, outboundRelation] of (relationsByParentSessionId.get(sourceSessionId) ?? []).entries()) {
+      const childSessionId = helpers.asString(outboundRelation.child_session_id);
+      if (!childSessionId) continue;
+      const observedAt = epochMillisToIso(outboundRelation.time_created, helpers) ?? updatedAt ?? helpers.nowIso();
+      records.push({
+        pointer: `relation:outbound:${childSessionId}:${index}`,
+        observedAt,
+        rawJson: JSON.stringify({
+          parentId: sessionId,
+          childSessionId: `sess:${platform}:${childSessionId}`,
+          isSidechain: true,
+          agentId: helpers.asString(outboundRelation.agent_type) ?? helpers.asString(outboundRelation.role),
+        }),
+      });
+    }
+  }
 
   const messages = messagesBySessionId.get(sourceSessionId) ?? [];
   let latestActivityAt = updatedAt;

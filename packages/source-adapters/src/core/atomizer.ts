@@ -168,7 +168,17 @@ export function hydrateDraftFromAtoms(draft: SessionDraft, atoms: ConversationAt
   const lastAtom = atoms.at(-1);
   draft.created_at = draft.created_at ?? firstAtom?.time_key ?? nowIso();
   draft.updated_at = draft.updated_at ?? lastAtom?.time_key ?? draft.created_at;
-  if (draft.updated_at === draft.created_at && fileModifiedAt && fileModifiedAt > draft.created_at) {
+  const eventTimeMs = Date.parse(draft.updated_at);
+  const fileModifiedTimeMs = fileModifiedAt ? Date.parse(fileModifiedAt) : Number.NaN;
+  if (
+    atoms.length > 0 &&
+    draft.updated_at === draft.created_at &&
+    fileModifiedAt &&
+    fileModifiedAt > draft.created_at &&
+    Number.isFinite(eventTimeMs) &&
+    Number.isFinite(fileModifiedTimeMs) &&
+    fileModifiedTimeMs - eventTimeMs <= 24 * 60 * 60 * 1_000
+  ) {
     draft.updated_at = fileModifiedAt;
   }
   for (const atom of atoms) {

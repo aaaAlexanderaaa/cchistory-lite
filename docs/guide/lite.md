@@ -82,11 +82,12 @@ roots before probing them.
 
 ```text
 sources
-ls [projects|sessions|sources]
-tree [projects|project <ref>|session <ref>]
-search <query> [--project <ref>] [--source <ref>] [--limit <n>]
+ls [projects|sessions|sources] [--limit <n>|--all] [--dir <path>]
+latest [sessions|turns] [N] [--dir <path>]
+tree [projects|project <ref>|session <ref>] [--dir <path>]
+search <query> [--project <ref>] [--source <ref>] [--dir <path>] [--limit <n>]
 show project|session|turn|source <ref>
-stats [--by source|project|model|day]
+stats [--by source|project|model|day] [--dir <path>]
 export --format jsonl|json|markdown [--out <file>|-]
 tui
 ```
@@ -95,13 +96,30 @@ Use `--json` for structured read output. Each one-shot command performs a fresh
 canonical scan; use the TUI when you want to amortize one scan across repeated
 browse, search, detail, source, and stats operations.
 
-For large Codex and Claude archives, ordinary read commands materialize one
+`ls` shows 20 rows by default. Pass `--limit <n>` or `--all`; JSON collection
+payloads include the untruncated `total` and returned `shown` counts. `latest`
+defaults to the 20 newest sessions and takes its count positionally, for example
+`latest 50` or `latest turns 50`.
+
+`--dir` is a canonical history scope, not a source-root override. It expands `~`,
+resolves relative paths from the current directory, and matches lexical path
+segments. Sessions without `working_directory` are excluded. It applies to
+`latest`, `ls projects`, `ls sessions`, `search`, `stats`, and `tree projects`;
+the latter keeps projects as containers but removes non-matching sessions,
+turns, and empty projects. Codex and Claude Code first inspect lightweight
+session metadata and skip full parsing only for resolved non-matching cwd signals;
+uncertain metadata falls back to the full read-only probe. Use `--source-root
+<slot>=<path>` when the native history itself is in a non-default location.
+
+For large archives, ordinary read commands materialize one
 canonical logical session at a time and release full assistant/tool context
-after deriving the turn and session projections. Commands that return complete
-context (`show session`, `show turn`, JSON/JSONL export) retain that context for
-the command lifetime and therefore have a larger memory envelope. The TUI
-startup and refresh snapshots are context-light; `turn <ref>` performs a
-targeted full-context scan for only that logical session.
+after deriving the turn and session projections. `show session` with a complete
+canonical session id performs one direct full-context scan of that session.
+Fuzzy session references and turn references perform one scan that retains full
+context only for resolver candidates, then fail explicitly if the reference is
+missing or ambiguous. JSON/JSONL export retains all context and therefore has a
+larger memory envelope. The TUI startup and refresh snapshots are context-light;
+`turn <ref>` performs a targeted full-context scan for only that logical session.
 
 Lite entrypoints calculate the default Node old-space ceiling as
 `min(host memory / 2, 4096 MiB)`. This replaces the former fixed 1024 MiB cap

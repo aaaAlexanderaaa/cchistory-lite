@@ -9,6 +9,7 @@ const OPENCODE_LEGACY_SESSION_SUFFIX = "/.local/share/opencode/storage/session";
 export const opencodeAdapter: PlatformAdapter = {
   platform: "opencode",
   supportTier: "stable",
+  sessionTargeting: "file",
   getDefaultBaseDirCandidates: (options) => [
     path.join(options.homeDir ?? "", ".local", "share", "opencode", "storage"),
     path.join(options.homeDir ?? "", ".local", "share", "opencode", "project"),
@@ -44,4 +45,3 @@ function deriveOpencodeHomeDir(baseDir: string): string | undefined {
   }
   return undefined;
 }
-

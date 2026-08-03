@@ -900,6 +900,16 @@ test("runSourceProbe derives multiple Antigravity user turns from History snapsh
     assert.equal(payload.turns.length, 2);
     assert.match(payload.turns[0]?.canonical_text ?? "", /Create comprehensive skills for Splunk SPL and Dashboard Studio/);
     assert.match(payload.turns[1]?.canonical_text ?? "", /Address user feedback: expand the validator scope/);
+
+    const [targeted] = (
+      await runSourceProbe(
+        { target_session_refs: [`sess:antigravity:${sessionId}`], safe_mode: true },
+        [createSourceDefinition("src-antigravity-history-snapshots", "antigravity", userDir)],
+      )
+    ).sources;
+    assert.ok(targeted);
+    assert.deepEqual(targeted.sessions.map((session) => session.id), [`sess:antigravity:${sessionId}`]);
+    assert.equal(targeted.turns.length, 2);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -1007,8 +1017,16 @@ test("runSourceProbe derives Antigravity user turns from Conversation_History sn
           atom.payload.text.includes("Conversation History: SOTA Agents Context Engineering Research"),
       ),
     );
+
+    const [targeted] = (
+      await runSourceProbe(
+        { target_session_refs: [`sess:antigravity:${referencedSessionId}`], safe_mode: true },
+        [createSourceDefinition("src-antigravity-conversation-history", "antigravity", userDir)],
+      )
+    ).sources;
+    assert.ok(targeted);
+    assert.deepEqual(targeted.sessions.map((session) => session.id), [`sess:antigravity:${referencedSessionId}`]);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
-

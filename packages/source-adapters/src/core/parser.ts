@@ -172,10 +172,18 @@ export async function extractRecords(
       if (!isObject(message)) {
         continue;
       }
-      const observedAt =
-        epochMillisToIso(asNumber(message.meta?.sentAt)) ??
-        coerceIso(message.timestamp) ??
-        rootObserved;
+      const messageTimes = [
+        epochMillisToIso(asNumber(message.meta?.sentAt)),
+        coerceIso(message.timestamp),
+        ...asArray(message.content).flatMap((item) => {
+          if (!isObject(item)) return [];
+          return [
+            epochMillisToIso(asNumber(item.startTime)),
+            epochMillisToIso(asNumber(item.finalTime)),
+          ];
+        }),
+      ].filter((value): value is string => value !== undefined);
+      const observedAt = messageTimes.sort().at(-1) ?? rootObserved;
       records.push({
         id: baseRecordId(index + 1, `messages[${index}]`),
         source_id: context.source.id,
@@ -191,7 +199,10 @@ export async function extractRecords(
     return records;
   }
 
-  return collectJsonlRecords(
+  const fallbackObservedAt = context.source.platform === "factory_droid"
+    ? await fs.stat(context.filePath).then((stats) => stats.mtime.toISOString()).catch(() => nowIso())
+    : nowIso();
+  const collected = await collectJsonlRecords(
     text,
     {
       sourceId: context.source.id,
@@ -199,7 +210,7 @@ export async function extractRecords(
       sessionId: context.sessionId,
     },
     {
-      observedAt: nowIso(),
+      observedAt: fallbackObservedAt,
       sidecars:
         context.source.platform === "factory_droid"
           ? [
@@ -235,6 +246,31 @@ export async function extractRecords(
       nowIso,
     },
   );
+  return context.source.platform === "factory_droid"
+    ? normalizeFactoryRecordObservedTimes(collected, fallbackObservedAt)
+    : collected;
+}
+
+function normalizeFactoryRecordObservedTimes(records: RawRecord[], fallbackObservedAt: string): RawRecord[] {
+  const explicitTimes = records.map((record) => {
+    try {
+      const parsed = JSON.parse(record.raw_json) as unknown;
+      return isObject(parsed) ? coerceIso(parsed.timestamp) : undefined;
+    } catch {
+      return undefined;
+    }
+  });
+  const firstExplicit = explicitTimes.find((value): value is string => value !== undefined) ?? fallbackObservedAt;
+  let previousExplicit: string | undefined;
+  return records.map((record, index) => {
+    const explicit = explicitTimes[index];
+    if (explicit) previousExplicit = explicit;
+    const nextExplicit = explicitTimes.slice(index + 1).find((value): value is string => value !== undefined);
+    return {
+      ...record,
+      observed_at: explicit ?? previousExplicit ?? nextExplicit ?? firstExplicit,
+    };
+  });
 }
 
 export function parseRecord(
@@ -374,6 +410,7 @@ export async function extractMultiSessionSeeds(
   filePath: string,
   fileBuffer: Buffer,
   blobId: string,
+  targetSessionRefs?: readonly string[],
 ): Promise<ExtractedSessionSeed[] | undefined> {
   if (source.platform === "cursor" && path.basename(filePath) === "state.vscdb") {
     const extractVscodeStateSeeds = await loadExtractVscodeStateSeeds();
@@ -459,7 +496,7 @@ export async function extractMultiSessionSeeds(
       epochMillisToIso,
       nowIso,
       normalizeWorkspacePath,
-    });
+    }, targetSessionRefs);
   }
   if (source.platform === "opencode" || source.platform === "gemini") {
     const exportSeeds = await extractConversationExportSeeds(source, filePath, fileBuffer, blobId);

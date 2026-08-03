@@ -41,8 +41,10 @@ import {
 } from "./utils.js";
 import { getDefaultSources, resolveSourceFormatProfile } from "./discovery.js";
 import { extractAntigravityLiveSeeds } from "../platforms/antigravity/live.js";
+import { isAntigravityBrainSourceFile, isAntigravityHistoryIndexFile } from "../platforms/antigravity.js";
 import { extractCursorChatStoreSeed } from "../platforms/cursor/runtime.js";
 import { getPlatformAdapter } from "../platforms/registry.js";
+import { deriveSourceFileLogicalSessionKey } from "./session-grouping.js";
 import {
   extractRecords,
   extractMultiSessionSeeds,
@@ -178,6 +180,15 @@ export async function runSourceProbe(
       state.filesObserved += 1;
     } else if (event.kind === "source_done") {
       payloads.push(await finalizeSourcePayload(state, host, options));
+    }
+  }
+
+  const targetRefs = options.target_session_refs?.filter((ref) => ref.trim().length > 0) ?? [];
+  for (const targetRef of targetRefs) {
+    if (!payloads.some((payload) =>
+      payload.sessions.some((session) => targetRefMatchesSession(targetRef, session.id, session.source_session_id)),
+    )) {
+      throw new Error(`Source probe did not find requested session ${targetRef}.`);
     }
   }
 
@@ -472,6 +483,7 @@ async function* streamCollectedFileInputs(
     });
     const liveCollection = await extractAntigravityLiveSeeds(source.base_dir, {
       limit: remainingFileLimit,
+      sessionRefs: options.target_session_refs,
     });
     if (liveCollection) {
       for (const [index, seed] of liveCollection.seeds.entries()) {
@@ -511,9 +523,12 @@ async function* streamCollectedFileInputs(
   });
   const listFilesStartedAt = Date.now();
   const selectedFiles = options.source_file_paths?.[source.id] ?? options.source_file_paths?.[source.slot_id];
-  const files = selectedFiles
+  const listedFiles = selectedFiles
     ? [...selectedFiles].slice(0, remainingFileLimit)
     : await listSourceFiles(source.platform, source.base_dir, remainingFileLimit);
+  const files = options.target_session_refs?.length && !selectedFiles
+    ? await selectTargetSourceFiles(source, adapter, listedFiles, options.target_session_refs)
+    : listedFiles;
   emitProbeProgress(options, source, {
     stage: "list_files_done",
     message: `Found ${files.length} source file(s)`,
@@ -771,11 +786,18 @@ async function* streamSingleFileInputs(
     }
     const adapterResults = appendedResults ?? (capturedBlob
       ? ("fileBuffer" in capturedBlob
-        ? await processBlob(source, sourceFormatProfile, filePath, capturedBlob)
+        ? await processBlob(source, sourceFormatProfile, filePath, capturedBlob, options.target_session_refs)
         : await processStreamingJsonlBlob(source, sourceFormatProfile, filePath, capturedBlob))
       : []);
     const sessionsById = new Map<string, SessionBuildInput>();
-    for (const adapterResult of adapterResults) {
+    const targetedResults = options.target_session_refs?.length
+      ? adapterResults.filter((result) =>
+          options.target_session_refs!.some((ref) =>
+            targetRefMatchesSession(ref, result.draft.id, result.draft.source_session_id),
+          ) || resultReferencesTargetSession(source, result, options.target_session_refs!),
+        )
+      : adapterResults;
+    for (const adapterResult of targetedResults) {
       mergeAdapterBlobResult(sessionsById, adapterResult);
     }
     if (capturedBlob && "fileBuffer" in capturedBlob) {
@@ -876,6 +898,84 @@ async function* streamSingleFileInputs(
       errorDetail: fileErrorDetail,
     };
   }
+}
+
+async function selectTargetSourceFiles(
+  source: SourceDefinition,
+  adapter: ReturnType<typeof getPlatformAdapter>,
+  files: readonly string[],
+  sessionRefs: readonly string[],
+): Promise<string[]> {
+  if (adapter?.sessionTargeting === "container") return [...files];
+  const selected: string[] = [];
+  for (const filePath of files) {
+    if (
+      (adapter?.sessionTargeting === "hybrid" || source.platform === "openclaw") &&
+      isMultiSessionContainer(source.platform, filePath)
+    ) {
+      selected.push(filePath);
+      continue;
+    }
+    const normalizedPath = filePath.replace(/\\/gu, "/").toLowerCase();
+    const pathMatch = sessionRefs.some((ref) => {
+      const nativeRef = stripCanonicalSessionPrefix(ref, source.platform).toLowerCase();
+      return nativeRef.length > 0 && normalizedPath.includes(nativeRef);
+    });
+    if (pathMatch) {
+      selected.push(filePath);
+      continue;
+    }
+    const sessionKey = await deriveSourceFileLogicalSessionKey(source.platform, filePath);
+    if (sessionRefs.some((ref) => targetRefMatchesSession(ref, sessionKey))) selected.push(filePath);
+  }
+  return selected;
+}
+
+function isMultiSessionContainer(platform: SourcePlatform, filePath: string): boolean {
+  const basename = path.basename(filePath);
+  if (
+    platform === "antigravity" &&
+    (isAntigravityHistoryIndexFile(filePath) || isAntigravityBrainSourceFile(filePath))
+  ) {
+    return true;
+  }
+  return (
+    (platform === "openclaw" && isOpenClawCronRunFile(filePath)) ||
+    platform === "zcode" ||
+    platform === "lobechat" ||
+    ((platform === "cursor" || platform === "antigravity") &&
+      (basename === "state.vscdb" || basename === "store.db"))
+  );
+}
+
+function isOpenClawCronRunFile(filePath: string): boolean {
+  return filePath.replace(/\\/gu, "/").includes("/cron/runs/");
+}
+
+function resultReferencesTargetSession(
+  source: SourceDefinition,
+  result: AdapterBlobResult,
+  sessionRefs: readonly string[],
+): boolean {
+  if (source.platform !== "openclaw") return false;
+  return result.fragments.some((fragment) => {
+    if (fragment.fragment_kind !== "session_relation") return false;
+    const parentRef = fragment.payload.parent_uuid;
+    if (typeof parentRef !== "string" || parentRef.length === 0) return false;
+    const canonicalParentRef = `sess:${source.platform}:${parentRef}`;
+    return sessionRefs.some((ref) => targetRefMatchesSession(ref, canonicalParentRef, parentRef));
+  });
+}
+
+function stripCanonicalSessionPrefix(ref: string, platform: SourcePlatform): string {
+  const prefix = `sess:${platform}:`;
+  return ref.startsWith(prefix) ? ref.slice(prefix.length) : ref;
+}
+
+function targetRefMatchesSession(ref: string, sessionId: string, sourceSessionId?: string): boolean {
+  if (ref === sessionId || ref === sourceSessionId) return true;
+  const prefixMatch = sessionId.match(/^sess:([^:]+):(.+)$/u);
+  return Boolean(prefixMatch?.[2] && ref === prefixMatch[2]);
 }
 
 function mergeAdapterBlobResult(
@@ -1518,6 +1618,7 @@ async function processBlob(
   sourceFormatProfile: SourceFormatProfile,
   filePath: string,
   capturedBlob: CapturedBlobInput,
+  targetSessionRefs?: readonly string[],
 ): Promise<AdapterBlobResult[]> {
   const { blob, fileBuffer } = capturedBlob;
   const blobId = blob.id;
@@ -1544,7 +1645,9 @@ async function processBlob(
       collectConversationSeedsFromValue,
       firstDefinedNumber,
     });
-    if (chatStoreSeed) {
+    if (chatStoreSeed && (!targetSessionRefs?.length || targetSessionRefs.some((ref) =>
+      targetRefMatchesSession(ref, chatStoreSeed.seed.sessionId),
+    ))) {
       const records = chatStoreSeed.seed.records.map((record, ordinal) => ({
         id: stableId("record", source.id, chatStoreSeed.seed.sessionId, blobId, String(ordinal), record.pointer),
         source_id: source.id,
@@ -1589,10 +1692,12 @@ async function processBlob(
     }
   }
 
-  const multiSessionSeeds = await extractMultiSessionSeeds(source, filePath, fileBuffer, blobId);
+  const multiSessionSeeds = await extractMultiSessionSeeds(source, filePath, fileBuffer, blobId, targetSessionRefs);
   if (multiSessionSeeds) {
     const results: AdapterBlobResult[] = [];
-    for (const seed of multiSessionSeeds) {
+    for (const seed of multiSessionSeeds.filter((entry) =>
+      !targetSessionRefs?.length || targetSessionRefs.some((ref) => targetRefMatchesSession(ref, entry.sessionId)),
+    )) {
       results.push(
         buildAdapterBlobResult(
           source,
@@ -1628,6 +1733,13 @@ async function processBlob(
 
   const profileId = sourceFormatProfile.id;
   const sessionId = deriveSessionId(source.platform, filePath, fileBuffer);
+  if (
+    targetSessionRefs?.length &&
+    !targetSessionRefs.some((ref) => targetRefMatchesSession(ref, sessionId)) &&
+    !(source.platform === "openclaw" && isOpenClawCronRunFile(filePath))
+  ) {
+    return [];
+  }
   const context = {
     source,
     hostId: blob.host_id,

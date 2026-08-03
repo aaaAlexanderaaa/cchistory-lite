@@ -8,6 +8,8 @@ export {
   streamSourceProbe,
   projectFileSessionInputs,
   deriveSourceFileLogicalSessionKey,
+  inspectSourceFileLogicalSessionMetadata,
+  inspectSourceFilesLogicalSessionMetadata,
   getBuiltinMaskTemplates,
   inspectSourceFileInventory,
   listSourceFiles,
@@ -17,5 +19,6 @@ export { selectTailBlob } from "@cchistory/domain";
 export { listPlatformAdapters, listPlatformAdaptersBySupportTier, listStablePlatformAdapters } from "./platforms/registry.js";
 export type { HostDiscoveryCandidate, HostDiscoveryEntry } from "./core/legacy.js";
 export type { SourceFileInventory } from "./core/legacy.js";
+export type { SourceFileLogicalSessionMetadata } from "./core/legacy.js";
 export type { SourceProbeProgressEvent, SourceProbeProgressStage, SourceProbeEvent, SourceProbeFileChunk, SourceProbeFileSkipReason } from "./core/types.js";
 export type { AdapterSupportTier, PlatformAdapter, SupportedSourcePlatform } from "./platforms/types.js";

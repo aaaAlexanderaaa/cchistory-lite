@@ -37,6 +37,7 @@ export function isAntigravityHistoryIndexFile(filePath: string): boolean {
 export const antigravityAdapter: PlatformAdapter = {
   platform: "antigravity",
   supportTier: "stable",
+  sessionTargeting: "hybrid",
   getDefaultBaseDirCandidates: (options) => {
     const homeDir = options.homeDir ?? "";
     const hostPlatform = options.platform ?? process.platform;

@@ -33,6 +33,8 @@ export interface PlatformAdapter {
   getDefaultBaseDirCandidates(options: DefaultSourceResolutionOptions): string[];
   getSourceRoots?(baseDir: string): string[];
   matchesSourceFile(filePath: string): boolean;
+  /** Describes how a targeted probe narrows work before canonical projection. */
+  sessionTargeting: "file" | "container" | "hybrid";
   /**
    * Declares that source files can be grouped by the canonical source-session
    * identity and each group projected independently. Omit when the adapter

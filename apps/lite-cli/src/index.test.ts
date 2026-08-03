@@ -4,11 +4,30 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { formatTuiLaunchError, runLiteCli } from "./index.js";
+import {
+  scanLiteHistory,
+  type LiveHistorySnapshot,
+  type ScanLiteHistoryOptions,
+} from "@cchistory/live-runtime";
+import { formatTuiLaunchError, runLiteCli, type LiteCliIo } from "./index.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const codexRoot = path.join(repoRoot, "mock_data", ".codex", "sessions");
 const openclawRoot = path.join(repoRoot, "mock_data", ".openclaw", "agents");
+const fixedNow = Date.parse("2026-08-03T12:00:00.000Z");
+let codexSnapshotPromise: Promise<LiveHistorySnapshot> | undefined;
+
+function getCodexSnapshot(): Promise<LiveHistorySnapshot> {
+  codexSnapshotPromise ??= scanLiteHistory({
+    homeDir: repoRoot,
+    hostname: "cchistory-lite-cli-command-test-host",
+    sourceRoots: [{ sourceRef: "codex", baseDir: codexRoot }],
+    sourceRefs: ["codex"],
+    safeMode: true,
+    contextMode: "full",
+  });
+  return codexSnapshotPromise;
+}
 
 test("Lite CLI searches, reports stats, and writes one-way export", async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-cli-"));
@@ -225,6 +244,18 @@ test("Lite CLI tree and session detail preserve canonical related work", async (
     };
     assert.equal(detailPayload.related_work[0]?.relation_kind, "automation_run");
     assert.equal(detailPayload.related_work[0]?.query_session_ref, sessionId);
+
+    const ownerId = "sess:openclaw:11111111-2222-4333-8444-555555555555";
+    const ownerDetail = captureIo(tempHome);
+    assert.equal(await runLiteCli(["show", "session", "sess:openclaw:11111111", ...rootArgs], ownerDetail.io), 0);
+    const ownerPayload = JSON.parse(ownerDetail.stdout.join("")) as {
+      session: { id: string };
+      related_work: Array<{ relation_kind: string; direction: string }>;
+    };
+    assert.equal(ownerPayload.session.id, ownerId);
+    assert.ok(ownerPayload.related_work.some((entry) =>
+      entry.relation_kind === "automation_run" && entry.direction === "outbound",
+    ));
   } finally {
     await rm(tempHome, { recursive: true, force: true });
   }
@@ -329,7 +360,208 @@ test("Lite CLI launchTui error formatter hints at lite:tui:link on ENOENT", () =
   assert.match(formatTuiLaunchError(plain), /network down/);
 });
 
-function captureIo(cwd: string, spawnTui?: (args: string[]) => Promise<number>) {
+test("Lite CLI latest parses defaults, aliases, and positional counts", async () => {
+  const snapshot = await getCodexSnapshot();
+  const scanner = async () => snapshot;
+
+  const defaults = captureIo(repoRoot, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["latest", "--json"], defaults.io), 0);
+  const defaultPayload = JSON.parse(defaults.stdout.join("")) as {
+    kind: string;
+    total: number;
+    shown: number;
+    sessions: unknown[];
+  };
+  assert.equal(defaultPayload.kind, "sessions");
+  assert.equal(defaultPayload.total, snapshot.listResolvedSessions().length);
+  assert.equal(defaultPayload.shown, defaultPayload.sessions.length);
+
+  const turns = captureIo(repoRoot, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["latest", "turn", "2", "--json"], turns.io), 0);
+  const turnPayload = JSON.parse(turns.stdout.join("")) as { kind: string; shown: number; turns: unknown[] };
+  assert.equal(turnPayload.kind, "turns");
+  assert.equal(turnPayload.shown, 2);
+  assert.equal(turnPayload.turns.length, 2);
+
+  const numeric = captureIo(repoRoot, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["latest", "1", "--json"], numeric.io), 0);
+  assert.equal((JSON.parse(numeric.stdout.join("")) as { shown: number }).shown, 1);
+
+  let rejectedScans = 0;
+  const invalid = captureIo(repoRoot, undefined, {
+    scan: async () => {
+      rejectedScans += 1;
+      return snapshot;
+    },
+  });
+  assert.equal(await runLiteCli(["latest", "--limit", "2"], invalid.io), 2);
+  assert.match(invalid.stderr.join(""), /--limit is not valid for latest/);
+  assert.equal(rejectedScans, 0);
+});
+
+test("Lite CLI ls limits human and JSON output and rejects conflicting controls before scanning", async () => {
+  const snapshot = await getCodexSnapshot();
+  const scanner = async () => snapshot;
+  const limited = captureIo(repoRoot, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["ls", "sessions", "--limit", "1"], limited.io), 0);
+  assert.match(limited.stdout.join(""), /Sessions \(1 of 4, newest first\)/);
+  assert.match(limited.stdout.join(""), /UPDATED\s+SOURCE\s+TURNS\s+SESSION\s+DIRECTORY\s+TITLE/);
+  assert.match(limited.stdout.join(""), /… and 3 more \(use --limit <n> or --all\)/);
+  assert.ok(
+    limited.stdout.join("").split("\n").every((line) => displayColumnsForTest(line) <= 100),
+    "wide-character table rows must stay within the injected terminal width",
+  );
+
+  const all = captureIo(repoRoot, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["ls", "sessions", "--all", "--json"], all.io), 0);
+  const allPayload = JSON.parse(all.stdout.join("")) as { total: number; shown: number; sessions: unknown[] };
+  assert.equal(allPayload.total, snapshot.listResolvedSessions().length);
+  assert.equal(allPayload.shown, allPayload.total);
+  assert.equal(allPayload.sessions.length, allPayload.total);
+
+  let rejectedScans = 0;
+  const conflicting = captureIo(repoRoot, undefined, {
+    scan: async () => {
+      rejectedScans += 1;
+      return snapshot;
+    },
+  });
+  assert.equal(await runLiteCli(["ls", "sessions", "--all", "--limit", "2"], conflicting.io), 2);
+  assert.match(conflicting.stderr.join(""), /--all and --limit cannot be used together/);
+  assert.equal(rejectedScans, 0);
+
+  const invalidScope = captureIo(repoRoot, undefined, {
+    scan: async () => {
+      rejectedScans += 1;
+      return snapshot;
+    },
+  });
+  assert.equal(await runLiteCli(["ls", "sources", "--dir", "/workspace"], invalidScope.io), 2);
+  assert.match(invalidScope.stderr.join(""), /--dir is not valid for ls sources/);
+  assert.equal(rejectedScans, 0);
+});
+
+test("Lite CLI applies --dir to sessions, search, stats, and project trees", async () => {
+  const snapshot = await getCodexSnapshot();
+  const scopedSession = snapshot.listResolvedSessions().find((session) => session.working_directory);
+  assert.ok(scopedSession?.working_directory);
+  const scopeDir = scopedSession.working_directory;
+  const scanOptions: ScanLiteHistoryOptions[] = [];
+  const scanner = async (options: ScanLiteHistoryOptions) => {
+    scanOptions.push(options);
+    return snapshot;
+  };
+
+  const sessions = captureIo(repoRoot, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["ls", "sessions", "--dir", scopeDir, "--all", "--json"], sessions.io), 0);
+  const sessionPayload = JSON.parse(sessions.stdout.join("")) as {
+    sessions: Array<{ working_directory?: string }>;
+  };
+  assert.ok(sessionPayload.sessions.length > 0);
+  assert.ok(sessionPayload.sessions.every((session) => session.working_directory?.startsWith(scopeDir)));
+
+  const scopedTurns = snapshot.listResolvedTurns({ directoryScope: scopeDir });
+  const query = scopedTurns[0]?.canonical_text.split(/\s+/u).find((part) => part.length >= 4);
+  assert.ok(query);
+  const search = captureIo(repoRoot, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["search", query, "--dir", scopeDir, "--json"], search.io), 0);
+  const searchPayload = JSON.parse(search.stdout.join("")) as { results: Array<{ turn: { session_id: string } }> };
+  const scopedSessionIds = new Set(snapshot.listResolvedSessions({ directoryScope: scopeDir }).map((session) => session.id));
+  assert.ok(searchPayload.results.length > 0);
+  assert.ok(searchPayload.results.every((result) => scopedSessionIds.has(result.turn.session_id)));
+
+  const stats = captureIo(repoRoot, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["stats", "--dir", scopeDir, "--json"], stats.io), 0);
+  const statsPayload = JSON.parse(stats.stdout.join("")) as { overview: { total_turns: number } };
+  assert.equal(statsPayload.overview.total_turns, scopedTurns.length);
+
+  const tree = captureIo(repoRoot, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["tree", "projects", "--dir", scopeDir, "--json"], tree.io), 0);
+  const treePayload = JSON.parse(tree.stdout.join("")) as {
+    projects: Array<{ sessions: Array<{ session: { id: string } }> }>;
+    unlinked: Array<{ session: { id: string } }>;
+  };
+  const treeSessionIds = [
+    ...treePayload.projects.flatMap((project) => project.sessions.map((entry) => entry.session.id)),
+    ...treePayload.unlinked.map((entry) => entry.session.id),
+  ];
+  assert.ok(treeSessionIds.length > 0);
+  assert.ok(treeSessionIds.every((sessionId) => scopedSessionIds.has(sessionId)));
+  assert.ok(scanOptions.length > 0);
+  assert.ok(scanOptions.every((options) => options.directoryScope === scopeDir));
+});
+
+test("Lite CLI show resolves canonical session refs before a source-wide detail scan", async () => {
+  const snapshot = await getCodexSnapshot();
+  const session = snapshot.listResolvedSessions().find((entry) => entry.source_session_id);
+  const turn = snapshot.listResolvedTurns()[0];
+  const project = snapshot.listProjects()[0];
+  const source = snapshot.listSources()[0];
+  assert.ok(session?.source_session_id && turn && project && source);
+
+  const directCalls: ScanLiteHistoryOptions[] = [];
+  const direct = captureIo(repoRoot, undefined, {
+    scan: async (options) => {
+      directCalls.push(options);
+      return snapshot;
+    },
+  });
+  assert.equal(await runLiteCli(["show", "session", session.id, "--limit-files", "1"], direct.io), 0);
+  assert.equal(directCalls.length, 2);
+  assert.equal(directCalls[0]?.contextMode, "none");
+  assert.equal(directCalls[1]?.contextMode, "full");
+  assert.deepEqual(directCalls[1]?.sourceRefs, [session.source_id]);
+  assert.deepEqual(directCalls[1]?.sessionRefs, [session.id]);
+  assert.equal(directCalls[1]?.limitFiles, undefined);
+  assert.match(direct.stdout.join(""), /^Session:/);
+  assert.match(direct.stdout.join(""), /\nSource\s+/);
+  assert.match(direct.stdout.join(""), /\nTurns \(/);
+  assert.doesNotMatch(direct.stdout.join(""), /\n\{/);
+
+  const matchingCalls: ScanLiteHistoryOptions[] = [];
+  const shortTurnRef = snapshot.getTurnDisplayRef(turn.id);
+  assert.ok(shortTurnRef);
+  const matching = captureIo(repoRoot, undefined, {
+    scan: async (options) => {
+      matchingCalls.push(options);
+      return snapshot;
+    },
+  });
+  assert.equal(await runLiteCli(["show", "turn", shortTurnRef], matching.io), 0);
+  assert.equal(matchingCalls.length, 1);
+  assert.equal(matchingCalls[0]?.contextMode, "matching");
+  assert.deepEqual(matchingCalls[0]?.contextTarget, { kind: "turn", ref: shortTurnRef });
+  assert.match(matching.stdout.join(""), /^Turn:/);
+  assert.match(matching.stdout.join(""), /\nPrompt\n/);
+  assert.doesNotMatch(matching.stdout.join(""), /\n\{/);
+
+  for (const [kind, ref, heading] of [
+    ["project", project.project_id, "Project:"],
+    ["source", source.id, "Source:"],
+  ] as const) {
+    const rendered = captureIo(repoRoot, undefined, { scan: async () => snapshot });
+    assert.equal(await runLiteCli(["show", kind, ref], rendered.io), 0);
+    assert.ok(rendered.stdout.join("").startsWith(heading));
+    assert.doesNotMatch(rendered.stdout.join(""), /\n\{/);
+  }
+});
+
+test("Lite CLI help documents latest, limits, and directory scope", async () => {
+  const captured = captureIo(repoRoot);
+  assert.equal(await runLiteCli(["help"], captured.io), 0);
+  const help = captured.stdout.join("");
+  assert.match(help, /cchistory-lite latest \[sessions\|turns\] \[N\]/);
+  assert.match(help, /--limit <n>/);
+  assert.match(help, /--all/);
+  assert.match(help, /--dir <path>/);
+  assert.match(help, /Sessions without a\nworking directory are excluded/);
+});
+
+function captureIo(
+  cwd: string,
+  spawnTui?: (args: string[]) => Promise<number>,
+  overrides: Partial<LiteCliIo> = {},
+) {
   const stdout: string[] = [];
   const stderr: string[] = [];
   return {
@@ -343,6 +575,30 @@ function captureIo(cwd: string, spawnTui?: (args: string[]) => Promise<number>) 
       stderr: (value: string) => stderr.push(value),
       isTTY: false,
       spawnTui,
+      now: () => fixedNow,
+      columns: 100,
+      ...overrides,
     },
   };
+}
+
+function displayColumnsForTest(value: string): number {
+  let width = 0;
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    const wide =
+      (code >= 0x1100 && code <= 0x115f) ||
+      (code >= 0x2e80 && code <= 0x303e) ||
+      (code >= 0x3040 && code <= 0x33bf) ||
+      (code >= 0x3400 && code <= 0x4dbf) ||
+      (code >= 0x4e00 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7af) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff01 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      (code >= 0x20000 && code <= 0x2fa1f);
+    width += wide ? 2 : 1;
+  }
+  return width;
 }
