@@ -5,11 +5,11 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  LiveHistorySnapshot,
   scanLiteHistory,
-  type LiveHistorySnapshot,
   type ScanLiteHistoryOptions,
 } from "@cchistory/live-runtime";
-import { formatTuiLaunchError, runLiteCli, type LiteCliIo } from "./index.js";
+import { colorizeHumanText, formatTuiLaunchError, runLiteCli, type LiteCliIo } from "./index.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const codexRoot = path.join(repoRoot, "mock_data", ".codex", "sessions");
@@ -32,7 +32,8 @@ function getCodexSnapshot(): Promise<LiveHistorySnapshot> {
 test("Lite CLI searches, reports stats, and writes one-way export", async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-cli-"));
   try {
-    const rootArgs = ["--source-root", `codex=${codexRoot}`, "--safe", "--json"];
+    const sourceArgs = ["--source-root", `codex=${codexRoot}`, "--safe"];
+    const rootArgs = [...sourceArgs, "--json"];
     const search = captureIo(tempHome);
     assert.equal(await runLiteCli(["search", "mock", ...rootArgs], search.io), 0);
     const searchPayload = JSON.parse(search.stdout.join("")) as {
@@ -106,6 +107,10 @@ test("Lite CLI searches, reports stats, and writes one-way export", async () => 
     const statsPayload = JSON.parse(stats.stdout.join("")) as { kind: string; overview: { total_turns: number } };
     assert.equal(statsPayload.kind, "stats");
     assert.ok(statsPayload.overview.total_turns > 0);
+
+    const humanStats = captureIo(tempHome);
+    assert.equal(await runLiteCli(["stats", ...sourceArgs], humanStats.io), 0);
+    assert.match(humanStats.stdout.join(""), /Excluded zero-token turns:/);
 
     const rollup = captureIo(tempHome);
     assert.equal(await runLiteCli(["stats", "--by", "source", ...rootArgs], rollup.io), 0);
@@ -363,18 +368,119 @@ test("Lite CLI launchTui error formatter hints at lite:tui:link on ENOENT", () =
 test("Lite CLI latest parses defaults, aliases, and positional counts", async () => {
   const snapshot = await getCodexSnapshot();
   const scanner = async () => snapshot;
+  const baseSession = snapshot.listResolvedSessions()[0];
+  const baseTurn = snapshot.listResolvedTurns()[0];
+  assert.ok(baseSession);
+  assert.ok(baseTurn);
+  const pendingSession = {
+    ...baseSession,
+    id: "sess:codex:pending-session",
+    source_session_id: "pending-session",
+    source_platform: "gemini" as const,
+    title: "Pending session",
+    created_at: "2026-08-03T12:03:00.000Z",
+    updated_at: "2026-08-03T12:04:00.000Z",
+    turn_count: 1,
+  };
+  const pendingTurn = {
+    ...baseTurn,
+    id: "pending-turn-id",
+    revision_id: "pending-turn-id:r1",
+    turn_id: "pending-turn-id",
+    turn_revision_id: "pending-turn-id:r1",
+    session_id: pendingSession.id,
+    context_summary: {
+      assistant_reply_count: 0,
+      tool_call_count: 0,
+      has_errors: false,
+      zero_token_reason: "no_assistant_reply" as const,
+    },
+  };
+  const zeroTurnSnapshot = new LiveHistorySnapshot({
+    ...snapshot.data,
+    sessions: [
+      {
+        ...baseSession,
+        id: "sess:codex:zero-turn-session",
+        source_session_id: "zero-turn-session",
+        title: "Zero-turn session",
+        created_at: "2026-08-03T12:01:00.000Z",
+        updated_at: "2026-08-03T12:02:00.000Z",
+        turn_count: 0,
+      },
+      pendingSession,
+      ...snapshot.data.sessions.slice().reverse().map((session) => ({
+        ...session,
+        updated_at: "2026-08-03T11:59:00.000Z",
+      })),
+    ],
+    turns: [pendingTurn, ...snapshot.data.turns],
+  });
 
-  const defaults = captureIo(repoRoot, undefined, { scan: scanner });
+  const latestSessions = captureIo(repoRoot, undefined, { scan: async () => zeroTurnSnapshot });
+  assert.equal(await runLiteCli(["latest"], latestSessions.io), 0);
+  const latestSessionText = latestSessions.stdout.join("");
+  const firstSession = snapshot.listResolvedSessions()[0];
+  const firstSessionTurn = firstSession ? snapshot.listSessionTurns(firstSession.id)[0] : undefined;
+  assert.ok(firstSession && firstSessionTurn);
+  const firstSessionModel = firstSessionTurn.context_summary.primary_model ?? firstSession.model;
+  const firstSessionTokens = firstSessionTurn.context_summary.token_usage?.total_tokens ?? firstSessionTurn.context_summary.total_tokens;
+  assert.ok(firstSessionModel && firstSessionTokens !== undefined);
+  assert.match(latestSessionText, /Latest sessions \(4, newest first; one record = one session\)/);
+  assert.match(latestSessionText, /LATEST\s+SOURCE\s+SESSION\s+TURNS/);
+  assert.match(latestSessionText, /DIR .*MODEL .*TOKENS/);
+  assert.doesNotMatch(latestSessionText, /Zero-turn session/);
+  assert.doesNotMatch(latestSessionText, /Pending session/);
+  assert.ok(latestSessionText.includes(snapshot.getSessionDisplayRef(firstSession.id) ?? firstSession.id));
+  assert.ok(latestSessionText.includes(firstSessionModel));
+  assert.ok(latestSessionText.includes(new Intl.NumberFormat("en-US").format(firstSessionTokens)));
+
+  const latestTurns = captureIo(repoRoot, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["latest", "turns", "1"], latestTurns.io), 0);
+  const latestTurnText = latestTurns.stdout.join("");
+  const firstTurn = snapshot.listResolvedTurns()[0];
+  assert.ok(firstTurn);
+  const firstTurnSession = snapshot.getSession(firstTurn.session_id);
+  const firstTurnModel = firstTurn.context_summary.primary_model ?? firstTurnSession?.model;
+  const firstTurnTokens = firstTurn.context_summary.token_usage?.total_tokens ?? firstTurn.context_summary.total_tokens;
+  assert.ok(firstTurnModel && firstTurnTokens !== undefined);
+  assert.match(latestTurnText, /Latest turns \(1 of 4, newest first; one record = one UserTurn\)/);
+  assert.match(latestTurnText, /SESSION\s+TURN\s+MODEL\s+TOKENS\s+PROMPT/);
+  assert.ok(latestTurnText.includes(snapshot.getSessionDisplayRef(firstTurn.session_id) ?? firstTurn.session_id));
+  assert.ok(latestTurnText.includes(snapshot.getTurnDisplayRef(firstTurn.id) ?? firstTurn.id));
+  assert.ok(latestTurnText.includes(firstTurnModel));
+  assert.ok(latestTurnText.includes(new Intl.NumberFormat("en-US").format(firstTurnTokens)));
+
+  const narrowTurns = captureIo(repoRoot, undefined, { scan: scanner, columns: 70 });
+  assert.equal(await runLiteCli(["latest", "turns", "1"], narrowTurns.io), 0);
+  assert.ok(
+    narrowTurns.stdout.join("").split("\n").every((line) => displayColumnsForTest(line) <= 70),
+    "latest output must stay within a narrow terminal width",
+  );
+
+  const defaults = captureIo(repoRoot, undefined, { scan: async () => zeroTurnSnapshot });
   assert.equal(await runLiteCli(["latest", "--json"], defaults.io), 0);
   const defaultPayload = JSON.parse(defaults.stdout.join("")) as {
     kind: string;
     total: number;
     shown: number;
-    sessions: unknown[];
+    sessions: Array<{ id: string; turn_count: number }>;
   };
   assert.equal(defaultPayload.kind, "sessions");
-  assert.equal(defaultPayload.total, snapshot.listResolvedSessions().length);
+  assert.equal(
+    defaultPayload.total,
+    snapshot.listResolvedSessions().filter((session) =>
+      session.turn_count > 0 &&
+      (session.source_platform !== "gemini" || snapshot.listSessionTurns(session.id).some((turn) => turn.context_summary.assistant_reply_count > 0)),
+    ).length,
+  );
   assert.equal(defaultPayload.shown, defaultPayload.sessions.length);
+  assert.ok(defaultPayload.sessions.every((session) => session.turn_count > 0));
+  assert.ok(defaultPayload.sessions.every((session) => session.id !== "sess:codex:zero-turn-session"));
+  assert.ok(defaultPayload.sessions.every((session) => session.id !== "sess:codex:pending-session"));
+  const expectedLatestSessionId = snapshot.listResolvedTurns()[0]?.session_id;
+  assert.ok(expectedLatestSessionId);
+  assert.equal(defaultPayload.sessions[0]?.id, expectedLatestSessionId);
 
   const turns = captureIo(repoRoot, undefined, { scan: scanner });
   assert.equal(await runLiteCli(["latest", "turn", "2", "--json"], turns.io), 0);
@@ -404,8 +510,8 @@ test("Lite CLI ls limits human and JSON output and rejects conflicting controls 
   const scanner = async () => snapshot;
   const limited = captureIo(repoRoot, undefined, { scan: scanner });
   assert.equal(await runLiteCli(["ls", "sessions", "--limit", "1"], limited.io), 0);
-  assert.match(limited.stdout.join(""), /Sessions \(1 of 4, newest first\)/);
-  assert.match(limited.stdout.join(""), /UPDATED\s+SOURCE\s+TURNS\s+SESSION\s+DIRECTORY\s+TITLE/);
+  assert.match(limited.stdout.join(""), /Sessions \(1 of 4, newest first; one record = one session\)/);
+  assert.match(limited.stdout.join(""), /UPDATED\s+SOURCE\s+SESSION\s+TURNS/);
   assert.match(limited.stdout.join(""), /… and 3 more \(use --limit <n> or --all\)/);
   assert.ok(
     limited.stdout.join("").split("\n").every((line) => displayColumnsForTest(line) <= 100),
@@ -554,7 +660,26 @@ test("Lite CLI help documents latest, limits, and directory scope", async () => 
   assert.match(help, /--limit <n>/);
   assert.match(help, /--all/);
   assert.match(help, /--dir <path>/);
+  assert.match(help, /latest sessions is one record per session/);
+  assert.match(help, /latest turns is one record per UserTurn/);
+  assert.match(help, /sessions with 0 turns are omitted/);
+  assert.match(help, /Gemini sessions with no assistant reply are also omitted/);
   assert.match(help, /Sessions without a\nworking directory are excluded/);
+});
+
+test("Lite CLI colorizes semantic human-readable fields", () => {
+  const colored = colorizeHumanText([
+    "Latest sessions (1, newest first; one record = one session)",
+    "LATEST     SOURCE        SESSION     TURNS",
+    "just now   gemini        550867ae    1",
+    "  TITLE agentresearch",
+    "  DIR ~/coding/agentresearch · MODEL gemini-2.5-pro · TOKENS 12,345",
+  ].join("\n"));
+  assert.match(colored, /\u001b\[1m\u001b\[36mLatest sessions/);
+  assert.match(colored, /\u001b\[1m\u001b\[2mLATEST/);
+  assert.match(colored, /\u001b\[36m~\/coding\/agentresearch\u001b\[0m/);
+  assert.match(colored, /\u001b\[35mgemini-2\.5-pro\u001b\[0m/);
+  assert.match(colored, /\u001b\[32m12,345\u001b\[0m/);
 });
 
 function captureIo(

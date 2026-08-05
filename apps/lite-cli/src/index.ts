@@ -29,6 +29,15 @@ import {
 const VERSION = "0.3.0";
 const EXPORT_SCHEMA = "cchistory-lite-export/v1";
 const JSON_SCHEMA = "cchistory-lite/v1";
+const ANSI = {
+  reset: "\u001b[0m",
+  bold: "\u001b[1m",
+  dim: "\u001b[2m",
+  cyan: "\u001b[36m",
+  green: "\u001b[32m",
+  magenta: "\u001b[35m",
+  yellow: "\u001b[33m",
+} as const;
 const VALUE_FLAGS = new Set([
   "source-root",
   "source",
@@ -207,7 +216,7 @@ function runList(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
       io,
       json,
       { schema: JSON_SCHEMA, kind: "projects", total: allProjects.length, shown: projects.length, projects },
-      renderProjects(projects, collectionRenderOptions(io, "Projects", allProjects.length, "use --limit <n> or --all")),
+      renderProjects(projects, collectionRenderOptions(io, "Projects", allProjects.length, "use --limit <n> or --all", "project")),
     );
     return;
   }
@@ -218,7 +227,7 @@ function runList(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
       io,
       json,
       { schema: JSON_SCHEMA, kind: "sessions", total: allSessions.length, shown: sessions.length, sessions },
-      renderSessions(snapshot, sessions, collectionRenderOptions(io, "Sessions", allSessions.length, "use --limit <n> or --all")),
+      renderSessions(snapshot, sessions, collectionRenderOptions(io, "Sessions", allSessions.length, "use --limit <n> or --all", "session")),
     );
     return;
   }
@@ -230,7 +239,7 @@ function runList(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
       io,
       json,
       { schema: JSON_SCHEMA, kind: "sources", total: allSources.length, shown: sources.length, sources },
-      renderSources(sources, collectionRenderOptions(io, "Sources", allSources.length, "use --limit <n> or --all")),
+      renderSources(sources, collectionRenderOptions(io, "Sources", allSources.length, "use --limit <n> or --all", "source")),
     );
     return;
   }
@@ -241,13 +250,23 @@ function runLatest(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCl
   const { kind, limit } = parseLatestPositionals(parsed.positionals);
   const directoryScope = resolveDirectoryScope(parsed, io);
   if (kind === "sessions") {
-    const allSessions = snapshot.listResolvedSessions({ directoryScope });
+    const candidates = snapshot
+      .listResolvedSessions({ directoryScope })
+      .filter((session) =>
+        session.turn_count > 0 &&
+        (session.source_platform !== "gemini" || hasCompletedTurn(snapshot, session.id)),
+      );
+    const allSessions = orderSessionsByLatestTurn(snapshot, candidates, directoryScope);
     const sessions = allSessions.slice(0, limit);
     output(
       io,
       json,
       { schema: JSON_SCHEMA, kind: "sessions", total: allSessions.length, shown: sessions.length, sessions },
-      renderSessions(snapshot, sessions, collectionRenderOptions(io, "Latest sessions", allSessions.length, "request a larger N")),
+      renderSessions(
+        snapshot,
+        sessions,
+        collectionRenderOptions(io, "Latest sessions", allSessions.length, "request a larger N", "session", "LATEST"),
+      ),
     );
     return;
   }
@@ -257,8 +276,32 @@ function runLatest(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCl
     io,
     json,
     { schema: JSON_SCHEMA, kind: "turns", total: allTurns.length, shown: turns.length, turns },
-    renderTurns(snapshot, turns, collectionRenderOptions(io, "Latest turns", allTurns.length, "request a larger N")),
+    renderTurns(snapshot, turns, collectionRenderOptions(io, "Latest turns", allTurns.length, "request a larger N", "UserTurn")),
   );
+}
+
+function orderSessionsByLatestTurn(
+  snapshot: LiveHistorySnapshot,
+  sessions: SessionProjection[],
+  directoryScope?: string,
+): SessionProjection[] {
+  const sessionsById = new Map(sessions.map((session) => [session.id, session]));
+  const ordered: SessionProjection[] = [];
+  const seen = new Set<string>();
+  for (const turn of snapshot.listResolvedTurns({ directoryScope })) {
+    const session = sessionsById.get(turn.session_id);
+    if (!session || seen.has(session.id)) continue;
+    seen.add(session.id);
+    ordered.push(session);
+  }
+  for (const session of sessions) {
+    if (!seen.has(session.id)) ordered.push(session);
+  }
+  return ordered;
+}
+
+function hasCompletedTurn(snapshot: LiveHistorySnapshot, sessionId: string): boolean {
+  return snapshot.listSessionTurns(sessionId).some((turn) => turn.context_summary.assistant_reply_count > 0);
 }
 
 function runTree(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliIo, json: boolean): void {
@@ -509,6 +552,8 @@ interface CollectionRenderOptions {
   homeDir: string;
   columns: number;
   footerHint?: string;
+  rowLabel?: string;
+  timeLabel?: string;
 }
 
 function collectionRenderOptions(
@@ -516,6 +561,8 @@ function collectionRenderOptions(
   heading: string,
   total: number,
   footerHint?: string,
+  rowLabel?: string,
+  timeLabel?: string,
 ): CollectionRenderOptions {
   return {
     heading,
@@ -524,6 +571,8 @@ function collectionRenderOptions(
     homeDir: io.homeDir ?? os.homedir(),
     columns: Math.max(40, io.columns ?? 100),
     footerHint,
+    rowLabel,
+    timeLabel,
   };
 }
 
@@ -588,34 +637,35 @@ function renderSessions(
   options: CollectionRenderOptions,
 ): string {
   const lines = [renderCollectionHeading(options, sessions.length, "newest first")];
-  if (options.columns >= 88) {
+  const table = options.columns >= 78;
+  if (table) {
     lines.push(formatColumns([
-      ["UPDATED", 8],
+      [options.timeLabel ?? "UPDATED", 9],
       ["SOURCE", 12],
-      ["TURNS", 6],
-      ["SESSION", 12],
-      ["DIRECTORY", 20],
-      ["TITLE", Infinity],
+      ["SESSION", 10],
+      ["TURNS", 5],
     ], options.columns));
   }
   for (const session of sessions) {
     const directory = foldHome(session.working_directory ?? "-", options.homeDir);
     const ref = snapshot.getSessionDisplayRef(session.id) ?? session.id;
-    if (options.columns >= 88) {
+    const turns = snapshot.listSessionTurns(session.id);
+    const model = formatSessionModel(session, turns);
+    const tokens = formatTokenTotal(turns);
+    const latestTurn = options.timeLabel === "LATEST" ? turns.at(-1) : undefined;
+    const activityAt = latestTurn?.submission_started_at ?? session.updated_at;
+    if (table) {
       lines.push(formatColumns([
-        [formatRelativeTime(session.updated_at, options.now), 8],
+        [formatRelativeTime(activityAt, options.now), 9],
         [session.source_platform, 12],
-        [`${session.turn_count}`, 6],
-        [ref, 12],
-        [directory, 20],
-        [session.title ?? "-", Infinity],
+        [ref, 10],
+        [`${session.turn_count}`, 5],
       ], options.columns));
-      continue;
+    } else {
+      lines.push(`- ${singleLine(`${session.source_platform} · session ${ref} · ${session.turn_count} turns · ${formatRelativeTime(activityAt, options.now)}`, Math.max(20, options.columns - 2))}`);
     }
-    lines.push(
-      `- ${session.title ?? "Untitled session"} · ${session.source_platform} · ${session.turn_count} turns · ${ref}`,
-      `  ${formatRelativeTime(session.updated_at, options.now)} · ${singleLine(directory, Math.max(20, options.columns - 2))}`,
-    );
+    lines.push(`  ${singleLine(`TITLE ${session.title ?? "Untitled session"}`, Math.max(20, options.columns - 2))}`);
+    lines.push(`  ${singleLine(`DIR ${directory} · MODEL ${model} · TOKENS ${tokens}`, Math.max(20, options.columns - 2))}`);
   }
   appendCollectionFooter(lines, options, sessions.length);
   return `${lines.join("\n")}\n`;
@@ -627,12 +677,15 @@ function renderTurns(
   options: CollectionRenderOptions,
 ): string {
   const lines = [renderCollectionHeading(options, turns.length, "newest first")];
-  if (options.columns >= 88) {
+  const table = options.columns >= 88;
+  if (table) {
     lines.push(formatColumns([
-      ["SUBMITTED", 8],
-      ["SOURCE", 12],
-      ["SESSION", 12],
+      ["SUBMITTED", 9],
+      ["SOURCE", 9],
+      ["SESSION", 10],
       ["TURN", 10],
+      ["MODEL", 14],
+      ["TOKENS", 12],
       ["PROMPT", Infinity],
     ], options.columns));
   }
@@ -640,18 +693,22 @@ function renderTurns(
     const session = snapshot.getSession(turn.session_id);
     const sessionRef = session ? snapshot.getSessionDisplayRef(session.id) ?? session.id : turn.session_id;
     const turnRef = snapshot.getTurnDisplayRef(turn.id) ?? turn.id;
-    if (options.columns >= 88) {
+    const model = formatTurnModel(turn, session);
+    const tokens = formatTokenTotal([turn]);
+    if (table) {
       lines.push(formatColumns([
-        [formatRelativeTime(turn.submission_started_at, options.now), 8],
-        [session?.source_platform ?? "unknown", 12],
-        [sessionRef, 12],
+        [formatRelativeTime(turn.submission_started_at, options.now), 9],
+        [session?.source_platform ?? "unknown", 9],
+        [sessionRef, 10],
         [turnRef, 10],
+        [model, 14],
+        [tokens, 12],
         [singleLine(turn.canonical_text, options.columns), Infinity],
       ], options.columns));
       continue;
     }
     lines.push(
-      `- ${session?.source_platform ?? "unknown"} · ${sessionRef}/${turnRef} · ${formatRelativeTime(turn.submission_started_at, options.now)}`,
+      `- ${singleLine(`${session?.source_platform ?? "unknown"} · session ${sessionRef} · turn ${turnRef} · ${model} · ${tokens} tokens · ${formatRelativeTime(turn.submission_started_at, options.now)}`, Math.max(20, options.columns - 2))}`,
       `  ${singleLine(turn.canonical_text, Math.max(20, options.columns - 2))}`,
     );
   }
@@ -661,7 +718,9 @@ function renderTurns(
 
 function renderCollectionHeading(options: CollectionRenderOptions, shown: number, order?: string): string {
   const count = shown === options.total ? `${options.total}` : `${shown} of ${options.total}`;
-  return `${options.heading} (${count}${order ? `, ${order}` : ""})`;
+  const qualifiers = [order, options.rowLabel ? `one record = one ${options.rowLabel}` : undefined]
+    .filter((value): value is string => Boolean(value));
+  return `${options.heading} (${count}${qualifiers.length > 0 ? `, ${qualifiers.join("; ")}` : ""})`;
 }
 
 function appendCollectionFooter(lines: string[], options: CollectionRenderOptions, shown: number): void {
@@ -894,6 +953,40 @@ function formatTokenSummary(summary: UserTurnProjection["context_summary"]): str
   return parts.join(", ");
 }
 
+interface TokenTotals {
+  total: number;
+  hasUsage: boolean;
+}
+
+function formatTurnModel(turn: UserTurnProjection, session: SessionProjection | undefined): string {
+  return turn.context_summary.primary_model?.trim() || session?.model?.trim() || "-";
+}
+
+function formatSessionModel(session: SessionProjection, turns: readonly UserTurnProjection[]): string {
+  const models = new Set<string>();
+  const add = (model: string | undefined): void => {
+    const normalized = model?.trim();
+    if (normalized && normalized.toLowerCase() !== "unknown") models.add(normalized);
+  };
+  add(session.model);
+  for (const turn of turns) add(turn.context_summary.primary_model);
+  if (models.size === 0) return "-";
+  if (models.size === 1) return models.values().next().value ?? "-";
+  return `mixed (${[...models].join(", ")})`;
+}
+
+function formatTokenTotal(turns: readonly UserTurnProjection[]): string {
+  const totals = turns.reduce<TokenTotals>((result, turn) => {
+    const total = turn.context_summary.token_usage?.total_tokens ?? turn.context_summary.total_tokens;
+    if (typeof total === "number" && Number.isFinite(total)) {
+      result.total += total;
+      result.hasUsage = true;
+    }
+    return result;
+  }, { total: 0, hasUsage: false });
+  return totals.hasUsage ? formatNumber(totals.total) : "n/a";
+}
+
 function indentBlock(value: string, prefix: string): string {
   return value.split(/\r?\n/u).map((line) => `${prefix}${line}`).join("\n");
 }
@@ -932,6 +1025,9 @@ function renderStats(
     `- Reasoning output tokens: ${formatNumber(overview.total_reasoning_output_tokens)}`,
     `- Total tokens: ${formatNumber(overview.total_tokens)}`,
   ];
+  if (overview.excluded_zero_token_turns) {
+    lines.push(`- Excluded zero-token turns: ${overview.excluded_zero_token_turns} (no usage data)`);
+  }
   if (rollup) {
     lines.push("", `By ${rollup.dimension}`);
     for (const row of rollup.rows) {
@@ -987,7 +1083,47 @@ function formatRelatedWorkLabel(
 }
 
 function output(io: LiteCliIo, json: boolean, payload: unknown, text: string): void {
-  io.stdout(json ? `${JSON.stringify(payload, null, 2)}\n` : text);
+  io.stdout(json ? `${JSON.stringify(payload, null, 2)}\n` : shouldColorize(io) ? colorizeHumanText(text) : text);
+}
+
+function shouldColorize(io: LiteCliIo): boolean {
+  return io.isTTY && process.env.NO_COLOR === undefined && process.env.TERM !== "dumb";
+}
+
+export function colorizeHumanText(text: string): string {
+  return text.split("\n").map(colorizeHumanLine).join("\n");
+}
+
+function colorizeHumanLine(line: string): string {
+  if (!line) return line;
+  if (/^(?:Latest|Sessions|Projects|Sources|Stats|Search|Project tree|Session tree|Source:|Session:|Turn:)/u.test(line)) {
+    return paint(`${ANSI.bold}${ANSI.cyan}`, line);
+  }
+  const title = line.match(/^(\s+TITLE )(.*)$/u);
+  if (title) {
+    return `${paint(ANSI.dim, title[1]!)}${paint(ANSI.bold, title[2]!)}`;
+  }
+  const metadata = line.match(/^(\s+DIR )(.+?)( · MODEL )(.+?)( · TOKENS )(.+)$/u);
+  if (metadata) {
+    return [
+      paint(ANSI.dim, metadata[1]!),
+      paint(ANSI.cyan, metadata[2]!),
+      paint(ANSI.dim, metadata[3]!),
+      paint(ANSI.magenta, metadata[4]!),
+      paint(ANSI.dim, metadata[5]!),
+      paint(ANSI.green, metadata[6]!),
+    ].join("");
+  }
+  if (/^\s*(?:LATEST|UPDATED|SUBMITTED)\b.*\b(?:SOURCE|SESSION|TURNS|PROMPT)\b/u.test(line)) {
+    return paint(`${ANSI.bold}${ANSI.dim}`, line);
+  }
+  if (/^\s*… and \d+ more/u.test(line)) return paint(ANSI.dim, line);
+  if (/^\s*-\s/u.test(line)) return `${paint(ANSI.dim, line.slice(0, line.indexOf("-") + 2))}${line.slice(line.indexOf("-") + 2)}`;
+  return line;
+}
+
+function paint(style: string, value: string): string {
+  return `${style}${value}${ANSI.reset}`;
 }
 
 function requireSource(snapshot: LiveHistorySnapshot, ref: string): SourceStatus {
@@ -1246,7 +1382,11 @@ Browsing options:
   --limit <n>                        Show at most n rows (ls defaults to 20)
   --all                              Show every ls row; cannot be combined with --limit
 
-latest defaults to the 20 newest sessions. Use latest 50 or latest turns 50 to choose a count.
+latest defaults to the 20 newest sessions. latest sessions is one record per session and
+shows aggregate turn count, models, and total tokens; sessions with 0 turns are omitted;
+Gemini sessions with no assistant reply are also omitted.
+latest turns is one record per UserTurn and shows its session, model, and total tokens. Use latest 50
+or latest turns 50 to choose a count.
 Directory paths are resolved from the current directory and support ~. Sessions without a
 working directory are excluded when --dir is present. --dir applies only to collection views,
 search, stats, and tree projects.
