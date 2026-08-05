@@ -58,6 +58,7 @@ import {
   wrapText,
 } from "./text.js";
 import { VERSION } from "./version.js";
+import { buildSessionDisplayLabels, buildTurnDisplayGroups, sessionBaseLabel } from "./view-model.js";
 
 /** Byte-identical to the pre-rewrite banner: release verifiers grep for both. */
 export const BANNER_TITLE = `CC History Lite TUI ${VERSION}`;
@@ -151,7 +152,10 @@ function renderCountsLine(model: LiteBrowserModel, state: LiteBrowserState): str
   const trail = state.mode === "search"
     ? `${dim(" · ")}${cyan(`search "${state.searchQuery}"`)}`
     : "";
-  return `${dim(parts.join(" · "))}${trail}`;
+  const projectionWarning = model.snapshot.projectionIssues.length > 0
+    ? `${dim(" · ")}${danger(`${model.snapshot.projectionIssues.length} data warning${model.snapshot.projectionIssues.length === 1 ? "" : "s"}`)}`
+    : "";
+  return `${dim(parts.join(" · "))}${trail}${projectionWarning}`;
 }
 
 function renderStatusMessageLine(state: LiteBrowserState, width: number): string {
@@ -262,14 +266,13 @@ function renderSessionPane(
     lines.push(emptyRow("No sessions"));
     return lines;
   }
+  const sessionLabels = buildSessionDisplayLabels(model.sessions.map((entry) => entry.session));
   const window = viewportWindow(model.sessions.length, state.selectedSessionIndex, viewportSize);
   if (window.start > 0) lines.push(muted(` ↑ ${window.start} more`));
   for (let index = window.start; index < window.end; index += 1) {
     const entry = model.sessions[index]!;
     const selected = state.selectedSessionIndex === index;
-    const name = entry.session.title
-      ? tameBrowseMarkup(entry.session.title)
-      : (entry.session.source_session_id ?? entry.session.id);
+    const name = sessionLabels.get(entry.session.id) ?? sessionBaseLabel(entry.session);
     const meta = [
       `${entry.turns.length}a`,
       entry.relatedWorkCount > 0 ? `${entry.relatedWorkCount}rel` : "",
@@ -363,24 +366,19 @@ function buildTurnDisplayItems(
   now: number,
 ): TurnDisplayItem[] {
   const items: TurnDisplayItem[] = [];
-  let groupStart = 0;
-  while (groupStart < turns.length) {
-    const sessionId = turns[groupStart]!.turn.session_id;
-    let groupEnd = groupStart;
-    while (groupEnd < turns.length && turns[groupEnd]!.turn.session_id === sessionId) groupEnd += 1;
-
-    const first = turns[groupStart]!;
-    const title = first.session?.title
-      ? compact(tameBrowseMarkup(first.session.title), 40)
-      : sessionId.slice(0, 20);
-    const meta = [`${groupEnd - groupStart}a`, formatRelativeTime(first.session?.created_at, now)]
+  const groups = buildTurnDisplayGroups(turns);
+  for (const group of groups) {
+    const meta = [`${group.visibleTurnCount}a`, formatRelativeTime(group.createdAt, now)]
       .filter(Boolean)
       .join(" · ");
-    items.push({ turnIndex: -1, text: `${bold(yellow(title))} ${dim(meta)}` });
+    items.push({
+      turnIndex: -1,
+      text: `${bold(yellow(compact(`Session: ${group.title}`, 48)))} ${dim(meta)}`,
+    });
 
-    for (let index = groupStart; index < groupEnd; index += 1) {
+    for (const [groupIndex, index] of group.turnIndices.entries()) {
       const entry = turns[index]!;
-      const connector = dim(index === groupEnd - 1 ? "└─" : "├─");
+      const connector = dim(groupIndex === group.turnIndices.length - 1 ? "└─" : "├─");
       const selected = index === selectedIndex;
       const metaText = [
         entry.turn.context_summary.primary_model ?? "",
@@ -395,7 +393,6 @@ function buildTurnDisplayItems(
         text: alignedRow(prefix, turnSnippet(entry, columnWidth), metaText, columnWidth, selected, focused),
       });
     }
-    groupStart = groupEnd;
   }
   return items;
 }
@@ -448,9 +445,9 @@ function buildDetailRows(
   const summary = entry.turn.context_summary;
   const rows: string[] = [];
 
-  const projectName = state.mode === "search"
-    ? (model.snapshot.getProject(entry.turn.project_id ?? "")?.display_name ?? "Unlinked")
-    : (getSelectedProject(model, state)?.displayName ?? "Unlinked");
+  const projectName = entry.turn.project_id
+    ? (model.snapshot.getProject(entry.turn.project_id)?.display_name ?? "Unlinked")
+    : "Unlinked";
   const sessionTitle = entry.session?.title ? dim(` · ${compact(tameBrowseMarkup(entry.session.title), 28)}`) : "";
   rows.push(
     `${bold("Ask")} ${cyan(`${index + 1}/${turns.length}`)} ${dim("in")} ${cyan(projectName)}${sessionTitle} ${magenta(entry.turn.id.slice(0, 8))}`,
@@ -699,6 +696,17 @@ function renderSourcesOverlay(
     ].join("  ·  ")}`,
     "",
   ];
+  const projectionIssues = model.snapshot.projectionIssues;
+  if (projectionIssues.length > 0) {
+    lines.push(danger(`  Projection warnings: ${projectionIssues.length}`));
+    for (const issue of projectionIssues.slice(0, 5)) {
+      lines.push(`    ${danger("!")} ${compact(`${issue.entity} ${issue.id}: ${issue.detail}`, Math.max(20, options.width - 8))}`);
+    }
+    if (projectionIssues.length > 5) {
+      lines.push(muted(`    … ${projectionIssues.length - 5} more projection warnings`));
+    }
+    lines.push("");
+  }
   for (const source of sources) {
     lines.push(...renderSourceRows(source, options.width));
   }

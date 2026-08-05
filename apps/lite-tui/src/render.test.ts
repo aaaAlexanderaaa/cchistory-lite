@@ -8,15 +8,32 @@ import { LiteBrowserModel } from "./model.js";
 import { BANNER_SUBTITLE, BANNER_TITLE, renderLiteFrame, renderScrollablePane, type LiteScrollReconciliation } from "./render.js";
 import {
   createLiteBrowserState,
+  getVisibleTurns,
   reduceLiteBrowserState,
   type LiteBrowserAction,
   type LiteBrowserState,
 } from "./state.js";
 import { clipLine, displayWidth, padLine, wrapText } from "./text.js";
+import { buildSessionDisplayLabels, buildTurnDisplayGroups } from "./view-model.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const codexRoot = path.join(repoRoot, "mock_data", ".codex", "sessions");
+const claudeRoot = path.join(repoRoot, "mock_data", ".claude", "projects");
+const codeBuddyRoot = path.join(repoRoot, "mock_data", ".codebuddy");
 const openclawRoot = path.join(repoRoot, "mock_data", ".openclaw", "agents");
+const fixtureRoots = {
+  codex: ".codex/sessions",
+  claude_code: ".claude/projects",
+  factory_droid: ".factory/sessions",
+  amp: ".local/share/amp/threads",
+  cursor: ".cursor/chats",
+  antigravity: ".gemini/antigravity/brain",
+  gemini: ".gemini",
+  openclaw: ".openclaw/agents",
+  opencode: ".local/share/opencode/storage",
+  codebuddy: ".codebuddy",
+  accio: "fixtures/accio-multi-agent/agents",
+} as const;
 const FIXED_NOW = Date.UTC(2026, 6, 27, 12, 0, 0);
 
 configureColorPolicy({ color: false });
@@ -41,6 +58,116 @@ async function buildFullModel(): Promise<LiteBrowserModel> {
     sourceRefs: ["codex"],
     safeMode: true,
     contextMode: "full",
+  });
+  return new LiteBrowserModel(snapshot);
+}
+
+async function buildMultiSourceModel(): Promise<LiteBrowserModel> {
+  const snapshot = await scanLiteHistory({
+    homeDir: repoRoot,
+    hostname: "cchistory-lite-tui-render-multi-source-host",
+    sourceRoots: [
+      { sourceRef: "codex", baseDir: codexRoot },
+      { sourceRef: "codebuddy", baseDir: codeBuddyRoot },
+    ],
+    sourceRefs: ["codex", "codebuddy"],
+    safeMode: true,
+    contextMode: "none",
+  });
+  return new LiteBrowserModel(snapshot);
+}
+
+async function buildFixtureMatrixModel(): Promise<LiteBrowserModel> {
+  const snapshot = await scanLiteHistory({
+    homeDir: repoRoot,
+    hostname: "cchistory-lite-tui-render-fixture-matrix-host",
+    sourceRoots: Object.entries(fixtureRoots).map(([sourceRef, relativePath]) => ({
+      sourceRef,
+      baseDir: path.join(repoRoot, "mock_data", relativePath),
+    })),
+    sourceRefs: Object.keys(fixtureRoots),
+    safeMode: true,
+    contextMode: "none",
+  });
+  return new LiteBrowserModel(snapshot);
+}
+
+function buildInterleavedModel(base: LiteBrowserModel): LiteBrowserModel {
+  const source = base.snapshot.data.sources[0]!;
+  const projectTemplate = base.snapshot.data.projects[0]!;
+  const sessionTemplate = base.snapshot.data.sessions[0]!;
+  const turnTemplates = base.snapshot.data.turns.slice(0, 4);
+  const project = {
+    ...projectTemplate,
+    project_id: "project:interleaved",
+    project_revision_id: "project:interleaved:r1",
+    display_name: "Interleaved project",
+    slug: "interleaved-project",
+    committed_turn_count: 4,
+    candidate_turn_count: 0,
+    session_count: 2,
+    project_last_activity_at: "2026-01-04T00:00:00.000Z",
+    updated_at: "2026-01-04T00:00:00.000Z",
+  };
+  const sessions = [
+    {
+      ...sessionTemplate,
+      id: "sess:codex:interleaved-alpha",
+      source_session_id: "interleaved-alpha",
+      title: "Alpha session",
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-04T00:00:00.000Z",
+      turn_count: 2,
+      primary_project_id: project.project_id,
+    },
+    {
+      ...sessionTemplate,
+      id: "sess:codex:interleaved-beta",
+      source_session_id: "interleaved-beta",
+      title: "Beta session",
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-03T00:00:00.000Z",
+      turn_count: 2,
+      primary_project_id: project.project_id,
+    },
+  ];
+  const turnSpecs = [
+    [0, sessions[0]!, "2026-01-04T00:00:00.000Z", "Alpha first ask"],
+    [1, sessions[1]!, "2026-01-03T00:00:00.000Z", "Beta first ask"],
+    [2, sessions[0]!, "2026-01-02T00:00:00.000Z", "Alpha second ask"],
+    [3, sessions[1]!, "2026-01-01T00:00:00.000Z", "Beta second ask"],
+  ] as const;
+  const turns = turnSpecs.map(([templateIndex, session, timestamp, prompt], index) => {
+    const template = turnTemplates[templateIndex]!;
+    return {
+      ...template,
+      id: `turn:interleaved:${index}`,
+      revision_id: `turn:interleaved:${index}:r1`,
+      turn_id: `turn:interleaved:${index}`,
+      turn_revision_id: `turn:interleaved:${index}:r1`,
+      raw_text: prompt,
+      canonical_text: prompt,
+      created_at: timestamp,
+      submission_started_at: timestamp,
+      last_context_activity_at: timestamp,
+      session_id: session.id,
+      source_id: source.id,
+      project_id: project.project_id,
+      project_ref: project.slug,
+      link_state: "committed" as const,
+      project_link_state: "committed" as const,
+    };
+  });
+  const snapshot = new LiveHistorySnapshot({
+    ...base.snapshot.data,
+    sources: [source],
+    projects: [project],
+    sessions,
+    turns,
+    contexts: [],
+    related_work: [],
+    ask_user_question_turns: [],
+    loss_audits: [],
   });
   return new LiteBrowserModel(snapshot);
 }
@@ -205,6 +332,139 @@ test("the detail pane surfaces canonical turn identity and the prompt", async ()
   assert.match(output, /Prompt:/);
 });
 
+test("turn headers keep the full visible session count when sessions interleave", async () => {
+  const model = buildInterleavedModel(await buildModel());
+  const state = apply(model, createLiteBrowserState(model), { type: "focus-turns" });
+  const groups = buildTurnDisplayGroups(getVisibleTurns(model, state));
+  assert.deepEqual(
+    groups.map((group) => [group.title, group.visibleTurnCount, group.turnIndices]),
+    [
+      ["Alpha session", 2, [0]],
+      ["Beta session", 2, [1]],
+      ["Alpha session", 2, [2]],
+      ["Beta session", 2, [3]],
+    ],
+  );
+  const output = frame(model, state, 130, 40);
+
+  assert.equal((output.match(/Session: Alpha session/g) ?? []).length, 2);
+  assert.equal((output.match(/Session: Beta session/g) ?? []).length, 2);
+  assert.match(output, /Session: Alpha session 2a/);
+  assert.match(output, /Session: Beta session 2a/);
+  for (const prompt of ["Alpha first ask", "Beta first ask", "Alpha second ask", "Beta second ask"]) {
+    assert.match(output, new RegExp(prompt));
+  }
+
+  const searchState = apply(model, createLiteBrowserState(model), { type: "open-search", query: "ask" });
+  const searchOutput = frame(model, searchState, 130, 40);
+  assert.match(searchOutput, /Session: Alpha session 2a/);
+  assert.match(searchOutput, /Session: Beta session 2a/);
+});
+
+test("the sessions scope disambiguates duplicate session titles with stable native refs", async () => {
+  const model = await buildModel(claudeRoot, "claude_code");
+  const byTitle = new Map<string, typeof model.sessions>();
+  for (const entry of model.sessions) {
+    const title = entry.session.title ?? entry.session.source_session_id ?? entry.session.id;
+    const group = byTitle.get(title);
+    if (group) group.push(entry);
+    else byTitle.set(title, [entry]);
+  }
+  const duplicate = [...byTitle.values()].find((group) => group.length > 1);
+  assert.ok(duplicate, "fixture must contain duplicate session titles");
+  const labels = buildSessionDisplayLabels(duplicate.map((entry) => entry.session));
+  assert.equal(new Set(duplicate.map((entry) => labels.get(entry.session.id))).size, duplicate.length);
+
+  const state = apply(model, createLiteBrowserState(model), { type: "set-browse-scope", scope: "sessions" });
+  const output = frame(model, state, 130, 40);
+  for (const entry of duplicate) {
+    const nativeRef = entry.session.source_session_id ?? entry.session.id;
+    assert.ok(output.includes(nativeRef.slice(0, 8)), `missing stable ref for ${entry.session.id}`);
+  }
+});
+
+test("session detail resolves the project from the selected turn", async () => {
+  const model = await buildMultiSourceModel();
+  const selectedProject = model.projects[0];
+  assert.ok(selectedProject);
+  const targetIndex = model.sessions.findIndex((entry) =>
+    entry.turns.some((turn) => turn.turn.project_id && turn.turn.project_id !== selectedProject.key),
+  );
+  assert.ok(targetIndex >= 0, "fixture must contain a session from another project");
+  const target = model.sessions[targetIndex]!;
+  const targetTurn = target.turns[0]!;
+  const targetProjectName = model.snapshot.getProject(targetTurn.turn.project_id ?? "")?.display_name;
+  assert.ok(targetProjectName);
+
+  let state = apply(model, createLiteBrowserState(model), { type: "set-browse-scope", scope: "sessions" });
+  for (let index = 0; index < targetIndex; index += 1) {
+    state = apply(model, state, { type: "move-down" });
+  }
+  state = apply(model, state, { type: "focus-detail" });
+  const output = frame(model, state, 130, 40);
+  const askLine = output.split("\n").find((line) => line.includes("Ask 1/"));
+  assert.ok(askLine, "selected session turn detail is missing");
+  assert.ok(askLine.includes(`in ${targetProjectName}`), `detail used the wrong project label: ${askLine}`);
+});
+
+test("the full adapter matrix preserves identity through every browser scope", async () => {
+  const model = await buildFixtureMatrixModel();
+  const snapshotTurnIds = new Set(model.snapshot.listResolvedTurns().map((turn) => turn.id));
+  const sessionTurnIds = new Set<string>();
+  const projectTurnIds = new Set<string>();
+
+  for (const entry of model.sessions) {
+    assert.equal(entry.turns.length, entry.session.turn_count, `session count drift for ${entry.session.id}`);
+    for (const turn of entry.turns) {
+      assert.equal(turn.turn.session_id, entry.session.id);
+      assert.equal(turn.session?.id, entry.session.id);
+      sessionTurnIds.add(turn.turn.id);
+    }
+  }
+  assert.deepEqual(sessionTurnIds, snapshotTurnIds, "every resolved turn must belong to exactly one session row");
+
+  for (const entry of model.projects) {
+    assert.equal(entry.turnCount, entry.turns.length, `project turn count drift for ${entry.key}`);
+    assert.equal(
+      entry.sessionCount,
+      new Set(entry.turns.map((turn) => turn.turn.session_id)).size,
+      `project session count drift for ${entry.key}`,
+    );
+    for (const turn of entry.turns) {
+      if (entry.project) assert.equal(turn.turn.project_id, entry.key);
+      else assert.equal(turn.turn.project_id, undefined);
+      projectTurnIds.add(turn.turn.id);
+    }
+    const groups = buildTurnDisplayGroups(entry.turns);
+    assert.deepEqual(
+      groups.flatMap((group) => group.turnIndices).sort((left, right) => left - right),
+      Array.from({ length: entry.turns.length }, (_, index) => index),
+      `turn display groups dropped or duplicated a turn for ${entry.key}`,
+    );
+  }
+  assert.deepEqual(projectTurnIds, snapshotTurnIds, "every resolved turn must belong to exactly one project bucket");
+
+  let sessionState = apply(model, createLiteBrowserState(model), { type: "set-browse-scope", scope: "sessions" });
+  for (const [index, entry] of model.sessions.entries()) {
+    if (index > 0) sessionState = apply(model, sessionState, { type: "move-down" });
+    assert.deepEqual(
+      getVisibleTurns(model, sessionState).map((turn) => turn.turn.id),
+      entry.turns.map((turn) => turn.turn.id),
+      `session scope selected the wrong turns for ${entry.session.id}`,
+    );
+  }
+
+  let projectState = createLiteBrowserState(model);
+  for (const [index, entry] of model.projects.entries()) {
+    if (index > 0) projectState = apply(model, projectState, { type: "move-down" });
+    assert.deepEqual(
+      getVisibleTurns(model, projectState).map((turn) => turn.turn.id),
+      entry.turns.map((turn) => turn.turn.id),
+      `project scope selected the wrong turns for ${entry.key}`,
+    );
+  }
+});
+
 test("session detail surfaces canonical related work for a turn-less session", async () => {
   const model = await buildModel(openclawRoot, "openclaw");
   const sessionId = "sess:openclaw:44444444-5555-4666-8777-888888888888";
@@ -306,6 +566,26 @@ test("a status message renders above the status bar", async () => {
   });
   const lines = frame(model, state).split("\n");
   assert.match(lines.at(-2) ?? "", /Refresh failed; previous snapshot retained: boom/);
+});
+
+test("projection integrity warnings stay visible instead of failing silently", async () => {
+  const base = await buildModel();
+  assert.deepEqual(base.snapshot.projectionIssues, []);
+  const target = base.snapshot.data.sessions[0]!;
+  const snapshot = new LiveHistorySnapshot({
+    ...base.snapshot.data,
+    sessions: base.snapshot.data.sessions.map((session) =>
+      session.id === target.id ? { ...session, turn_count: session.turn_count + 1 } : session,
+    ),
+  });
+  const model = new LiteBrowserModel(snapshot);
+  assert.equal(model.snapshot.projectionIssues.length, 1);
+
+  const state = apply(model, createLiteBrowserState(model), { type: "toggle-sources" });
+  const output = frame(model, state);
+  assert.match(output, /1 data warning/);
+  assert.match(output, /Projection warnings: 1/);
+  assert.match(output, /session sess:codex:/);
 });
 
 test("an empty snapshot renders guidance instead of a blank frame", async () => {

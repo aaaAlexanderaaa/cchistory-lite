@@ -115,6 +115,8 @@ test("Lite materializer resolves canonical history across the fixture-backed ada
     });
     const lite = buildLiveSnapshot(probe);
 
+    assert.deepEqual(lite.projectionIssues, [], "the complete adapter matrix must satisfy the canonical projection contract");
+
     // Every registered adapter in the matrix materializes into the live snapshot.
     assert.deepEqual(
       sortById(lite.listSources()).map((source) => source.platform).sort(),

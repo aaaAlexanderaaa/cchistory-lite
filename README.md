@@ -91,7 +91,7 @@ cchistory-lite <command> [options]
 | --- | --- |
 | `sources` | List resolved adapters with sync status, session/turn counts, and root |
 | `ls [projects\|sessions\|sources]` | Flat list of one collection, newest/most active first (default `projects`, 20 rows) |
-| `latest [sessions\|turns] [N]` | Show the newest sessions or turns (default `sessions 20`; `latest 50` is accepted) |
+| `latest [sessions\|turns] [N]` | Show the newest session activity or UserTurns (default `sessions 20`; sessions include aggregate turns/models/tokens) |
 | `tree [projects\|project <ref>\|session <ref>]` | Hierarchical view including Related Work |
 | `search <query>` | Search canonical turn text and paths |
 | `show project\|session\|turn\|source <ref>` | Full detail for exactly one object |
@@ -132,29 +132,54 @@ For Codex and Claude Code, `--dir` performs a lightweight metadata preflight and
 parsing logical sessions with a resolved non-matching working directory. Uncertain metadata and
 other adapters retain the full read-only probe followed by the same canonical filter.
 
+Human-readable list output adapts to terminal width. Sessions show a short actionable reference,
+title, working directory, model summary, and aggregate token count; turns show their session and
+turn references, model, token count, and prompt. Times are relative to the current process. Use
+`--json` when stable machine-readable fields are required; set `NO_COLOR=1` to suppress ANSI color
+in a TTY. Every standard `--json` response includes `projection_issues`; it is empty for a
+coherent snapshot. Human-readable commands report the same issues on `stderr`, and the TUI keeps
+them visible in its counts line and Sources overlay. Session collection JSON rows add
+`model_summary` and numeric `total_tokens` fields; `total_tokens` is `null` when no usage is known.
+
+`latest sessions` returns one row per session, ordered by its newest UserTurn. Sessions with no
+UserTurns are omitted, as are Gemini sessions that have no assistant reply. `latest turns` returns
+one row per UserTurn. Both forms accept a positional count, for example `latest 50`, `latest
+sessions 50`, or `latest turns 50`.
+
 Exit codes: `0` success, `2` usage error, `1` any other failure.
 
 ## TUI
 
-`cchistory-lite-tui` is a line-oriented REPL browser over a single snapshot held for the
-process lifetime. It accepts `--source`, `--source-root`, `--limit-files`, and `--safe`.
+`cchistory-lite-tui` is a full-screen, keyboard-driven browser over one context-light snapshot
+held for the process lifetime. It accepts `--source`, `--source-root`, `--limit-files`, and
+`--safe`, plus one optional startup entry point:
 
-```
-p | projects          list projects            n | next      next page
-s | sessions          list sessions            b | prev      previous page
-u | turns             list UserTurns           page <n>      jump to a page
-/<query>              search turn text         o | sources   source status
-project <ref>         project detail           t | stats     usage overview
-session <ref>         session + turn detail    r | refresh   rescan
-turn <ref>            turn + full context      h | help      show commands
-                                               q | quit      release the snapshot
+```bash
+cchistory-lite-tui --project <ref>
+cchistory-lite-tui --session <ref>
+cchistory-lite-tui --turn <ref>
+cchistory-lite-tui --search "retry backoff"
 ```
 
-Startup does one context-light scan and prints a dashboard: counters, the first 8 projects,
-and the 8 most recent turns. `turn <ref>` is the only command that goes back to disk — it runs
-a targeted full-context rescan of just that session, so the resident snapshot stays light.
-`refresh` keeps the previous snapshot if the rescan fails. On a non-interactive stdout the TUI
-prints the dashboard and exits 0.
+References accept a full id, slug or display name, workspace path, or unique id prefix. The
+interactive TUI uses the alternate screen and raw keyboard input; `--color` and `--no-color`
+force or suppress styling.
+
+```
+Up/Down or j/k   move cursor          Tab / Shift+Tab   next / previous pane
+PgUp/PgDn        page                 Enter             drill into the focused pane
+g / G             first / last         Esc               back or close an overlay
+p / S             projects / sessions  t / d             turns / detail pane
+/                 search              i                 usage stats
+s                 source status       ?                 help
+r                 refresh from disk    q                 quit and release the snapshot
+```
+
+Startup and refresh perform context-light scans. Press Enter on the Detail pane to load full
+conversation context for only that session; the context is then available in the conversation
+pane. Search queries of one to three characters are committed with Enter; queries of four or
+more characters run automatically as you type. `refresh` keeps the previous snapshot if the
+rescan fails. On non-interactive stdout, the TUI renders one fixed snapshot frame and exits 0.
 
 ## Architecture
 

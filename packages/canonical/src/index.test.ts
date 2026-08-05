@@ -9,6 +9,7 @@ import type {
   UserTurnProjection,
 } from "@cchistory/domain";
 import {
+  auditProjectionConsistency,
   buildDirectoryScopedProjectTreeProjection,
   buildSessionRelatedWorkIndex,
   boundSearchCanonicalText,
@@ -30,6 +31,127 @@ import {
   sessionMatchesDirectoryScope,
   stripSearchTruncationMarker,
 } from "./index.js";
+
+test("projection audit accepts a coherent snapshot and reports cross-entity drift", () => {
+  const source = createSource();
+  const session = createSession(source);
+  const turn = createTurn(source, session);
+  const clean = auditProjectionConsistency({
+    sources: [source],
+    projects: [],
+    sessions: [session],
+    turns: [turn],
+  });
+  assert.deepEqual(clean, []);
+
+  const broken = auditProjectionConsistency({
+    sources: [source],
+    projects: [],
+    sessions: [{ ...session, turn_count: 2, primary_project_id: "project-missing" }],
+    turns: [{
+      ...turn,
+      id: "turn-broken",
+      turn_id: "turn-broken",
+      turn_revision_id: "turn-broken:r1",
+      session_id: "session-missing",
+      project_id: "project-missing",
+      link_state: "committed",
+    }],
+  });
+  assert.deepEqual(
+    new Set(broken.map((issue) => issue.code)),
+    new Set(["session-primary-project", "missing-session", "missing-project", "session-turn-count"]),
+  );
+});
+
+test("projection audit covers duplicate identities, references, counts, order, and link state", () => {
+  const source = createSource();
+  const project = createProject("audit", { committedTurns: 1, candidateTurns: 1, sessions: 3 });
+  const newerSession = {
+    ...createSession(source),
+    id: "session-newer",
+    source_session_id: "native-newer",
+    created_at: "2026-01-03T00:00:00.000Z",
+    updated_at: "2026-01-03T00:00:00.000Z",
+    turn_count: 1,
+    primary_project_id: "project-missing-primary",
+  };
+  const olderSession = {
+    ...createSession(source),
+    id: "session-older",
+    source_session_id: "native-older",
+    created_at: "2026-01-01T00:00:00.000Z",
+    updated_at: "2026-01-01T00:00:00.000Z",
+    turn_count: 1,
+  };
+  const newerTurn = {
+    ...createTurn(source, newerSession),
+    id: "turn-newer",
+    revision_id: "turn-newer:r1",
+    turn_id: "turn-newer",
+    turn_revision_id: "turn-newer:r1",
+    created_at: "2026-01-03T00:00:00.000Z",
+    submission_started_at: "2026-01-03T00:00:00.000Z",
+    last_context_activity_at: "2026-01-03T00:00:00.000Z",
+    project_id: project.project_id,
+    link_state: "unlinked" as const,
+  };
+  const olderTurn = {
+    ...createTurn(source, olderSession),
+    id: "turn-older",
+    revision_id: "turn-older:r1",
+    turn_id: "turn-older",
+    turn_revision_id: "turn-older:r1",
+    created_at: "2026-01-01T00:00:00.000Z",
+    submission_started_at: "2026-01-01T00:00:00.000Z",
+    last_context_activity_at: "2026-01-01T00:00:00.000Z",
+    project_id: project.project_id,
+    link_state: "committed" as const,
+  };
+  const missingReferenceTurn = {
+    ...olderTurn,
+    id: "turn-missing-reference",
+    revision_id: "turn-missing-reference:r1",
+    turn_id: "turn-missing-reference",
+    turn_revision_id: "turn-missing-reference:r1",
+    source_id: "source-missing",
+    session_id: "session-missing",
+    project_id: "project-missing",
+    created_at: "2025-12-01T00:00:00.000Z",
+    submission_started_at: "2025-12-01T00:00:00.000Z",
+    last_context_activity_at: "2025-12-01T00:00:00.000Z",
+  };
+  const context = {
+    turn_id: newerTurn.id,
+    system_messages: [],
+    assistant_replies: [],
+    tool_calls: [],
+    raw_event_refs: [],
+  };
+
+  const issues = auditProjectionConsistency({
+    sources: [source, source],
+    projects: [project, project],
+    sessions: [olderSession, newerSession, newerSession],
+    turns: [olderTurn, newerTurn, newerTurn, missingReferenceTurn],
+    contexts: [context, context, { ...context, turn_id: "turn-context-missing" }],
+  });
+
+  assert.deepEqual(new Set(issues.map((issue) => issue.code)), new Set([
+    "duplicate-id",
+    "missing-source",
+    "missing-session",
+    "missing-project",
+    "missing-context-turn",
+    "session-turn-count",
+    "session-primary-project",
+    "project-turn-count",
+    "project-session-count",
+    "sessions-not-recency-ordered",
+    "turns-not-recency-ordered",
+    "projected-unlinked-turn",
+  ]));
+});
 
 test("shared canonical helpers link, search, and aggregate one live turn", () => {
   const source = createSource();

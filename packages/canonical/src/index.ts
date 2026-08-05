@@ -66,4 +66,9 @@ export {
   buildSessionRelatedWorkIndex,
   listSessionRelatedWork,
 } from "./related-work.js";
+export {
+  auditProjectionConsistency,
+  type ProjectionAuditInput,
+  type ProjectionAuditIssue,
+} from "./projection-audit.js";
 export { installRuntimeWarningFilter } from "./runtime-warning-filter.js";

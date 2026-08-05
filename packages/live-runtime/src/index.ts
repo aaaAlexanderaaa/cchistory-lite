@@ -26,6 +26,7 @@ import {
   type UserTurnProjection,
 } from "@cchistory/domain";
 import {
+  auditProjectionConsistency,
   buildDirectoryScopedProjectTreeProjection,
   buildFallbackProjectObservationCandidates,
   buildProjectDisplayList,
@@ -42,6 +43,7 @@ import {
   installRuntimeWarningFilter,
   pathMatchesDirectoryScope,
   searchTurnsInMemory,
+  type ProjectionAuditIssue,
   type UsageFilters,
 } from "@cchistory/canonical";
 import type { SourceProbeProgressEvent } from "@cchistory/source-adapters";
@@ -132,6 +134,8 @@ export interface LiveSearchOptions {
 
 export class LiveHistorySnapshot {
   readonly data: LiveSnapshotData;
+  /** Non-fatal projection diagnostics kept visible to read-only surfaces. */
+  readonly projectionIssues: readonly ProjectionAuditIssue[];
   private readonly sourcesById: Map<string, SourceStatus>;
   private readonly projectsById: Map<string, ProjectIdentity>;
   private readonly sessionsById: Map<string, SessionProjection>;
@@ -147,6 +151,7 @@ export class LiveHistorySnapshot {
 
   constructor(data: LiveSnapshotInputData, searchCandidates: readonly DerivedCandidate[] = []) {
     this.data = { ...data, related_work: data.related_work ?? [] };
+    this.projectionIssues = auditProjectionConsistency(this.data);
     this.sourcesById = new Map(data.sources.map((source) => [source.id, source]));
     this.projectsById = new Map(data.projects.map((project) => [project.project_id, project]));
     this.sessionsById = new Map(this.data.sessions.map((session) => [session.id, session]));

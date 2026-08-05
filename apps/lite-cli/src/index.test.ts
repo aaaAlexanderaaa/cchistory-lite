@@ -127,6 +127,7 @@ test("Lite CLI searches, reports stats, and writes one-way export", async () => 
     assert.deepEqual(JSON.parse(firstLine ?? "{}"), {
       schema: "cchistory-lite-export/v1",
       kind: "manifest",
+      projection_issues: [],
     });
 
     const jsonExport = captureIo(tempHome);
@@ -134,7 +135,12 @@ test("Lite CLI searches, reports stats, and writes one-way export", async () => 
       await runLiteCli(["export", "--format", "json", "--out", "-", ...rootArgs], jsonExport.io),
       0,
     );
-    assert.equal((JSON.parse(jsonExport.stdout.join("")) as { schema: string }).schema, "cchistory-lite-export/v1");
+    const jsonExportPayload = JSON.parse(jsonExport.stdout.join("")) as {
+      schema: string;
+      projection_issues: unknown[];
+    };
+    assert.equal(jsonExportPayload.schema, "cchistory-lite-export/v1");
+    assert.deepEqual(jsonExportPayload.projection_issues, []);
 
     const markdownExport = captureIo(tempHome);
     assert.equal(
@@ -142,6 +148,7 @@ test("Lite CLI searches, reports stats, and writes one-way export", async () => 
       0,
     );
     assert.match(markdownExport.stdout.join(""), /One-way canonical export/);
+    assert.match(markdownExport.stdout.join(""), /Projection warnings: 0/);
 
     const invalid = captureIo(tempHome);
     assert.equal(await runLiteCli(["stats", "--store", path.join(tempHome, ".cchistory")], invalid.io), 2);
@@ -204,6 +211,45 @@ test("Lite CLI searches, reports stats, and writes one-way export", async () => 
   } finally {
     await rm(tempHome, { recursive: true, force: true });
   }
+});
+
+test("Lite CLI exposes projection diagnostics without corrupting the data stream", async () => {
+  const base = await getCodexSnapshot();
+  const target = base.data.sessions[0];
+  assert.ok(target);
+  const broken = new LiveHistorySnapshot({
+    ...base.data,
+    sessions: base.data.sessions.map((session) =>
+      session.id === target.id ? { ...session, turn_count: session.turn_count + 1 } : session,
+    ),
+  });
+  assert.equal(broken.projectionIssues.length, 1);
+
+  const human = captureIo(repoRoot, undefined, { scan: async () => broken });
+  assert.equal(await runLiteCli(["ls", "sessions"], human.io), 0);
+  assert.match(human.stderr.join(""), /Projection warnings: 1/);
+  assert.match(human.stderr.join(""), /session .*declares/);
+  assert.doesNotMatch(human.stdout.join(""), /Projection warnings/u);
+
+  const json = captureIo(repoRoot, undefined, { scan: async () => broken });
+  assert.equal(await runLiteCli(["ls", "sessions", "--json"], json.io), 0);
+  const payload = JSON.parse(json.stdout.join("")) as {
+    projection_issues: Array<{ code: string; entity: string; id: string }>;
+  };
+  assert.deepEqual(payload.projection_issues, [{
+    code: "session-turn-count",
+    entity: "session",
+    id: target.id,
+    detail: `declares ${target.turn_count + 1} turns but projects ${target.turn_count}`,
+  }]);
+  assert.match(json.stderr.join(""), /Projection warnings: 1/);
+
+  const exported = captureIo(repoRoot, undefined, { scan: async () => broken });
+  assert.equal(await runLiteCli(["export", "--format", "json", "--out", "-"], exported.io), 0);
+  const exportPayload = JSON.parse(exported.stdout.join("")) as {
+    projection_issues: Array<{ code: string }>;
+  };
+  assert.deepEqual(exportPayload.projection_issues.map((issue) => issue.code), ["session-turn-count"]);
 });
 
 test("Lite CLI rejects empty inline flag values and non-positive search limits", async () => {
@@ -464,7 +510,7 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
     kind: string;
     total: number;
     shown: number;
-    sessions: Array<{ id: string; turn_count: number }>;
+    sessions: Array<{ id: string; turn_count: number; model_summary: string; total_tokens: number | null }>;
   };
   assert.equal(defaultPayload.kind, "sessions");
   assert.equal(
@@ -480,7 +526,16 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
   assert.ok(defaultPayload.sessions.every((session) => session.id !== "sess:codex:pending-session"));
   const expectedLatestSessionId = snapshot.listResolvedTurns()[0]?.session_id;
   assert.ok(expectedLatestSessionId);
-  assert.equal(defaultPayload.sessions[0]?.id, expectedLatestSessionId);
+  const latestSessionRow = defaultPayload.sessions[0];
+  assert.equal(latestSessionRow?.id, expectedLatestSessionId);
+  assert.ok(latestSessionRow?.model_summary, "latest session JSON must include a model summary");
+  const latestSessionTokenTotals = snapshot.listSessionTurns(expectedLatestSessionId)
+    .map((turn) => turn.context_summary.token_usage?.total_tokens ?? turn.context_summary.total_tokens)
+    .filter((total): total is number => typeof total === "number" && Number.isFinite(total));
+  const latestSessionTokenTotal = latestSessionTokenTotals.length > 0
+    ? latestSessionTokenTotals.reduce((total, value) => total + value, 0)
+    : null;
+  assert.equal(latestSessionRow?.total_tokens, latestSessionTokenTotal);
 
   const turns = captureIo(repoRoot, undefined, { scan: scanner });
   assert.equal(await runLiteCli(["latest", "turn", "2", "--json"], turns.io), 0);
@@ -520,10 +575,22 @@ test("Lite CLI ls limits human and JSON output and rejects conflicting controls 
 
   const all = captureIo(repoRoot, undefined, { scan: scanner });
   assert.equal(await runLiteCli(["ls", "sessions", "--all", "--json"], all.io), 0);
-  const allPayload = JSON.parse(all.stdout.join("")) as { total: number; shown: number; sessions: unknown[] };
+  const allPayload = JSON.parse(all.stdout.join("")) as {
+    total: number;
+    shown: number;
+    sessions: Array<{ id: string; model_summary: string; total_tokens: number | null }>;
+  };
   assert.equal(allPayload.total, snapshot.listResolvedSessions().length);
   assert.equal(allPayload.shown, allPayload.total);
   assert.equal(allPayload.sessions.length, allPayload.total);
+  for (const session of allPayload.sessions) {
+    assert.ok(session.model_summary, `session ${session.id} is missing a model summary`);
+    const tokenTotals = snapshot.listSessionTurns(session.id)
+      .map((turn) => turn.context_summary.token_usage?.total_tokens ?? turn.context_summary.total_tokens)
+      .filter((total): total is number => typeof total === "number" && Number.isFinite(total));
+    const expectedTotal = tokenTotals.length > 0 ? tokenTotals.reduce((total, value) => total + value, 0) : null;
+    assert.equal(session.total_tokens, expectedTotal, `session ${session.id} has the wrong aggregate token total`);
+  }
 
   let rejectedScans = 0;
   const conflicting = captureIo(repoRoot, undefined, {

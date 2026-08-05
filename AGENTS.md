@@ -57,6 +57,31 @@ evidence to preserve, not as an error to swallow.
   and Windows.
 - Use `mkdtemp` for scratch state and clean up in `finally`.
 
+### Projection contract
+
+Every change that can affect adapter payloads, canonical linking/order, snapshot materialization,
+or a CLI/TUI view must preserve the canonical projection contract. The contract is checked by
+`auditProjectionConsistency` and includes:
+
+- every source, project, session, turn, and context reference resolves within the snapshot;
+- declared session/project counts equal the rows projected into those buckets;
+- snapshot sessions and turns retain canonical recency order;
+- a turn cannot point at a project while claiming to be unlinked; and
+- every resolved turn remains reachable from exactly one session bucket and one project/unlinked
+  bucket in the browser model.
+
+The live-runtime fixture matrix must assert zero projection issues for every registered source.
+Surface tests must also include adversarial shapes that ordinary history rarely produces but that
+break identity if handled positionally: duplicate titles, interleaved sessions, empty/turn-less
+sessions, cross-project selections, and search results. A new adapter is incomplete until its
+sanitized fixture participates in that matrix; do not rely on a developer's personal history to
+prove the projection.
+
+Projection issues are non-fatal evidence, not permission to silently repair or drop source data.
+Keep them on the in-memory snapshot, expose them in every read-only surface, and add a regression
+test for each issue shape. If the contract changes, update the audit, fixture matrix, and this
+section in the same change.
+
 ## Architecture rules
 
 `architecture-rules.json` declares the forbidden-import rules; `verify-architecture-boundaries.mjs`

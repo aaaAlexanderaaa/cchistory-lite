@@ -122,7 +122,7 @@ export async function runLiteCli(argv: string[], io: LiteCliIo = defaultIo()): P
 
     switch (parsed.command) {
       case "sources":
-        output(io, json, buildSourcesPayload(snapshot), renderSources(snapshot.listSources()));
+        output(io, json, buildSourcesPayload(snapshot), renderSources(snapshot.listSources()), snapshot);
         return 0;
       case "ls":
         runList(parsed, snapshot, io, json);
@@ -217,6 +217,7 @@ function runList(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
       json,
       { schema: JSON_SCHEMA, kind: "projects", total: allProjects.length, shown: projects.length, projects },
       renderProjects(projects, collectionRenderOptions(io, "Projects", allProjects.length, "use --limit <n> or --all", "project")),
+      snapshot,
     );
     return;
   }
@@ -226,8 +227,15 @@ function runList(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
     output(
       io,
       json,
-      { schema: JSON_SCHEMA, kind: "sessions", total: allSessions.length, shown: sessions.length, sessions },
+      {
+        schema: JSON_SCHEMA,
+        kind: "sessions",
+        total: allSessions.length,
+        shown: sessions.length,
+        sessions: buildSessionCollectionRows(snapshot, sessions),
+      },
       renderSessions(snapshot, sessions, collectionRenderOptions(io, "Sessions", allSessions.length, "use --limit <n> or --all", "session")),
+      snapshot,
     );
     return;
   }
@@ -240,6 +248,7 @@ function runList(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
       json,
       { schema: JSON_SCHEMA, kind: "sources", total: allSources.length, shown: sources.length, sources },
       renderSources(sources, collectionRenderOptions(io, "Sources", allSources.length, "use --limit <n> or --all", "source")),
+      snapshot,
     );
     return;
   }
@@ -261,12 +270,19 @@ function runLatest(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCl
     output(
       io,
       json,
-      { schema: JSON_SCHEMA, kind: "sessions", total: allSessions.length, shown: sessions.length, sessions },
+      {
+        schema: JSON_SCHEMA,
+        kind: "sessions",
+        total: allSessions.length,
+        shown: sessions.length,
+        sessions: buildSessionCollectionRows(snapshot, sessions),
+      },
       renderSessions(
         snapshot,
         sessions,
         collectionRenderOptions(io, "Latest sessions", allSessions.length, "request a larger N", "session", "LATEST"),
       ),
+      snapshot,
     );
     return;
   }
@@ -277,6 +293,7 @@ function runLatest(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCl
     json,
     { schema: JSON_SCHEMA, kind: "turns", total: allTurns.length, shown: turns.length, turns },
     renderTurns(snapshot, turns, collectionRenderOptions(io, "Latest turns", allTurns.length, "request a larger N", "UserTurn")),
+    snapshot,
   );
 }
 
@@ -309,7 +326,7 @@ function runTree(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
   const directoryScope = resolveDirectoryScope(parsed, io);
   if (target === "projects") {
     const tree = buildProjectsTree(snapshot, directoryScope);
-    output(io, json, { schema: JSON_SCHEMA, kind: "project_tree", ...tree }, renderProjectTree(tree));
+    output(io, json, { schema: JSON_SCHEMA, kind: "project_tree", ...tree }, renderProjectTree(tree), snapshot);
     return;
   }
   const ref = parsed.positionals[1];
@@ -320,13 +337,13 @@ function runTree(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
   if (target === "project") {
     const project = requireProject(snapshot, ref);
     const node = buildProjectNode(snapshot, project);
-    output(io, json, { schema: JSON_SCHEMA, kind: "project_tree", project: node }, renderProjectTree({ projects: [node], unlinked: [] }));
+    output(io, json, { schema: JSON_SCHEMA, kind: "project_tree", project: node }, renderProjectTree({ projects: [node], unlinked: [] }), snapshot);
     return;
   }
   if (target === "session") {
     const session = requireSession(snapshot, ref);
     const node = buildSessionNode(snapshot, session);
-    output(io, json, { schema: JSON_SCHEMA, kind: "session_tree", session: node }, renderSessionTree(node));
+    output(io, json, { schema: JSON_SCHEMA, kind: "session_tree", session: node }, renderSessionTree(node), snapshot);
     return;
   }
   throw new UsageError(`tree target must be projects, project, or session; received ${JSON.stringify(target)}.`);
@@ -353,6 +370,7 @@ function runSearch(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCl
     json,
     { schema: JSON_SCHEMA, kind: "search", query, total: result.total, results: result.results },
     renderSearch(query, result.total, result.results),
+    snapshot,
   );
 }
 
@@ -364,7 +382,7 @@ function runShow(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
   if (kind === "project") {
     const project = requireProject(snapshot, ref);
     const detail = buildProjectNode(snapshot, project);
-    output(io, json, { schema: JSON_SCHEMA, kind: "project_detail", ...detail }, renderProjectDetail(snapshot, detail, io));
+    output(io, json, { schema: JSON_SCHEMA, kind: "project_detail", ...detail }, renderProjectDetail(snapshot, detail, io), snapshot);
     return;
   }
   if (kind === "session") {
@@ -375,7 +393,7 @@ function runShow(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
       related_work: snapshot.listSessionRelatedWork(session.id),
       turns: turns.map((turn) => ({ turn, context: snapshot.getTurnContext(turn.id) })),
     };
-    output(io, json, { schema: JSON_SCHEMA, kind: "session_detail", ...detail }, renderSessionDetail(snapshot, detail, io));
+    output(io, json, { schema: JSON_SCHEMA, kind: "session_detail", ...detail }, renderSessionDetail(snapshot, detail, io), snapshot);
     return;
   }
   if (kind === "turn") {
@@ -386,7 +404,7 @@ function runShow(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
       project: turn.project_id ? snapshot.getProject(turn.project_id) : undefined,
       context: snapshot.getTurnContext(turn.id),
     };
-    output(io, json, { schema: JSON_SCHEMA, kind: "turn_detail", ...detail }, renderTurnDetail(snapshot, detail, io));
+    output(io, json, { schema: JSON_SCHEMA, kind: "turn_detail", ...detail }, renderTurnDetail(snapshot, detail, io), snapshot);
     return;
   }
   if (kind === "source") {
@@ -396,7 +414,7 @@ function runShow(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
       sessions: snapshot.listResolvedSessions().filter((session) => session.source_id === source.id),
       loss_audits: snapshot.listLossAudits().filter((audit) => audit.source_id === source.id),
     };
-    output(io, json, { schema: JSON_SCHEMA, kind: "source_detail", ...detail }, renderSourceDetail(snapshot, detail, io));
+    output(io, json, { schema: JSON_SCHEMA, kind: "source_detail", ...detail }, renderSourceDetail(snapshot, detail, io), snapshot);
     return;
   }
   throw new UsageError(`show target must be project, session, turn, or source; received ${JSON.stringify(kind)}.`);
@@ -419,6 +437,7 @@ function runStats(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCli
     json,
     { schema: JSON_SCHEMA, kind: "stats", overview, rollup },
     renderStats(overview, rollup),
+    snapshot,
   );
 }
 
@@ -430,6 +449,7 @@ function requiresFullContextSnapshot(parsed: ParsedArgs): boolean {
 }
 
 async function runExport(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliIo): Promise<void> {
+  reportProjectionIssues(snapshot, io);
   const format = value(parsed, "format") ?? "jsonl";
   if (format !== "jsonl" && format !== "json" && format !== "markdown") {
     throw new UsageError(`export format must be jsonl, json, or markdown; received ${JSON.stringify(format)}.`);
@@ -504,7 +524,7 @@ function buildSessionNode(snapshot: LiveHistorySnapshot, session: SessionProject
 function formatExport(snapshot: LiveHistorySnapshot, format: "json" | "markdown"): string {
   const data = snapshot.data;
   if (format === "json") {
-    return `${JSON.stringify({ schema: EXPORT_SCHEMA, kind: "export", ...data }, null, 2)}\n`;
+    return `${JSON.stringify({ schema: EXPORT_SCHEMA, kind: "export", ...data, projection_issues: snapshot.projectionIssues }, null, 2)}\n`;
   }
 
   const lines = [
@@ -519,6 +539,7 @@ function formatExport(snapshot: LiveHistorySnapshot, format: "json" | "markdown"
     `- Sessions: ${data.sessions.length}`,
     `- UserTurns: ${data.turns.length}`,
     `- Related work: ${data.related_work.length}`,
+    `- Projection warnings: ${snapshot.projectionIssues.length}`,
     "",
     "## UserTurns",
     "",
@@ -531,7 +552,7 @@ function formatExport(snapshot: LiveHistorySnapshot, format: "json" | "markdown"
 
 function* iterateJsonlRows(snapshot: LiveHistorySnapshot): Iterable<unknown> {
   const data = snapshot.data;
-  yield { schema: EXPORT_SCHEMA, kind: "manifest" };
+  yield { schema: EXPORT_SCHEMA, kind: "manifest", projection_issues: snapshot.projectionIssues };
   yield { schema: EXPORT_SCHEMA, kind: "host", value: data.host };
   for (const value of data.sources) yield { schema: EXPORT_SCHEMA, kind: "source", value };
   for (const value of data.projects) yield { schema: EXPORT_SCHEMA, kind: "project", value };
@@ -669,6 +690,25 @@ function renderSessions(
   }
   appendCollectionFooter(lines, options, sessions.length);
   return `${lines.join("\n")}\n`;
+}
+
+interface SessionCollectionRow extends SessionProjection {
+  model_summary: string;
+  total_tokens: number | null;
+}
+
+function buildSessionCollectionRows(
+  snapshot: LiveHistorySnapshot,
+  sessions: readonly SessionProjection[],
+): SessionCollectionRow[] {
+  return sessions.map((session) => {
+    const turns = snapshot.listSessionTurns(session.id);
+    return {
+      ...session,
+      model_summary: formatSessionModel(session, turns),
+      total_tokens: sumTokenTotal(turns),
+    };
+  });
 }
 
 function renderTurns(
@@ -976,6 +1016,11 @@ function formatSessionModel(session: SessionProjection, turns: readonly UserTurn
 }
 
 function formatTokenTotal(turns: readonly UserTurnProjection[]): string {
+  const total = sumTokenTotal(turns);
+  return total === null ? "n/a" : formatNumber(total);
+}
+
+function sumTokenTotal(turns: readonly UserTurnProjection[]): number | null {
   const totals = turns.reduce<TokenTotals>((result, turn) => {
     const total = turn.context_summary.token_usage?.total_tokens ?? turn.context_summary.total_tokens;
     if (typeof total === "number" && Number.isFinite(total)) {
@@ -984,7 +1029,7 @@ function formatTokenTotal(turns: readonly UserTurnProjection[]): string {
     }
     return result;
   }, { total: 0, hasUsage: false });
-  return totals.hasUsage ? formatNumber(totals.total) : "n/a";
+  return totals.hasUsage ? totals.total : null;
 }
 
 function indentBlock(value: string, prefix: string): string {
@@ -1082,8 +1127,26 @@ function formatRelatedWorkLabel(
   return `${kind}: ${target}`;
 }
 
-function output(io: LiteCliIo, json: boolean, payload: unknown, text: string): void {
-  io.stdout(json ? `${JSON.stringify(payload, null, 2)}\n` : shouldColorize(io) ? colorizeHumanText(text) : text);
+function output(
+  io: LiteCliIo,
+  json: boolean,
+  payload: Record<string, unknown>,
+  text: string,
+  snapshot: LiveHistorySnapshot,
+): void {
+  reportProjectionIssues(snapshot, io);
+  const outputPayload = { ...payload, projection_issues: snapshot.projectionIssues };
+  io.stdout(json ? `${JSON.stringify(outputPayload, null, 2)}\n` : shouldColorize(io) ? colorizeHumanText(text) : text);
+}
+
+function reportProjectionIssues(snapshot: LiveHistorySnapshot, io: LiteCliIo): void {
+  const issues = snapshot.projectionIssues;
+  if (issues.length === 0) return;
+  io.stderr(`Projection warnings: ${issues.length}\n`);
+  for (const issue of issues.slice(0, 5)) {
+    io.stderr(`  ! ${issue.entity} ${issue.id}: ${issue.detail}\n`);
+  }
+  if (issues.length > 5) io.stderr(`  ... ${issues.length - 5} more projection warnings\n`);
 }
 
 function shouldColorize(io: LiteCliIo): boolean {
