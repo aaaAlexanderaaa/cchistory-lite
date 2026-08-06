@@ -24,6 +24,9 @@ test("[gemini] companion project files are captured as evidence blobs without cr
     assert.equal(payload.source.sync_status, "healthy");
     assert.equal(payload.sessions.length, 1);
     assert.equal(payload.turns.length, 1);
+    assert.equal(payload.turns[0]?.submission_started_at, "2026-03-10T07:00:00.000Z");
+    assert.equal(payload.turns[0]?.last_context_activity_at, "2026-03-10T07:00:01.000Z");
+    assert.equal(payload.sessions[0]?.updated_at, "2026-03-10T07:00:01.000Z");
     assert.deepEqual(
       payload.blobs.map((blob) => blob.origin_path).sort(),
       [

@@ -16,7 +16,7 @@ export function parseCodexRecord(
   const fragments: SourceFragment[] = [];
   const lossAudits: LossAuditRecord[] = [];
   const type = helpers.asString(parsed.type) ?? "unknown";
-  const timeKey = helpers.coerceIso(parsed.timestamp) ?? helpers.nowIso();
+  const timeKey = helpers.coerceIso(parsed.timestamp) ?? record.observed_at;
 
   if (type === "session_meta" && helpers.isObject(parsed.payload)) {
     const payload = parsed.payload;

@@ -132,18 +132,21 @@ For Codex and Claude Code, `--dir` performs a lightweight metadata preflight and
 parsing logical sessions with a resolved non-matching working directory. Uncertain metadata and
 other adapters retain the full read-only probe followed by the same canonical filter.
 
-Human-readable list output adapts to terminal width. Sessions show a short actionable reference,
-title, working directory, model summary, and aggregate token count; turns show their session and
-turn references, model, token count, and prompt. Times are relative to the current process. Use
-`--json` when stable machine-readable fields are required; set `NO_COLOR=1` to suppress ANSI color
-in a TTY. Every standard `--json` response includes `projection_issues`; it is empty for a
+Human-readable collections use semantic timeline blocks rather than tables and adapt to terminal
+width. Sessions show their title, model summary, aggregate token count, and, when supported, the
+complete native `cd <directory> && <tool> resume <session-id>` command in green. A standalone
+directory is shown only when no resume command is available. Turns show their source, model, token
+count, prompt, and Lite turn reference. Times are relative to the current process. Use `--json`
+when stable machine-readable fields are required; set `NO_COLOR=1` to suppress ANSI color in a
+TTY. Every standard `--json` response includes `projection_issues`; it is empty for a
 coherent snapshot. Human-readable commands report the same issues on `stderr`, and the TUI keeps
 them visible in its counts line and Sources overlay. Session collection JSON rows add
 `model_summary` and numeric `total_tokens` fields; `total_tokens` is `null` when no usage is known.
 
-`latest sessions` returns one row per session, ordered by its newest UserTurn. Sessions with no
-UserTurns are omitted, as are Gemini sessions that have no assistant reply. `latest turns` returns
-one row per UserTurn. Both forms accept a positional count, for example `latest 50`, `latest
+`latest sessions` returns one record per session, ordered by its last real message activity.
+Sessions with no UserTurns are omitted; pending Gemini sessions remain visible and use their last
+observed message rather than native update metadata. `latest turns` returns one record per
+UserTurn. Both forms accept a positional count, for example `latest 50`, `latest
 sessions 50`, or `latest turns 50`.
 
 Exit codes: `0` success, `2` usage error, `1` any other failure.

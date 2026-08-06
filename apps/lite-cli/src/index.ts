@@ -261,11 +261,8 @@ function runLatest(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCl
   if (kind === "sessions") {
     const candidates = snapshot
       .listResolvedSessions({ directoryScope })
-      .filter((session) =>
-        session.turn_count > 0 &&
-        (session.source_platform !== "gemini" || hasCompletedTurn(snapshot, session.id)),
-      );
-    const allSessions = orderSessionsByLatestTurn(snapshot, candidates, directoryScope);
+      .filter((session) => session.turn_count > 0);
+    const allSessions = candidates;
     const sessions = allSessions.slice(0, limit);
     output(
       io,
@@ -280,7 +277,7 @@ function runLatest(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCl
       renderSessions(
         snapshot,
         sessions,
-        collectionRenderOptions(io, "Latest sessions", allSessions.length, "request a larger N", "session", "LATEST"),
+        collectionRenderOptions(io, "Latest sessions", allSessions.length, "request a larger N", "session"),
       ),
       snapshot,
     );
@@ -295,30 +292,6 @@ function runLatest(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCl
     renderTurns(snapshot, turns, collectionRenderOptions(io, "Latest turns", allTurns.length, "request a larger N", "UserTurn")),
     snapshot,
   );
-}
-
-function orderSessionsByLatestTurn(
-  snapshot: LiveHistorySnapshot,
-  sessions: SessionProjection[],
-  directoryScope?: string,
-): SessionProjection[] {
-  const sessionsById = new Map(sessions.map((session) => [session.id, session]));
-  const ordered: SessionProjection[] = [];
-  const seen = new Set<string>();
-  for (const turn of snapshot.listResolvedTurns({ directoryScope })) {
-    const session = sessionsById.get(turn.session_id);
-    if (!session || seen.has(session.id)) continue;
-    seen.add(session.id);
-    ordered.push(session);
-  }
-  for (const session of sessions) {
-    if (!seen.has(session.id)) ordered.push(session);
-  }
-  return ordered;
-}
-
-function hasCompletedTurn(snapshot: LiveHistorySnapshot, sessionId: string): boolean {
-  return snapshot.listSessionTurns(sessionId).some((turn) => turn.context_summary.assistant_reply_count > 0);
 }
 
 function runTree(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliIo, json: boolean): void {
@@ -574,7 +547,6 @@ interface CollectionRenderOptions {
   columns: number;
   footerHint?: string;
   rowLabel?: string;
-  timeLabel?: string;
 }
 
 function collectionRenderOptions(
@@ -583,7 +555,6 @@ function collectionRenderOptions(
   total: number,
   footerHint?: string,
   rowLabel?: string,
-  timeLabel?: string,
 ): CollectionRenderOptions {
   return {
     heading,
@@ -593,7 +564,6 @@ function collectionRenderOptions(
     columns: Math.max(40, io.columns ?? 100),
     footerHint,
     rowLabel,
-    timeLabel,
   };
 }
 
@@ -619,33 +589,18 @@ function renderSources(sources: SourceStatus[], options?: CollectionRenderOption
 
 function renderProjects(projects: ProjectIdentity[], options: CollectionRenderOptions): string {
   const lines = [renderCollectionHeading(options, projects.length, "most active first")];
-  if (options.columns >= 88) {
-    lines.push(formatColumns([
-      ["ACTIVITY", 8],
-      ["LINKAGE", 10],
-      ["SESS", 5],
-      ["TURNS", 5],
-      ["DIRECTORY", 20],
-      ["PROJECT", Infinity],
-    ], options.columns));
-  }
   for (const project of projects) {
     const directory = foldHome(project.primary_workspace_path ?? project.repo_root ?? "-", options.homeDir);
     const activity = project.project_last_activity_at ?? project.updated_at;
-    if (options.columns >= 88) {
-      lines.push(formatColumns([
-        [formatRelativeTime(activity, options.now), 8],
-        [project.linkage_state, 10],
-        [`${project.session_count}`, 5],
-        [`${project.committed_turn_count + project.candidate_turn_count}`, 5],
-        [directory, 20],
-        [project.display_name, Infinity],
-      ], options.columns));
-      continue;
-    }
     lines.push(
-      `- ${project.display_name} [${project.linkage_state}] · ${project.committed_turn_count + project.candidate_turn_count} turns · ${project.session_count} sessions`,
-      `  ${formatRelativeTime(activity, options.now)} · ${singleLine(directory, Math.max(20, options.columns - 2))}`,
+      `● ${singleLine(project.display_name, Math.max(20, options.columns - 2))}`,
+      ...wrapHumanText(
+        `${formatRelativeTime(activity, options.now)} · ${project.session_count} sessions · ${project.committed_turn_count + project.candidate_turn_count} turns · ${project.linkage_state}`,
+        options.columns,
+        "  ",
+        "    ",
+      ),
+      `  ${singleLine(directory, Math.max(20, options.columns - 2))}`,
     );
   }
   appendCollectionFooter(lines, options, projects.length);
@@ -658,35 +613,30 @@ function renderSessions(
   options: CollectionRenderOptions,
 ): string {
   const lines = [renderCollectionHeading(options, sessions.length, "newest first")];
-  const table = options.columns >= 78;
-  if (table) {
-    lines.push(formatColumns([
-      [options.timeLabel ?? "UPDATED", 9],
-      ["SOURCE", 12],
-      ["SESSION", 10],
-      ["TURNS", 5],
-    ], options.columns));
-  }
   for (const session of sessions) {
     const directory = foldHome(session.working_directory ?? "-", options.homeDir);
-    const ref = snapshot.getSessionDisplayRef(session.id) ?? session.id;
+    const sessionRef = snapshot.getSessionDisplayRef(session.id) ?? session.id;
     const turns = snapshot.listSessionTurns(session.id);
     const model = formatSessionModel(session, turns);
     const tokens = formatTokenTotal(turns);
-    const latestTurn = options.timeLabel === "LATEST" ? turns.at(-1) : undefined;
-    const activityAt = latestTurn?.submission_started_at ?? session.updated_at;
-    if (table) {
-      lines.push(formatColumns([
-        [formatRelativeTime(activityAt, options.now), 9],
-        [session.source_platform, 12],
-        [ref, 10],
-        [`${session.turn_count}`, 5],
-      ], options.columns));
-    } else {
-      lines.push(`- ${singleLine(`${session.source_platform} · session ${ref} · ${session.turn_count} turns · ${formatRelativeTime(activityAt, options.now)}`, Math.max(20, options.columns - 2))}`);
+    const activityAt = snapshot.getSessionActivityAt(session.id) ?? session.updated_at;
+    const sourceName = snapshot.getSource(session.source_id)?.display_name ?? session.source_platform;
+    lines.push(
+      `● ${formatRelativeTime(activityAt, options.now)} · ${sourceName}`,
+      ...wrapHumanText(session.title ?? "Untitled session", options.columns, "  ", "    "),
+      ...wrapHumanText(
+        `${session.turn_count} turns · ${model} · ${tokens === "n/a" ? "tokens n/a" : `${tokens} tokens`}`,
+        options.columns,
+        "  ",
+        "    ",
+      ),
+      ...wrapHumanText(`session ${sessionRef}`, options.columns, "  ", "    "),
+    );
+    if (session.resume_command) {
+      lines.push(...wrapHumanText(session.resume_command, options.columns, "  ", "    "));
+    } else if (directory !== "-") {
+      lines.push(`  ${singleLine(directory, Math.max(20, options.columns - 2))}`);
     }
-    lines.push(`  ${singleLine(`TITLE ${session.title ?? "Untitled session"}`, Math.max(20, options.columns - 2))}`);
-    lines.push(`  ${singleLine(`DIR ${directory} · MODEL ${model} · TOKENS ${tokens}`, Math.max(20, options.columns - 2))}`);
   }
   appendCollectionFooter(lines, options, sessions.length);
   return `${lines.join("\n")}\n`;
@@ -717,39 +667,24 @@ function renderTurns(
   options: CollectionRenderOptions,
 ): string {
   const lines = [renderCollectionHeading(options, turns.length, "newest first")];
-  const table = options.columns >= 88;
-  if (table) {
-    lines.push(formatColumns([
-      ["SUBMITTED", 9],
-      ["SOURCE", 9],
-      ["SESSION", 10],
-      ["TURN", 10],
-      ["MODEL", 14],
-      ["TOKENS", 12],
-      ["PROMPT", Infinity],
-    ], options.columns));
-  }
   for (const turn of turns) {
     const session = snapshot.getSession(turn.session_id);
-    const sessionRef = session ? snapshot.getSessionDisplayRef(session.id) ?? session.id : turn.session_id;
     const turnRef = snapshot.getTurnDisplayRef(turn.id) ?? turn.id;
     const model = formatTurnModel(turn, session);
     const tokens = formatTokenTotal([turn]);
-    if (table) {
-      lines.push(formatColumns([
-        [formatRelativeTime(turn.submission_started_at, options.now), 9],
-        [session?.source_platform ?? "unknown", 9],
-        [sessionRef, 10],
-        [turnRef, 10],
-        [model, 14],
-        [tokens, 12],
-        [singleLine(turn.canonical_text, options.columns), Infinity],
-      ], options.columns));
-      continue;
-    }
+    const sourceName = session
+      ? snapshot.getSource(session.source_id)?.display_name ?? session.source_platform
+      : "unknown";
+    const sessionLabel = session?.title ?? "Untitled session";
     lines.push(
-      `- ${singleLine(`${session?.source_platform ?? "unknown"} · session ${sessionRef} · turn ${turnRef} · ${model} · ${tokens} tokens · ${formatRelativeTime(turn.submission_started_at, options.now)}`, Math.max(20, options.columns - 2))}`,
+      `● ${formatRelativeTime(turn.submission_started_at, options.now)} · ${sourceName}`,
       `  ${singleLine(turn.canonical_text, Math.max(20, options.columns - 2))}`,
+      ...wrapHumanText(
+        `${model} · ${tokens === "n/a" ? "tokens n/a" : `${tokens} tokens`} · ${singleLine(sessionLabel, 30)} · turn ${turnRef}`,
+        options.columns,
+        "  ",
+        "    ",
+      ),
     );
   }
   appendCollectionFooter(lines, options, turns.length);
@@ -766,18 +701,6 @@ function renderCollectionHeading(options: CollectionRenderOptions, shown: number
 function appendCollectionFooter(lines: string[], options: CollectionRenderOptions, shown: number): void {
   const remaining = options.total - shown;
   if (remaining > 0) lines.push(`… and ${remaining} more${options.footerHint ? ` (${options.footerHint})` : ""}`);
-}
-
-function formatColumns(columns: Array<readonly [string, number]>, maxColumns: number): string {
-  const fixed = columns.filter(([, width]) => Number.isFinite(width));
-  const fixedWidth = fixed.reduce((total, [, width]) => total + width, 0);
-  const separators = Math.max(0, columns.length - 1) * 2;
-  const flexibleWidth = Math.max(8, maxColumns - fixedWidth - separators);
-  return columns.map(([value, width]) => {
-    const actualWidth = Number.isFinite(width) ? width : flexibleWidth;
-    const fitted = singleLine(value, actualWidth);
-    return Number.isFinite(width) ? padToDisplayWidth(fitted, actualWidth) : fitted;
-  }).join("  ").trimEnd();
 }
 
 function formatRelativeTime(value: string, now: number): string {
@@ -1154,7 +1077,33 @@ function shouldColorize(io: LiteCliIo): boolean {
 }
 
 export function colorizeHumanText(text: string): string {
-  return text.split("\n").map(colorizeHumanLine).join("\n");
+  let commandContinuation: "directory" | "command" | undefined;
+  return text.split("\n").map((line) => {
+    const commandStart = line.match(/^(\s{2}cd\s)(.*)$/u);
+    if (commandStart) {
+      const directory = colorizeResumeDirectory(commandStart[2]!);
+      commandContinuation = directory.complete ? "command" : "directory";
+      return `${paint(ANSI.dim, commandStart[1]!)}${directory.text}`;
+    }
+    if (commandContinuation && /^\s{4}\S/u.test(line)) {
+      if (commandContinuation === "command") return paint(ANSI.dim, line);
+      const continuation = line.match(/^(\s{4})(.*)$/u)!;
+      const directory = colorizeResumeDirectory(continuation[2]!);
+      commandContinuation = directory.complete ? "command" : "directory";
+      return `${paint(ANSI.dim, continuation[1]!)}${directory.text}`;
+    }
+    commandContinuation = undefined;
+    return colorizeHumanLine(line);
+  }).join("\n");
+}
+
+function colorizeResumeDirectory(value: string): { text: string; complete: boolean } {
+  const separator = value.match(/^(.*?)(\s*&&.*)$/u);
+  if (!separator) return { text: paint(ANSI.green, value), complete: false };
+  return {
+    text: `${paint(ANSI.green, separator[1]!)}${paint(ANSI.dim, separator[2]!)}`,
+    complete: true,
+  };
 }
 
 function colorizeHumanLine(line: string): string {
@@ -1162,24 +1111,15 @@ function colorizeHumanLine(line: string): string {
   if (/^(?:Latest|Sessions|Projects|Sources|Stats|Search|Project tree|Session tree|Source:|Session:|Turn:)/u.test(line)) {
     return paint(`${ANSI.bold}${ANSI.cyan}`, line);
   }
-  const title = line.match(/^(\s+TITLE )(.*)$/u);
-  if (title) {
-    return `${paint(ANSI.dim, title[1]!)}${paint(ANSI.bold, title[2]!)}`;
+  const timeline = line.match(/^● (.+?)(?: · (.+))?$/u);
+  if (timeline) {
+    const marker = paint(`${ANSI.bold}${ANSI.green}`, "●");
+    if (!timeline[2]) return `${marker} ${paint(`${ANSI.bold}${ANSI.cyan}`, timeline[1]!)}`;
+    return `${marker} ${paint(ANSI.dim, timeline[1]!)}${paint(ANSI.dim, " · ")}${paint(`${ANSI.bold}${ANSI.cyan}`, timeline[2]!)}`;
   }
-  const metadata = line.match(/^(\s+DIR )(.+?)( · MODEL )(.+?)( · TOKENS )(.+)$/u);
-  if (metadata) {
-    return [
-      paint(ANSI.dim, metadata[1]!),
-      paint(ANSI.cyan, metadata[2]!),
-      paint(ANSI.dim, metadata[3]!),
-      paint(ANSI.magenta, metadata[4]!),
-      paint(ANSI.dim, metadata[5]!),
-      paint(ANSI.green, metadata[6]!),
-    ].join("");
-  }
-  if (/^\s*(?:LATEST|UPDATED|SUBMITTED)\b.*\b(?:SOURCE|SESSION|TURNS|PROMPT)\b/u.test(line)) {
-    return paint(`${ANSI.bold}${ANSI.dim}`, line);
-  }
+  if (/^\s+.*(?:\d+ sessions|\d+ turns| · turn )/u.test(line)) return paint(ANSI.dim, line);
+  if (/^\s+(?:~\/|\/)/u.test(line)) return paint(ANSI.cyan, line);
+  if (/^\s{2}\S/u.test(line)) return paint(ANSI.bold, line);
   if (/^\s*… and \d+ more/u.test(line)) return paint(ANSI.dim, line);
   if (/^\s*-\s/u.test(line)) return `${paint(ANSI.dim, line.slice(0, line.indexOf("-") + 2))}${line.slice(line.indexOf("-") + 2)}`;
   return line;
@@ -1446,8 +1386,8 @@ Browsing options:
   --all                              Show every ls row; cannot be combined with --limit
 
 latest defaults to the 20 newest sessions. latest sessions is one record per session and
-shows aggregate turn count, models, and total tokens; sessions with 0 turns are omitted;
-Gemini sessions with no assistant reply are also omitted.
+shows aggregate turn count, models, and total tokens; sessions with 0 turns are omitted.
+Session recency follows last real message activity, including pending Gemini sessions.
 latest turns is one record per UserTurn and shows its session, model, and total tokens. Use latest 50
 or latest turns 50 to choose a count.
 Directory paths are resolved from the current directory and support ~. Sessions without a
@@ -1496,16 +1436,48 @@ function singleLine(value: string, maxLength: number): string {
   return `${result}…`;
 }
 
-function padToDisplayWidth(value: string, targetWidth: number): string {
-  return value + " ".repeat(Math.max(0, targetWidth - displayWidth(value)));
-}
-
 function displayWidth(value: string): number {
   let width = 0;
   for (const character of value) {
     width += isWide(character.codePointAt(0) ?? 0) ? 2 : 1;
   }
   return width;
+}
+
+function wrapHumanText(
+  value: string,
+  columns: number,
+  firstIndent: string,
+  continuationIndent: string,
+): string[] {
+  let remaining = value.replace(/\s+/gu, " ").trim();
+  if (!remaining) return [];
+  const lines: string[] = [];
+  let indent = firstIndent;
+  while (remaining) {
+    const available = Math.max(1, columns - displayWidth(indent));
+    if (displayWidth(remaining) <= available) {
+      lines.push(`${indent}${remaining}`);
+      break;
+    }
+
+    let width = 0;
+    let cut = 0;
+    let lastSpace = -1;
+    for (const [index, character] of Array.from(remaining).entries()) {
+      const characterWidth = isWide(character.codePointAt(0) ?? 0) ? 2 : 1;
+      if (width + characterWidth > available) break;
+      width += characterWidth;
+      cut = index + 1;
+      if (character === " ") lastSpace = cut - 1;
+    }
+    const characters = Array.from(remaining);
+    const splitAt = lastSpace > 0 ? lastSpace : Math.max(1, cut);
+    lines.push(`${indent}${characters.slice(0, splitAt).join("")}`);
+    remaining = characters.slice(splitAt).join("").trimStart();
+    indent = continuationIndent;
+  }
+  return lines;
 }
 
 function isWide(code: number): boolean {

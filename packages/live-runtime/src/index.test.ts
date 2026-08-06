@@ -124,6 +124,22 @@ test("Lite materializer resolves canonical history across the fixture-backed ada
     );
     assert.ok(lite.listResolvedSessions().length > 0);
     assert.ok(lite.listResolvedTurns().length > 0);
+    let previousMessageAt: string | undefined;
+    let reachedTurnlessSessions = false;
+    for (const session of lite.listResolvedSessions()) {
+      const hasTurns = lite.listSessionTurns(session.id).length > 0;
+      if (!hasTurns) {
+        reachedTurnlessSessions = true;
+        continue;
+      }
+      assert.equal(reachedTurnlessSessions, false, "turn-less metadata must not displace sessions with real messages");
+      const activityAt = lite.getSessionActivityAt(session.id);
+      assert.ok(activityAt);
+      if (previousMessageAt) {
+        assert.ok(previousMessageAt >= activityAt, `${session.id} is out of last-message recency order`);
+      }
+      previousMessageAt = activityAt;
+    }
 
     // listProjects() already returns canonical display order, so it is idempotent.
     assert.deepEqual(

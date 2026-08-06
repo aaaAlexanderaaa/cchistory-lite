@@ -287,7 +287,7 @@ export function parseRecord(
   } catch {
     return {
       fragments: [
-        createFragment(context, record, 0, "unknown", nowIso(), {
+        createFragment(context, record, 0, "unknown", record.observed_at, {
           reason: "invalid_json",
           raw_preview: record.raw_json.slice(0, 200),
         }),
@@ -304,7 +304,7 @@ export function parseRecord(
   if (!isObject(parsed)) {
     return {
       fragments: [
-        createFragment(context, record, 0, "unknown", nowIso(), {
+        createFragment(context, record, 0, "unknown", record.observed_at, {
           reason: "non_object_record",
         }),
       ],

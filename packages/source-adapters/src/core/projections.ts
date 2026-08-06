@@ -35,6 +35,7 @@ import {
   sha1,
   normalizeGitRemote,
   normalizeWorkspacePath,
+  findLastConversationActivityAtom,
   isUserTurnAtom,
   collapseAntigravityUserTurnAtoms,
   extractTokenUsageFromPayload,
@@ -354,7 +355,9 @@ export function buildTurnsAndContext(
     if (!hasAuthoredUserInput) {
       continue;
     }
-    const lastContextAtom = contextAtoms[contextAtoms.length - 1];
+    const lastActivityAtom =
+      findLastConversationActivityAtom(contextAtoms) ?? findLastConversationActivityAtom(groupAtoms);
+    const lastActivityAt = lastActivityAtom?.time_key ?? group.ended_at;
 
     turnCandidates.push({
       id: turnCandidateId,
@@ -363,7 +366,7 @@ export function buildTurnsAndContext(
       candidate_kind: "turn",
       input_atom_refs: groupAtoms.map((atom) => atom.id),
       started_at: group.started_at,
-      ended_at: lastContextAtom?.time_key ?? group.ended_at,
+      ended_at: lastActivityAt,
       rule_version: RULE_VERSION,
       evidence: {
         submission_group_id: group.id,
@@ -377,7 +380,7 @@ export function buildTurnsAndContext(
       candidate_kind: "context_span",
       input_atom_refs: contextAtoms.map((atom) => atom.id),
       started_at: group.started_at,
-      ended_at: lastContextAtom?.time_key ?? group.ended_at,
+      ended_at: lastActivityAt,
       rule_version: RULE_VERSION,
       evidence: {
         turn_candidate_id: turnCandidateId,
@@ -415,7 +418,7 @@ export function buildTurnsAndContext(
       display_segments: displaySegments,
       created_at: group.started_at,
       submission_started_at: group.started_at,
-      last_context_activity_at: lastContextAtom?.time_key ?? group.ended_at,
+      last_context_activity_at: lastActivityAt,
       session_id: draft.id,
       source_id: draft.source_id,
       link_state: "unlinked",

@@ -332,6 +332,41 @@ test("the detail pane surfaces canonical turn identity and the prompt", async ()
   assert.match(output, /Prompt:/);
 });
 
+test("the browser preserves canonical session order without a surface-specific sort", async () => {
+  const model = await buildModel();
+  assert.deepEqual(
+    model.sessions.map((entry) => entry.session.id),
+    model.snapshot.listResolvedSessions().map((session) => session.id),
+  );
+});
+
+test("resumable session detail shows one complete green command without a duplicate workspace", async () => {
+  const model = await buildModel();
+  const resumable = model.sessions.find((entry) => entry.session.resume_command);
+  assert.ok(resumable?.session.resume_command);
+  const state = apply(
+    model,
+    createLiteBrowserState(model),
+    { type: "open-session-ref", ref: resumable.session.id },
+    { type: "focus-detail" },
+  );
+
+  const previousForceColor = process.env.FORCE_COLOR;
+  process.env.FORCE_COLOR = "1";
+  configureColorPolicy({ color: true });
+  try {
+    const output = frame(model, state, 150, 46);
+    const plain = stripAnsi(output).replace(/\s+/gu, " ");
+    assert.ok(plain.includes(resumable.session.resume_command));
+    assert.doesNotMatch(plain, /Workspace:/);
+    assert.match(output, /\u001b\[32mcd /u);
+  } finally {
+    if (previousForceColor === undefined) delete process.env.FORCE_COLOR;
+    else process.env.FORCE_COLOR = previousForceColor;
+    configureColorPolicy({ color: false });
+  }
+});
+
 test("turn headers keep the full visible session count when sessions interleave", async () => {
   const model = buildInterleavedModel(await buildModel());
   const state = apply(model, createLiteBrowserState(model), { type: "focus-turns" });

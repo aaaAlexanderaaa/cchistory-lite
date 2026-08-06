@@ -33,7 +33,7 @@ export function parseGenericConversationRecord(
     helpers.coerceIso(parsed.updatedAt) ??
     helpers.coerceIso(parsed.createdAt) ??
     helpers.coerceIso(parsed.created_at) ??
-    helpers.nowIso();
+    record.observed_at;
 
   const meta = extractGenericSessionMetadata(parsed, helpers);
   if (meta.workspacePath) {

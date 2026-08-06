@@ -25,6 +25,7 @@ import {
   filterTurnsByDirectoryScope,
   matchesSearchCandidatePlan,
   materializeSearchCandidate,
+  orderSessionsByLastMessage,
   SEARCH_CANONICAL_TEXT_SCAN_BYTES,
   SEARCH_TRUNCATION_MARKER,
   searchTurnsInMemory,
@@ -216,6 +217,60 @@ test("shared read ordering uses stable IDs to break timestamp ties", () => {
   const turnB = { ...turn, id: "turn-b", turn_id: "turn-b" };
   assert.deepEqual([turnB, turnA].sort(compareTurnsByRecency).map((entry) => entry.id), ["turn-a", "turn-b"]);
   assert.deepEqual([turnB, turnA].sort(compareTurnsByChronology).map((entry) => entry.id), ["turn-a", "turn-b"]);
+});
+
+test("shared session ordering follows real message activity instead of native update metadata", () => {
+  const source = createSource();
+  const template = createSession(source);
+  const geminiPending = {
+    ...template,
+    id: "session-gemini-pending",
+    source_platform: "gemini" as const,
+    updated_at: "2026-12-31T23:59:59.000Z",
+  };
+  const codexRecent = {
+    ...template,
+    id: "session-codex-recent",
+    updated_at: "2026-01-02T00:00:00.000Z",
+  };
+  const turnlessMetadata = {
+    ...template,
+    id: "session-turnless-metadata",
+    updated_at: "2027-01-01T00:00:00.000Z",
+    turn_count: 0,
+  };
+  const geminiTurn = {
+    ...createTurn(source, geminiPending),
+    id: "turn-gemini-pending",
+    revision_id: "turn-gemini-pending:r1",
+    turn_id: "turn-gemini-pending",
+    turn_revision_id: "turn-gemini-pending:r1",
+    session_id: geminiPending.id,
+    last_context_activity_at: "2026-01-01T12:00:00.000Z",
+    context_summary: {
+      assistant_reply_count: 0,
+      tool_call_count: 0,
+      has_errors: false,
+      zero_token_reason: "no_assistant_reply" as const,
+    },
+  };
+  const codexTurn = {
+    ...createTurn(source, codexRecent),
+    id: "turn-codex-recent",
+    revision_id: "turn-codex-recent:r1",
+    turn_id: "turn-codex-recent",
+    turn_revision_id: "turn-codex-recent:r1",
+    session_id: codexRecent.id,
+    last_context_activity_at: "2026-01-03T12:00:00.000Z",
+  };
+
+  assert.deepEqual(
+    orderSessionsByLastMessage(
+      [geminiPending, turnlessMetadata, codexRecent],
+      [geminiTurn, codexTurn],
+    ).map((session) => session.id),
+    [codexRecent.id, geminiPending.id, turnlessMetadata.id],
+  );
 });
 
 test("shared canonical related-work projection resolves delegated sessions and automation runs", () => {

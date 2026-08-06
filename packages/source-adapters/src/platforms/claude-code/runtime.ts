@@ -15,7 +15,7 @@ export function parseClaudeRecord(
 ): ParseRuntimeResult {
   const fragments: SourceFragment[] = [];
   const lossAudits: LossAuditRecord[] = [];
-  const timeKey = helpers.coerceIso(parsed.timestamp) ?? helpers.nowIso();
+  const timeKey = helpers.coerceIso(parsed.timestamp) ?? record.observed_at;
   const recordType = helpers.asString(parsed.type) ?? "unknown";
   if (helpers.asString(parsed.cwd)) {
     draft.working_directory = helpers.asString(parsed.cwd) ?? draft.working_directory;

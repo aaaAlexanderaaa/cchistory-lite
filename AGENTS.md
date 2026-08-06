@@ -21,6 +21,16 @@ These are not style preferences. Breaking one is a defect regardless of what it 
 6. **No mutation surface.** There is no sync, import, backup, restore, merge, GC, or migration
    command, and adding one is a product change, not an implementation detail.
 
+## Visual changes
+
+- Do not implement a visual or interaction design before the user has reviewed and approved the
+  proposed direction.
+- Present materially different design directions as a short multiple-choice question, including
+  the recommended option and its tradeoffs. Resolve any remaining visual ambiguity with the user
+  before editing surface code.
+- Diagnosis, read-only inspection, and low-fidelity proposals are allowed before approval; changes
+  to CLI/TUI layout, hierarchy, styling, labels, or interaction behavior are not.
+
 ## Before you commit
 
 ```bash
@@ -65,7 +75,8 @@ or a CLI/TUI view must preserve the canonical projection contract. The contract 
 
 - every source, project, session, turn, and context reference resolves within the snapshot;
 - declared session/project counts equal the rows projected into those buckets;
-- snapshot sessions and turns retain canonical recency order;
+- snapshot sessions retain canonical last-real-message recency order, while turns retain canonical
+  submission recency order;
 - a turn cannot point at a project while claiming to be unlinked; and
 - every resolved turn remains reachable from exactly one session bucket and one project/unlinked
   bucket in the browser model.

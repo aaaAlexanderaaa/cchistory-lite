@@ -12,6 +12,7 @@ import type { SessionDraft } from "./types.js";
 import {
   asString,
   compareFragments,
+  findLastConversationActivityAtom,
   createEdge,
   nowIso,
   stableId,
@@ -166,8 +167,9 @@ export function fragmentToAtom(
 export function hydrateDraftFromAtoms(draft: SessionDraft, atoms: ConversationAtom[], fileModifiedAt?: string): void {
   const firstAtom = atoms[0];
   const lastAtom = atoms.at(-1);
+  const lastActivityAtom = findLastConversationActivityAtom(atoms);
   draft.created_at = draft.created_at ?? firstAtom?.time_key ?? nowIso();
-  draft.updated_at = draft.updated_at ?? lastAtom?.time_key ?? draft.created_at;
+  draft.updated_at = draft.updated_at ?? lastActivityAtom?.time_key ?? lastAtom?.time_key ?? draft.created_at;
   const eventTimeMs = Date.parse(draft.updated_at);
   const fileModifiedTimeMs = fileModifiedAt ? Date.parse(fileModifiedAt) : Number.NaN;
   if (

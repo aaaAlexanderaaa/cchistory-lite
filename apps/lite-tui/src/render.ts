@@ -276,7 +276,7 @@ function renderSessionPane(
     const meta = [
       `${entry.turns.length}a`,
       entry.relatedWorkCount > 0 ? `${entry.relatedWorkCount}rel` : "",
-      formatRelativeTime(entry.session.updated_at, now),
+      formatRelativeTime(model.snapshot.getSessionActivityAt(entry.session.id), now),
     ]
       .filter(Boolean)
       .join(" ");
@@ -459,14 +459,12 @@ function buildDetailRows(
   );
   rows.push(`${metaLabel("Turn:")} ${entry.turn.id}`);
   if (entry.session) {
-    rows.push(`${metaLabel("Session:")} ${entry.session.id}`);
-    if (entry.session.working_directory) {
+    if (entry.session.resume_command) {
+      for (const line of wrapText(entry.session.resume_command, contentWidth)) rows.push(green(line));
+    } else if (entry.session.working_directory) {
       rows.push(`${metaLabel("Workspace:")} ${compact(entry.session.working_directory, contentWidth)}`);
     }
-    if (entry.session.resume_command) {
-      rows.push(metaLabel("Resume:"));
-      for (const line of wrapText(entry.session.resume_command, contentWidth)) rows.push(`  ${line}`);
-    }
+    rows.push(`${metaLabel("Session:")} ${entry.session.id}`);
   }
 
   const relatedWork = entry.session ? model.getSessionRelatedWork(entry.session.id) : [];
@@ -495,20 +493,19 @@ function buildSessionDetailRows(
 ): string[] {
   const contentWidth = Math.max(columnWidth - 4, 24);
   const session = entry.session;
+  const activityAt = model.snapshot.getSessionActivityAt(session.id) ?? session.updated_at;
   const rows = [
     `${bold("Session")} ${cyan(compact(tameBrowseMarkup(session.title ?? session.source_session_id ?? session.id), 40))}`,
-    `${metaLabel("ID:")} ${session.id}`,
     `${metaLabel("Source:")} ${platformColor(entry.sourceName)} ${dim(`(${session.source_platform})`)}`,
-    `${metaLabel("Updated:")} ${formatShortDate(session.updated_at)} ${dim(`(${formatRelativeTime(session.updated_at, now)})`)}`,
+    `${metaLabel("Activity:")} ${formatShortDate(activityAt)} ${dim(`(${formatRelativeTime(activityAt, now)})`)}`,
     `${metaLabel("Turns:")} ${entry.turns.length}`,
   ];
-  if (session.working_directory) {
+  if (session.resume_command) {
+    for (const line of wrapText(session.resume_command, contentWidth)) rows.push(green(line));
+  } else if (session.working_directory) {
     rows.push(`${metaLabel("Workspace:")} ${compact(session.working_directory, contentWidth)}`);
   }
-  if (session.resume_command) {
-    rows.push(metaLabel("Resume:"));
-    for (const line of wrapText(session.resume_command, contentWidth)) rows.push(`  ${line}`);
-  }
+  rows.push(`${metaLabel("ID:")} ${session.id}`);
 
   const relatedWork = model.getSessionRelatedWork(session.id);
   rows.push("");

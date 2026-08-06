@@ -5,7 +5,7 @@ import type {
   TurnContextProjection,
   UserTurnProjection,
 } from "@cchistory/domain";
-import { compareSessionsByRecency, compareTurnsByRecency } from "./read-order.js";
+import { compareTurnsByRecency, orderSessionsByLastMessage } from "./read-order.js";
 
 export interface ProjectionAuditInput {
   sources: readonly SourceStatus[];
@@ -51,6 +51,7 @@ export function auditProjectionConsistency(input: ProjectionAuditInput): Project
   const turnsBySessionId = new Map<string, UserTurnProjection[]>();
   const turnsByProjectId = new Map<string, UserTurnProjection[]>();
 
+  const expectedSessionOrder = orderSessionsByLastMessage(input.sessions, input.turns);
   for (const [index, session] of input.sessions.entries()) {
     if (!sourceIds.has(session.source_id)) {
       issues.push({
@@ -68,13 +69,13 @@ export function auditProjectionConsistency(input: ProjectionAuditInput): Project
         detail: `primary project ${session.primary_project_id} is not present`,
       });
     }
-    const previous = input.sessions[index - 1];
-    if (previous && compareSessionsByRecency(previous, session) > 0) {
+    const expected = expectedSessionOrder[index];
+    if (expected && expected.id !== session.id) {
       issues.push({
         code: "sessions-not-recency-ordered",
         entity: "snapshot",
         id: session.id,
-        detail: `session follows a newer session ${previous.id}`,
+        detail: `expected session ${expected.id} at position ${index + 1}`,
       });
     }
   }

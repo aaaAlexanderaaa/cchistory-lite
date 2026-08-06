@@ -101,12 +101,15 @@ payloads include the untruncated `total` and returned `shown` counts. `latest`
 defaults to the 20 newest sessions and takes its count positionally, for example
 `latest 50` or `latest turns 50`.
 
-`latest sessions` emits one record per session, ordered by the session's newest
-UserTurn. Each row includes aggregate turn count, model summary, and total tokens.
-Sessions with no UserTurns are omitted; Gemini sessions with no assistant reply
-are omitted as well. `latest turns` emits one record per UserTurn and includes
-its session reference, model, and token total. Use `latest sessions 50` or
-`latest turns 50` when the default 20 rows are not enough.
+`latest sessions` emits one timeline block per session, ordered by the session's
+last real message activity. Each block includes aggregate turn count, model
+summary, and total tokens. When native resume is supported, the final green line
+is the complete `cd <directory> && <tool> resume <session-id>` command; the
+directory is not repeated separately. Sessions with no UserTurns are omitted,
+while pending Gemini sessions remain visible and sort by their real message
+time. `latest turns` emits one block per UserTurn and includes its model, token
+total, prompt, and Lite turn reference. Use `latest sessions 50` or `latest
+turns 50` when the default 20 records are not enough.
 
 `--dir` is a canonical history scope, not a source-root override. It expands `~`,
 resolves relative paths from the current directory, and matches lexical path

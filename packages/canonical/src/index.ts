@@ -45,10 +45,12 @@ export {
   type SearchTurnsInMemoryInput,
 } from "./search.js";
 export {
+  buildSessionLastMessageIndex,
   buildProjectDisplayList,
   compareSessionsByRecency,
   compareTurnsByChronology,
   compareTurnsByRecency,
+  orderSessionsByLastMessage,
 } from "./read-order.js";
 export {
   buildDirectoryScopedProjectTreeProjection,

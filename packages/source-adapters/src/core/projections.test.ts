@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AtomEdge, ConversationAtom, LossAuditRecord } from "@cchistory/domain";
 import type { SessionDraft } from "./types.js";
+import { hydrateDraftFromAtoms } from "./atomizer.js";
 import { buildSubmissionGroups, buildTurnsAndContext, countLossAuditsByStage } from "./projections.js";
 
 test("buildTurnsAndContext derives many turn spans from indexed lookups", () => {
@@ -78,6 +79,41 @@ test("buildTurnsAndContext derives many turn spans from indexed lookups", () => 
   assert.equal(result.contexts[0]?.assistant_replies[0]?.tool_call_ids.length, 1);
   assert.equal(result.contexts[0]?.tool_calls[0]?.output, "file 0 ok");
   assert.equal(result.contexts.at(-1)?.tool_calls[0]?.output, `file ${turnCount - 1} ok`);
+});
+
+test("source metadata and malformed evidence do not advance real conversation activity", () => {
+  const draft: SessionDraft = {
+    id: "sess:codex:activity-evidence",
+    source_id: "src-activity-evidence",
+    source_platform: "codex",
+    host_id: "host-test",
+  };
+  const userAt = "2026-03-09T00:00:00.000Z";
+  const assistantAt = "2026-03-09T00:01:00.000Z";
+  const scanAt = "2026-08-06T02:15:00.000Z";
+  const atoms = [
+    createAtom(0, "user", "text", "user_authored", userAt, { text: "Inspect the session." }),
+    createAtom(1, "assistant", "text", "assistant_authored", assistantAt, { text: "Session inspected." }),
+    {
+      ...createAtom(2, "system", "meta_signal", "source_meta", scanAt, {
+        signal_kind: "unknown",
+        reason: "invalid_json",
+      }),
+      display_policy: "hide" as const,
+    },
+  ];
+
+  hydrateDraftFromAtoms(draft, atoms, "2026-08-06T02:16:00.000Z");
+  assert.equal(draft.updated_at, assistantAt);
+
+  const submissionResult = buildSubmissionGroups(draft, atoms, []);
+  const result = buildTurnsAndContext(draft, [], [], [], atoms, submissionResult.groups, submissionResult.edges);
+
+  assert.equal(result.turns.length, 1);
+  assert.equal(result.turns[0]?.submission_started_at, userAt);
+  assert.equal(result.turns[0]?.last_context_activity_at, assistantAt);
+  assert.equal(result.turnCandidates[0]?.ended_at, assistantAt);
+  assert.equal(result.contextCandidates[0]?.ended_at, assistantAt);
 });
 
 test("countLossAuditsByStage excludes informational audits from failure counts", () => {

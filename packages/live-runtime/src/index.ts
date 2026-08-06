@@ -27,11 +27,11 @@ import {
 } from "@cchistory/domain";
 import {
   auditProjectionConsistency,
+  buildSessionLastMessageIndex,
   buildDirectoryScopedProjectTreeProjection,
   buildFallbackProjectObservationCandidates,
   buildProjectDisplayList,
   buildSessionRelatedWorkIndex,
-  compareSessionsByRecency,
   compareTurnsByChronology,
   compareTurnsByRecency,
   computeUsageOverview,
@@ -41,6 +41,7 @@ import {
   filterSessionsByDirectoryScope,
   filterTurnsByDirectoryScope,
   installRuntimeWarningFilter,
+  orderSessionsByLastMessage,
   pathMatchesDirectoryScope,
   searchTurnsInMemory,
   type ProjectionAuditIssue,
@@ -142,6 +143,7 @@ export class LiveHistorySnapshot {
   private readonly relatedWorkBySessionId: Map<string, SessionRelatedWorkProjection[]>;
   private readonly turnsById: Map<string, UserTurnProjection>;
   private readonly contextsByTurnId: Map<string, TurnContextProjection>;
+  private readonly lastMessageAtBySessionId: ReadonlyMap<string, string>;
   private readonly searchCandidates: readonly DerivedCandidate[];
   // Snapshot data is immutable, so derived indexes and ranked searches are
   // memoized for the lifetime of the instance (a refresh builds a new one).
@@ -162,6 +164,7 @@ export class LiveHistorySnapshot {
       else this.relatedWorkBySessionId.set(entry.query_session_ref, [entry]);
     }
     this.turnsById = new Map(data.turns.map((turn) => [turn.id, turn]));
+    this.lastMessageAtBySessionId = buildSessionLastMessageIndex(data.turns);
     this.contextsByTurnId = new Map(data.contexts.map((context) => [context.turn_id, context]));
     this.searchCandidates = searchCandidates;
   }
@@ -185,6 +188,11 @@ export class LiveHistorySnapshot {
 
   listResolvedTurns(options: LiveDirectoryScopeOptions = {}): UserTurnProjection[] {
     return filterTurnsByDirectoryScope(this.data.turns, this.data.sessions, options.directoryScope);
+  }
+
+  getSessionActivityAt(sessionRef: string): string | undefined {
+    const session = this.getSession(sessionRef);
+    return session ? this.lastMessageAtBySessionId.get(session.id) ?? session.updated_at : undefined;
   }
 
   getProjectsTreeProjection(options: LiveDirectoryScopeOptions = {}) {
@@ -452,12 +460,13 @@ export async function scanLiteHistory(options: ScanLiteHistoryOptions = {}): Pro
 
 export function buildLiveSnapshot(probe: { host: Host; sources: readonly LiveSourcePayload[] }): LiveHistorySnapshot {
   const sources = probe.sources.map((payload) => payload.source);
-  const sessions = probe.sources
-    .flatMap((payload) => payload.sessions)
-    .sort(compareSessionsByRecency);
   const turns = probe.sources
     .flatMap((payload) => payload.turns)
     .sort(compareTurnsByRecency);
+  const sessions = orderSessionsByLastMessage(
+    probe.sources.flatMap((payload) => payload.sessions),
+    turns,
+  );
   const candidates = probe.sources.flatMap((payload) => payload.candidates);
   const blobs = probe.sources.flatMap((payload) => payload.blobs);
   const blobsById = new Map(blobs.map((blob) => [blob.id, blob]));

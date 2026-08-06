@@ -420,13 +420,17 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
   assert.ok(baseTurn);
   const pendingSession = {
     ...baseSession,
-    id: "sess:codex:pending-session",
-    source_session_id: "pending-session",
+    id: "sess:gemini:pending-session-12345678",
+    source_session_id: "pending-session-12345678",
     source_platform: "gemini" as const,
     title: "Pending session",
     created_at: "2026-08-03T12:03:00.000Z",
-    updated_at: "2026-08-03T12:04:00.000Z",
+    updated_at: "2026-12-31T23:59:59.000Z",
     turn_count: 1,
+    working_directory: "/workspace/gemini-pending",
+    resume_command: undefined,
+    resume_working_directory: undefined,
+    resume_command_confidence: undefined,
   };
   const pendingTurn = {
     ...baseTurn,
@@ -435,6 +439,15 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
     turn_id: "pending-turn-id",
     turn_revision_id: "pending-turn-id:r1",
     session_id: pendingSession.id,
+    created_at: "2026-08-03T12:03:00.000Z",
+    submission_started_at: "2026-08-03T12:03:00.000Z",
+    last_context_activity_at: "2026-08-03T12:03:00.000Z",
+    project_id: undefined,
+    project_ref: undefined,
+    link_state: "unlinked" as const,
+    project_link_state: undefined,
+    project_confidence: undefined,
+    candidate_project_ids: undefined,
     context_summary: {
       assistant_reply_count: 0,
       tool_call_count: 0,
@@ -445,6 +458,8 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
   const zeroTurnSnapshot = new LiveHistorySnapshot({
     ...snapshot.data,
     sessions: [
+      pendingSession,
+      ...snapshot.data.sessions,
       {
         ...baseSession,
         id: "sess:codex:zero-turn-session",
@@ -454,11 +469,6 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
         updated_at: "2026-08-03T12:02:00.000Z",
         turn_count: 0,
       },
-      pendingSession,
-      ...snapshot.data.sessions.slice().reverse().map((session) => ({
-        ...session,
-        updated_at: "2026-08-03T11:59:00.000Z",
-      })),
     ],
     turns: [pendingTurn, ...snapshot.data.turns],
   });
@@ -466,20 +476,29 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
   const latestSessions = captureIo(repoRoot, undefined, { scan: async () => zeroTurnSnapshot });
   assert.equal(await runLiteCli(["latest"], latestSessions.io), 0);
   const latestSessionText = latestSessions.stdout.join("");
-  const firstSession = snapshot.listResolvedSessions()[0];
-  const firstSessionTurn = firstSession ? snapshot.listSessionTurns(firstSession.id)[0] : undefined;
-  assert.ok(firstSession && firstSessionTurn);
-  const firstSessionModel = firstSessionTurn.context_summary.primary_model ?? firstSession.model;
-  const firstSessionTokens = firstSessionTurn.context_summary.token_usage?.total_tokens ?? firstSessionTurn.context_summary.total_tokens;
-  assert.ok(firstSessionModel && firstSessionTokens !== undefined);
-  assert.match(latestSessionText, /Latest sessions \(4, newest first; one record = one session\)/);
-  assert.match(latestSessionText, /LATEST\s+SOURCE\s+SESSION\s+TURNS/);
-  assert.match(latestSessionText, /DIR .*MODEL .*TOKENS/);
+  assert.match(latestSessionText, /Latest sessions \(5, newest first; one record = one session\)/);
+  assert.match(latestSessionText, /● just now ·/);
+  assert.match(latestSessionText, /Pending session/);
   assert.doesNotMatch(latestSessionText, /Zero-turn session/);
-  assert.doesNotMatch(latestSessionText, /Pending session/);
-  assert.ok(latestSessionText.includes(snapshot.getSessionDisplayRef(firstSession.id) ?? firstSession.id));
-  assert.ok(latestSessionText.includes(firstSessionModel));
-  assert.ok(latestSessionText.includes(new Intl.NumberFormat("en-US").format(firstSessionTokens)));
+  assert.doesNotMatch(latestSessionText, /LATEST\s+SOURCE\s+SESSION\s+TURNS/);
+  assert.doesNotMatch(latestSessionText, /\bDIR\b/);
+  const pendingSessionRef = zeroTurnSnapshot.getSessionDisplayRef(pendingSession.id) ?? pendingSession.id;
+  assert.ok(latestSessionText.includes(`session ${pendingSessionRef}`));
+  const resumableSession = snapshot.listResolvedSessions().find((session) => session.resume_command);
+  assert.ok(resumableSession?.resume_command);
+  assert.ok(latestSessionText.replace(/\s+/gu, " ").includes(resumableSession.resume_command));
+
+  const narrowSessions = captureIo(repoRoot, undefined, { scan: scanner, columns: 40 });
+  assert.equal(await runLiteCli(["ls", "sessions", "--all"], narrowSessions.io), 0);
+  const narrowSessionText = narrowSessions.stdout.join("");
+  assert.ok(
+    narrowSessionText.split("\n").slice(1).every((line) => displayColumnsForTest(line) <= 40),
+    "session rows must stay within the injected terminal width",
+  );
+  assert.ok(
+    narrowSessionText.replace(/\s+/gu, "").includes(resumableSession.resume_command.replace(/\s+/gu, "")),
+    "wrapped resume commands must retain every non-whitespace character",
+  );
 
   const latestTurns = captureIo(repoRoot, undefined, { scan: scanner });
   assert.equal(await runLiteCli(["latest", "turns", "1"], latestTurns.io), 0);
@@ -491,8 +510,8 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
   const firstTurnTokens = firstTurn.context_summary.token_usage?.total_tokens ?? firstTurn.context_summary.total_tokens;
   assert.ok(firstTurnModel && firstTurnTokens !== undefined);
   assert.match(latestTurnText, /Latest turns \(1 of 4, newest first; one record = one UserTurn\)/);
-  assert.match(latestTurnText, /SESSION\s+TURN\s+MODEL\s+TOKENS\s+PROMPT/);
-  assert.ok(latestTurnText.includes(snapshot.getSessionDisplayRef(firstTurn.session_id) ?? firstTurn.session_id));
+  assert.match(latestTurnText, /● .* · Codex/);
+  assert.doesNotMatch(latestTurnText, /SESSION\s+TURN\s+MODEL\s+TOKENS\s+PROMPT/);
   assert.ok(latestTurnText.includes(snapshot.getTurnDisplayRef(firstTurn.id) ?? firstTurn.id));
   assert.ok(latestTurnText.includes(firstTurnModel));
   assert.ok(latestTurnText.includes(new Intl.NumberFormat("en-US").format(firstTurnTokens)));
@@ -515,16 +534,13 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
   assert.equal(defaultPayload.kind, "sessions");
   assert.equal(
     defaultPayload.total,
-    snapshot.listResolvedSessions().filter((session) =>
-      session.turn_count > 0 &&
-      (session.source_platform !== "gemini" || snapshot.listSessionTurns(session.id).some((turn) => turn.context_summary.assistant_reply_count > 0)),
-    ).length,
+    zeroTurnSnapshot.listResolvedSessions().filter((session) => session.turn_count > 0).length,
   );
   assert.equal(defaultPayload.shown, defaultPayload.sessions.length);
   assert.ok(defaultPayload.sessions.every((session) => session.turn_count > 0));
   assert.ok(defaultPayload.sessions.every((session) => session.id !== "sess:codex:zero-turn-session"));
-  assert.ok(defaultPayload.sessions.every((session) => session.id !== "sess:codex:pending-session"));
-  const expectedLatestSessionId = snapshot.listResolvedTurns()[0]?.session_id;
+  assert.ok(defaultPayload.sessions.some((session) => session.id === pendingSession.id));
+  const expectedLatestSessionId = pendingSession.id;
   assert.ok(expectedLatestSessionId);
   const latestSessionRow = defaultPayload.sessions[0];
   assert.equal(latestSessionRow?.id, expectedLatestSessionId);
@@ -563,14 +579,21 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
 test("Lite CLI ls limits human and JSON output and rejects conflicting controls before scanning", async () => {
   const snapshot = await getCodexSnapshot();
   const scanner = async () => snapshot;
+  const projects = captureIo(repoRoot, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["ls", "projects", "--limit", "1"], projects.io), 0);
+  assert.match(projects.stdout.join(""), /Projects \(1 of \d+, most active first; one record = one project\)/);
+  assert.match(projects.stdout.join(""), /● /);
+  assert.doesNotMatch(projects.stdout.join(""), /ACTIVITY\s+LINKAGE\s+SESS\s+TURNS\s+DIRECTORY/);
+
   const limited = captureIo(repoRoot, undefined, { scan: scanner });
   assert.equal(await runLiteCli(["ls", "sessions", "--limit", "1"], limited.io), 0);
   assert.match(limited.stdout.join(""), /Sessions \(1 of 4, newest first; one record = one session\)/);
-  assert.match(limited.stdout.join(""), /UPDATED\s+SOURCE\s+SESSION\s+TURNS/);
+  assert.match(limited.stdout.join(""), /● .* · Codex/);
+  assert.doesNotMatch(limited.stdout.join(""), /UPDATED\s+SOURCE\s+SESSION\s+TURNS/);
   assert.match(limited.stdout.join(""), /… and 3 more \(use --limit <n> or --all\)/);
   assert.ok(
     limited.stdout.join("").split("\n").every((line) => displayColumnsForTest(line) <= 100),
-    "wide-character table rows must stay within the injected terminal width",
+    "timeline rows must stay within the injected terminal width",
   );
 
   const all = captureIo(repoRoot, undefined, { scan: scanner });
@@ -730,23 +753,33 @@ test("Lite CLI help documents latest, limits, and directory scope", async () => 
   assert.match(help, /latest sessions is one record per session/);
   assert.match(help, /latest turns is one record per UserTurn/);
   assert.match(help, /sessions with 0 turns are omitted/);
-  assert.match(help, /Gemini sessions with no assistant reply are also omitted/);
+  assert.match(help, /last real message activity/);
   assert.match(help, /Sessions without a\nworking directory are excluded/);
 });
 
 test("Lite CLI colorizes semantic human-readable fields", () => {
   const colored = colorizeHumanText([
     "Latest sessions (1, newest first; one record = one session)",
-    "LATEST     SOURCE        SESSION     TURNS",
-    "just now   gemini        550867ae    1",
-    "  TITLE agentresearch",
-    "  DIR ~/coding/agentresearch · MODEL gemini-2.5-pro · TOKENS 12,345",
+    "● just now · Claude Code",
+    "  Fix session ordering",
+    "  2 turns · claude-opus-4.1 · 12,345 tokens",
+    "  cd /workspace/agentresearch && claude --resume 550867ae-full-session-id",
   ].join("\n"));
   assert.match(colored, /\u001b\[1m\u001b\[36mLatest sessions/);
-  assert.match(colored, /\u001b\[1m\u001b\[2mLATEST/);
-  assert.match(colored, /\u001b\[36m~\/coding\/agentresearch\u001b\[0m/);
-  assert.match(colored, /\u001b\[35mgemini-2\.5-pro\u001b\[0m/);
-  assert.match(colored, /\u001b\[32m12,345\u001b\[0m/);
+  assert.match(colored, /\u001b\[1m\u001b\[32m●\u001b\[0m/);
+  assert.match(colored, /\u001b\[1m\u001b\[36mClaude Code\u001b\[0m/);
+  assert.match(colored, /\u001b\[2m  cd \u001b\[0m\u001b\[32m\/workspace\/agentresearch\u001b\[0m/);
+  assert.match(colored, /\u001b\[2m && claude --resume 550867ae-full-session-id\u001b\[0m/);
+
+  const wrappedCommand = colorizeHumanText([
+    "  cd /workspace/a-very-long",
+    "    /directory && claude --resume",
+    "    550867ae-full-session-id",
+  ].join("\n"));
+  assert.match(wrappedCommand, /\u001b\[32m\/workspace\/a-very-long\u001b\[0m/);
+  assert.match(wrappedCommand, /\u001b\[2m    \u001b\[0m\u001b\[32m\/directory\u001b\[0m/);
+  assert.match(wrappedCommand, /\u001b\[2m && claude --resume\u001b\[0m/);
+  assert.match(wrappedCommand, /\u001b\[2m    550867ae-full-session-id\u001b\[0m/);
 });
 
 function captureIo(
