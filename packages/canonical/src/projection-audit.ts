@@ -6,6 +6,7 @@ import type {
   UserTurnProjection,
 } from "@cchistory/domain";
 import { compareTurnsByRecency, orderSessionsByLastMessage } from "./read-order.js";
+import { resolveStructuredTokenTotal } from "./usage.js";
 
 export interface ProjectionAuditInput {
   sources: readonly SourceStatus[];
@@ -28,7 +29,8 @@ export interface ProjectionAuditIssue {
   | "project-session-count"
   | "sessions-not-recency-ordered"
   | "turns-not-recency-ordered"
-  | "projected-unlinked-turn";
+  | "projected-unlinked-turn"
+  | "turn-usage-total-mismatch";
   entity: "source" | "project" | "session" | "turn" | "context" | "snapshot";
   id: string;
   detail: string;
@@ -120,6 +122,16 @@ export function auditProjectionConsistency(input: ProjectionAuditInput): Project
         entity: "turn",
         id: turn.id,
         detail: `turn points at project ${turn.project_id} but is marked unlinked`,
+      });
+    }
+    const structuredTotal = resolveStructuredTokenTotal(turn.context_summary.token_usage);
+    const summaryTotal = turn.context_summary.total_tokens;
+    if (structuredTotal !== undefined && summaryTotal !== undefined && structuredTotal !== summaryTotal) {
+      issues.push({
+        code: "turn-usage-total-mismatch",
+        entity: "turn",
+        id: turn.id,
+        detail: `structured token usage totals ${structuredTotal} but context summary declares ${summaryTotal}`,
       });
     }
     const sessionTurns = turnsBySessionId.get(turn.session_id);

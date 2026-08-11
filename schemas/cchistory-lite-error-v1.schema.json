@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cchistory.dev/schemas/cchistory-lite-error-v1.schema.json",
+  "title": "CC History Lite structured error",
+  "type": "object",
+  "required": ["schema", "kind", "error"],
+  "properties": {
+    "schema": { "const": "cchistory-lite-error/v1" },
+    "kind": { "const": "error" },
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "candidates"],
+      "properties": {
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id"],
+            "properties": { "id": { "type": "string" }, "label": { "type": "string" } },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

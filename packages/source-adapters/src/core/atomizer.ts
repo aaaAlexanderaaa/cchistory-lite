@@ -9,6 +9,7 @@ import type {
   SourceFragment,
 } from "@cchistory/domain";
 import type { SessionDraft } from "./types.js";
+import { applyMaskTemplates } from "../masks.js";
 import {
   asString,
   compareFragments,
@@ -194,6 +195,10 @@ export function hydrateDraftFromAtoms(draft: SessionDraft, atoms: ConversationAt
       const text = asString(atom.payload.text);
       const titleCandidate = normalizeSessionTitleCandidate(text);
       draft.title = titleCandidate ? truncate(titleCandidate, 72) : draft.title;
+      const canonicalTitleCandidate = normalizeSessionTitleCandidate(
+        text ? applyMaskTemplates(text, "user_message").canonical_text : undefined,
+      );
+      draft.canonical_title = canonicalTitleCandidate ? truncate(canonicalTitleCandidate, 72) : undefined;
     }
   }
 }

@@ -55,6 +55,12 @@ export function parseClaudeRecord(
       ? { ...extractedUsage, model: messageModel }
       : extractedUsage;
   const stopReason = helpers.normalizeStopReason(message?.stop_reason);
+  const requestId =
+    helpers.asString(parsed.requestId) ??
+    helpers.asString(parsed.request_id) ??
+    helpers.asString(message?.requestId) ??
+    helpers.asString(message?.request_id);
+  const isSidechain = helpers.asBoolean(parsed.isSidechain);
   let usageApplied = false;
   let localSeq = 0;
 
@@ -68,7 +74,7 @@ export function parseClaudeRecord(
       actorKind,
       directMessageText,
       localSeq,
-      { usage, stopReason, usageApplied, messageId: actorKind === "assistant" ? messageId : undefined },
+      { stopReason, usageApplied, messageId: actorKind === "assistant" ? messageId : undefined, model: messageModel },
     );
     localSeq = appended.nextSeq;
     usageApplied = appended.usageApplied;
@@ -141,7 +147,12 @@ export function parseClaudeRecord(
         actorKind,
         text,
         localSeq,
-        { usage, stopReason, usageApplied, messageId: actorKind === "assistant" ? helpers.asString(message?.id) : undefined },
+        {
+          stopReason,
+          usageApplied,
+          messageId: actorKind === "assistant" ? helpers.asString(message?.id) : undefined,
+          model: messageModel,
+        },
       );
       localSeq = appended.nextSeq;
       usageApplied = appended.usageApplied;
@@ -159,8 +170,13 @@ export function parseClaudeRecord(
       "claude_unsupported_content_item",
     );
   }
-  if (!usageApplied && usage && actorKind === "assistant") {
+  if (usage && actorKind === "assistant") {
     const messageId = helpers.asString(message?.id);
+    const identity = {
+      ...(messageId ? { message_id: messageId } : {}),
+      ...(requestId ? { request_id: requestId } : {}),
+      ...(isSidechain !== undefined ? { is_sidechain: isSidechain } : {}),
+    };
     fragments.push(
       helpers.createTokenUsageFragment(
         context,
@@ -169,7 +185,7 @@ export function parseClaudeRecord(
         timeKey,
         usage,
         stopReason,
-        messageId ? { message_id: messageId } : undefined,
+        identity,
       ),
     );
   }

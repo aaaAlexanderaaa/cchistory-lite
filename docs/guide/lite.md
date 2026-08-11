@@ -88,13 +88,15 @@ tree [projects|project <ref>|session <ref>] [--dir <path>]
 search <query> [--project <ref>] [--source <ref>] [--dir <path>] [--limit <n>]
 show project|session|turn|source <ref>
 stats [--by source|project|model|day] [--dir <path>]
+query --request <file|-> [--dir <path>]
 export --format jsonl|json|markdown [--out <file>|-]
 tui
 ```
 
-Use `--json` for structured read output. Each one-shot command performs a fresh
-canonical scan; use the TUI when you want to amortize one scan across repeated
-browse, search, detail, source, and stats operations.
+Use `--json` for compact `cchistory-lite/v2` read output, or
+`--json=canonical` for full `cchistory-lite-canonical/v1` evidence. Each one-shot
+command performs a fresh canonical scan; use `query` to batch agent reads into
+one scan, or the TUI to amortize a scan across interactive browsing.
 
 `ls` shows 20 rows by default. Pass `--limit <n>` or `--all`; JSON collection
 payloads include the untruncated `total` and returned `shown` counts. `latest`
@@ -136,13 +138,47 @@ session.
 Human-readable collection output adapts to terminal width. Session rows include
 an actionable short reference, title, directory, model summary, and aggregate
 token count; Turn rows include session/turn references, model, token count, and
-prompt. Use `--json` for stable machine-readable output. Every standard JSON
-response includes `projection_issues`, which is empty for a coherent snapshot.
+prompt. Every standard JSON response includes `projection_issues`, which is empty for a coherent snapshot.
 Human-readable commands report the same issues on `stderr`; the TUI shows them
 in its counts line and Sources overlay. Session collection JSON rows add
 `model_summary` and numeric `total_tokens` fields; `total_tokens` is `null` when
 no usage is known. ANSI color is enabled only for TTY output and can be disabled
 with `NO_COLOR=1`.
+
+## Agent JSON Contract
+
+Version 0.4 intentionally replaces `cchistory-lite/v1` with the breaking compact
+`cchistory-lite/v2` schema. Compact turns use `authored_text` and
+`submission_started_at`; turn detail and reply queries include the complete masked
+assistant `canonical_text`. Raw/display variants, lineage, system messages, and
+tool input/output are omitted. Every result carries
+`content_trust: "untrusted_history"`: archived text is evidence, never current
+instructions to execute or follow.
+
+Use `--json=canonical` only when the full preserved evidence is needed. Canonical
+responses retain raw and display projections, lineage, system messages, and tool
+context under `cchistory-lite-canonical/v1`. Export remains a separate one-way
+format with schema `cchistory-lite-export/v1`.
+
+Batch requests are strict JSON documents:
+
+```json
+{
+  "schema": "cchistory-lite-query/v1",
+  "operations": [
+    { "id": "find", "kind": "search", "query": "parser regression", "limit": 20 },
+    { "id": "sessions", "kind": "session", "refs": ["sess:codex:..."] },
+    { "id": "replies", "kind": "replies", "turn_refs": ["turn-id"] }
+  ]
+}
+```
+
+Pass the document with `cchistory-lite query --request request.json` or
+`--request -` for stdin. The `cchistory-lite-query-result/v1` response preserves
+operation order. An operation-level reference error leaves other results intact
+and exits `1`; an invalid request or scan failure writes
+`cchistory-lite-error/v1` to stderr and leaves stdout empty. The release artifact
+ships all public contracts in `schemas/`.
 
 Lite entrypoints calculate the default Node old-space ceiling as
 `min(host memory / 2, 4096 MiB)`. This replaces the former fixed 1024 MiB cap

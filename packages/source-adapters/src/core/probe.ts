@@ -58,6 +58,7 @@ import {
   extractGenericContentItems,
   extractRichTextText,
   collectConversationSeedsFromValue,
+  dedupeClaudeCodeTokenUsageFragments,
 } from "./parser.js";
 import { collectJsonlRecordsStreaming, isIncrementalJsonlPlatform } from "./jsonl-records.js";
 import { atomizeFragments, hydrateDraftFromAtoms } from "./atomizer.js";
@@ -1005,7 +1006,12 @@ function mergeSessionBuildInput(
     current.atoms.push(...sessionInput.atoms);
     current.edges.push(...sessionInput.edges);
     current.loss_audits.push(...sessionInput.loss_audits);
-    current.draft.title = current.draft.title ?? sessionInput.draft.title;
+    if (!current.draft.title && sessionInput.draft.title) {
+      current.draft.title = sessionInput.draft.title;
+      current.draft.canonical_title = sessionInput.draft.canonical_title;
+    } else if (current.draft.title === sessionInput.draft.title) {
+      current.draft.canonical_title = current.draft.canonical_title ?? sessionInput.draft.canonical_title;
+    }
     current.draft.working_directory = current.draft.working_directory ?? sessionInput.draft.working_directory;
     current.draft.model = current.draft.model ?? sessionInput.draft.model;
     current.draft.source_session_id = current.draft.source_session_id ?? sessionInput.draft.source_session_id;
@@ -1188,6 +1194,7 @@ function buildPreviousSourceIndex(
           source_platform: previousPayload.source.platform,
           host_id: session?.host_id ?? previousPayload.source.host_id,
           title: session?.title,
+          canonical_title: session?.canonical_title,
           created_at: minAtomTime(atoms) ?? session?.created_at,
           updated_at: maxAtomTime(atoms) ?? session?.updated_at,
           model: session?.model,
@@ -1520,6 +1527,29 @@ async function processCollectedSessions(
   const contexts: TurnContextProjection[] = [];
   const askUserQuestionTurns: AskUserQuestionTurn[] = [];
   const lossAudits: LossAuditRecord[] = [];
+
+  const claudeInputs = [...sessionsById.values()].filter(
+    (sessionInput) => sessionInput.draft.source_platform === "claude_code",
+  );
+  if (claudeInputs.length > 0) {
+    const removedFragmentIds = dedupeClaudeCodeTokenUsageFragments(
+      claudeInputs.flatMap((sessionInput) => sessionInput.fragments),
+    );
+    if (removedFragmentIds.size > 0) {
+      for (const sessionInput of claudeInputs) {
+        sessionInput.fragments = sessionInput.fragments.filter((fragment) => !removedFragmentIds.has(fragment.id));
+        const removedAtomIds = new Set(
+          sessionInput.atoms
+            .filter((atom) => atom.fragment_refs.some((fragmentId) => removedFragmentIds.has(fragmentId)))
+            .map((atom) => atom.id),
+        );
+        sessionInput.atoms = sessionInput.atoms.filter((atom) => !removedAtomIds.has(atom.id));
+        sessionInput.edges = sessionInput.edges.filter(
+          (edge) => !removedAtomIds.has(edge.from_atom_id) && !removedAtomIds.has(edge.to_atom_id),
+        );
+      }
+    }
+  }
 
   for (const sessionInput of sessionsById.values()) {
     sessionInput.atoms.sort(compareTimeThenSeq);

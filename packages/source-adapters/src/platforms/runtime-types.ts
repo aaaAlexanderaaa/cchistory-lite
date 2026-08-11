@@ -106,6 +106,7 @@ export interface CommonParseRuntimeHelpers {
       stopReason?: AssistantStopReasonLike;
       usageApplied?: boolean;
       messageId?: string;
+      model?: string;
     },
   ): { nextSeq: number; usageApplied: boolean };
   appendUnsupportedContentItem(

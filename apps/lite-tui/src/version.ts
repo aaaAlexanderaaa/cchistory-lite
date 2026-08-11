@@ -6,4 +6,4 @@
  * manifest beside the entrypoint to read. `index.test.ts` asserts this value
  * matches the package manifest so the two cannot drift.
  */
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";

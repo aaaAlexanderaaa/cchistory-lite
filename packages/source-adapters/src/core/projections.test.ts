@@ -116,6 +116,30 @@ test("source metadata and malformed evidence do not advance real conversation ac
   assert.equal(result.contextCandidates[0]?.ended_at, assistantAt);
 });
 
+test("session titles preserve raw evidence while projecting the masked user text", () => {
+  const secret = `sk-${"A".repeat(24)}`;
+  const rawTitle = `${secret} Rotate the credential.`;
+  const draft: SessionDraft = {
+    id: "sess:codex:masked-title",
+    source_id: "src-masked-title",
+    source_platform: "codex",
+    host_id: "host-test",
+  };
+  const atoms = [
+    createAtom(0, "user", "text", "user_authored", "2026-03-09T00:00:00.000Z", { text: rawTitle }),
+    createAtom(1, "assistant", "text", "assistant_authored", "2026-03-09T00:01:00.000Z", { text: "Credential rotated." }),
+  ];
+
+  hydrateDraftFromAtoms(draft, atoms);
+  const submissionResult = buildSubmissionGroups(draft, atoms, []);
+  const result = buildTurnsAndContext(draft, [], [], [], atoms, submissionResult.groups, submissionResult.edges);
+
+  assert.equal(result.session.title, rawTitle);
+  assert.equal(result.session.canonical_title, "Rotate the credential.");
+  assert.equal(result.turns[0]?.canonical_text, "Rotate the credential.");
+  assert.doesNotMatch(result.session.canonical_title ?? "", /sk-/u);
+});
+
 test("countLossAuditsByStage excludes informational audits from failure counts", () => {
   const warningAudit = createLossAudit("warning-audit", "warning", "parse_source_fragments");
   const infoAudit = createLossAudit("info-audit", "info", "parse_source_fragments");

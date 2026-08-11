@@ -175,6 +175,7 @@ export interface SessionDraft {
   source_platform: SourcePlatform;
   host_id: string;
   title?: string;
+  canonical_title?: string;
   created_at?: string;
   updated_at?: string;
   model?: string;

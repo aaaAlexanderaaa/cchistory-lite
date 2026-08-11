@@ -26,11 +26,13 @@ import {
   matchesSearchCandidatePlan,
   materializeSearchCandidate,
   orderSessionsByLastMessage,
+  resolveTurnUsage,
   SEARCH_CANONICAL_TEXT_SCAN_BYTES,
   SEARCH_TRUNCATION_MARKER,
   searchTurnsInMemory,
   sessionMatchesDirectoryScope,
   stripSearchTruncationMarker,
+  summarizeSessionUsage,
 } from "./index.js";
 
 test("projection audit accepts a coherent snapshot and reports cross-entity drift", () => {
@@ -280,12 +282,14 @@ test("shared canonical related-work projection resolves delegated sessions and a
     id: "sess:factory_droid:parent-native",
     source_session_id: "parent-native",
     title: "Parent session",
+    canonical_title: "Canonical parent session",
   };
   const child = {
     ...createSession(source),
     id: "sess:factory_droid:child-native",
     source_session_id: "child-native",
     title: "Child session",
+    canonical_title: "Canonical child session",
   };
   const fragments: SourceFragment[] = [
     {
@@ -336,6 +340,13 @@ test("shared canonical related-work projection resolves delegated sessions and a
     [
       ["delegated_session", "inbound", parent.id],
       ["automation_run", "self", parent.id],
+    ],
+  );
+  assert.deepEqual(
+    relatedBySession.get(parent.id)?.map((entry) => [entry.title, entry.canonical_title]),
+    [
+      ["Child session", "Canonical child session"],
+      ["Child session", "Canonical child session"],
     ],
   );
 });
@@ -601,6 +612,46 @@ test("usage directory scope filters turns through their sessions", () => {
   });
   assert.equal(overview.total_turns, 1);
   assert.equal(overview.total_tokens, 15);
+});
+
+test("canonical usage resolves option-B totals once and audits legacy summary drift", () => {
+  const source = createSource();
+  const session = createSession(source);
+  const turn = {
+    ...createTurn(source, session),
+    context_summary: {
+      ...createTurn(source, session).context_summary,
+      token_usage: {
+        input_tokens: 10,
+        cache_read_input_tokens: 20,
+        cache_creation_input_tokens: 3,
+        output_tokens: 4,
+      },
+      total_tokens: 999,
+    },
+  };
+
+  const usage = resolveTurnUsage(turn);
+  assert.equal(usage.cached_input_tokens, 23);
+  assert.equal(usage.total_tokens, 37);
+  assert.deepEqual(summarizeSessionUsage([turn]), {
+    turns_with_token_usage: 1,
+    total_tokens: 37,
+  });
+  assert.deepEqual(
+    auditProjectionConsistency({ sources: [source], projects: [], sessions: [session], turns: [turn] })
+      .map((issue) => issue.code),
+    ["turn-usage-total-mismatch"],
+  );
+
+  const explicitStructuredTotal = {
+    ...turn,
+    context_summary: {
+      ...turn.context_summary,
+      token_usage: { ...turn.context_summary.token_usage, total_tokens: 41 },
+    },
+  };
+  assert.equal(resolveTurnUsage(explicitStructuredTotal).total_tokens, 41);
 });
 
 function createSource(): SourceStatus {

@@ -519,6 +519,17 @@ test("Lite matching-context scans retain only contexts needed by the requested r
     contextTarget: { kind: "turn", ref: turnRef },
   });
   assert.deepEqual(byTurn.data.contexts.map((context) => context.turn_id), [targetTurn.id]);
+
+  const targetTurns = full.listResolvedTurns().slice(0, 2);
+  const byTurns = await scanLiteHistory({
+    ...scanOptions,
+    contextMode: "matching",
+    contextTargets: targetTurns.map((turn) => ({ kind: "turn" as const, ref: turn.id.slice(0, 12) })),
+  });
+  assert.deepEqual(
+    new Set(byTurns.data.contexts.map((context) => context.turn_id)),
+    new Set(targetTurns.map((turn) => turn.id)),
+  );
 });
 
 test("Lite display refs extend through collisions and remain actionable", () => {

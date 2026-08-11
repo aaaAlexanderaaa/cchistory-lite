@@ -16,11 +16,16 @@ export {
   computeUsageRollup,
   countExcludedZeroTokenTurns,
   hasAnyTokenUsage,
+  resolveStructuredTokenTotal,
+  resolveTurnUsage,
+  summarizeSessionUsage,
   sumUsageRows,
   usageDimensionKey,
   usageDimensionLabel,
   type UsageAggregationRow,
   type UsageFilters,
+  type SessionUsageProjection,
+  type TurnUsageProjection,
 } from "./usage.js";
 export {
   boundSearchCanonicalText,

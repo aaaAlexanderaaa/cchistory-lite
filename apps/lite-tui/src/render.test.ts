@@ -245,7 +245,7 @@ test("the banner lines release verifiers grep for are byte-identical", async () 
   const lines = frame(model, createLiteBrowserState(model)).split("\n");
   assert.equal(lines[0], BANNER_TITLE);
   assert.equal(lines[1], BANNER_SUBTITLE);
-  assert.equal(BANNER_TITLE, "CC History Lite TUI 0.3.0");
+  assert.equal(BANNER_TITLE, "CC History Lite TUI 0.4.0");
   assert.equal(BANNER_SUBTITLE, "Ephemeral live snapshot · single machine · no Full store");
 });
 

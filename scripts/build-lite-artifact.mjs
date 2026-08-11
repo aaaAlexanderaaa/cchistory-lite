@@ -65,6 +65,7 @@ export async function buildLiteArtifact(options = {}) {
   await rm(tarballPath, { force: true });
   await mkdir(path.join(artifactDir, 'bin'), { recursive: true });
   await mkdir(path.join(artifactDir, 'node_modules', '@cchistory'), { recursive: true });
+  await cp(path.join(repoRoot, 'schemas'), path.join(artifactDir, 'schemas'), { recursive: true });
 
   for (const appPackage of appPackages) {
     const target = path.join(artifactDir, appPackage.artifactDir, 'dist');

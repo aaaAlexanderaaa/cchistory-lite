@@ -2,6 +2,7 @@ import type {
   ProjectIdentity,
   SessionProjection,
   SourceStatus,
+  TokenUsageSummary,
   UsageStatsDimension,
   UsageStatsOverview,
   UsageStatsRollup,
@@ -40,20 +41,86 @@ export interface UsageAggregationRow {
   total_tokens: number;
 }
 
-export function hasAnyTokenUsage(turn: UserTurnProjection): boolean {
+export interface TurnUsageProjection {
+  has_token_usage: boolean;
+  input_tokens?: number;
+  cached_input_tokens?: number;
+  output_tokens?: number;
+  reasoning_output_tokens?: number;
+  total_tokens?: number;
+}
+
+export interface SessionUsageProjection {
+  turns_with_token_usage: number;
+  total_tokens?: number;
+}
+
+/** Resolve the approved option-B total from structured usage when possible. */
+export function resolveStructuredTokenTotal(usage: TokenUsageSummary | undefined): number | undefined {
+  if (!usage) return undefined;
+  if (typeof usage.total_tokens === "number") return usage.total_tokens;
+
+  const cacheTokens =
+    usage.cache_read_input_tokens !== undefined || usage.cache_creation_input_tokens !== undefined
+      ? (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
+      : usage.cached_input_tokens;
+  const components = [usage.input_tokens, cacheTokens, usage.output_tokens];
+  return components.some((value) => typeof value === "number")
+    ? components.reduce<number>((total, value) => total + (value ?? 0), 0)
+    : undefined;
+}
+
+export function resolveTurnUsage(turn: UserTurnProjection): TurnUsageProjection {
   const usage = turn.context_summary.token_usage;
-  if (!usage) {
-    return typeof turn.context_summary.total_tokens === "number";
+  const cachedInputTokens = usage
+    ? usage.cached_input_tokens ??
+      (usage.cache_read_input_tokens !== undefined || usage.cache_creation_input_tokens !== undefined
+        ? (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
+        : undefined)
+    : undefined;
+  const structuredTotal = resolveStructuredTokenTotal(usage);
+  const values = usage
+    ? [
+        usage.input_tokens,
+        usage.cache_read_input_tokens,
+        usage.cache_creation_input_tokens,
+        usage.cached_input_tokens,
+        usage.output_tokens,
+        usage.reasoning_output_tokens,
+        usage.total_tokens,
+      ]
+    : [];
+  return {
+    has_token_usage:
+      values.some((value) => typeof value === "number") ||
+      typeof turn.context_summary.total_tokens === "number",
+    input_tokens: usage?.input_tokens,
+    cached_input_tokens: cachedInputTokens,
+    output_tokens: usage?.output_tokens,
+    reasoning_output_tokens: usage?.reasoning_output_tokens,
+    total_tokens: structuredTotal ?? turn.context_summary.total_tokens,
+  };
+}
+
+export function summarizeSessionUsage(turns: readonly UserTurnProjection[]): SessionUsageProjection {
+  let turnsWithTokenUsage = 0;
+  let totalTokens = 0;
+  let hasTotal = false;
+  for (const turn of turns) {
+    const usage = resolveTurnUsage(turn);
+    if (usage.has_token_usage) turnsWithTokenUsage += 1;
+    if (usage.total_tokens === undefined) continue;
+    hasTotal = true;
+    totalTokens += usage.total_tokens;
   }
-  return [
-    usage.input_tokens,
-    usage.cache_read_input_tokens,
-    usage.cache_creation_input_tokens,
-    usage.cached_input_tokens,
-    usage.output_tokens,
-    usage.reasoning_output_tokens,
-    usage.total_tokens,
-  ].some((value) => typeof value === "number");
+  return {
+    turns_with_token_usage: turnsWithTokenUsage,
+    total_tokens: hasTotal ? totalTokens : undefined,
+  };
+}
+
+export function hasAnyTokenUsage(turn: UserTurnProjection): boolean {
+  return resolveTurnUsage(turn).has_token_usage;
 }
 
 export function sumUsageRows(
@@ -151,7 +218,8 @@ export function buildUsageRows(params: {
       const session = sessionsById.get(turn.session_id);
       const source = sourcesById.get(turn.source_id);
       const project = turn.project_id ? projectsById.get(turn.project_id) : undefined;
-      const hasTokUsage = hasAnyTokenUsage(turn);
+      const usage = resolveTurnUsage(turn);
+      const hasTokUsage = usage.has_token_usage;
       const zeroTokenReason =
         turn.context_summary.zero_token_reason ??
         (turn.context_summary.assistant_reply_count === 0 && !hasTokUsage ? "no_assistant_reply" : undefined);
@@ -167,14 +235,11 @@ export function buildUsageRows(params: {
         month: turn.submission_started_at.slice(0, 7),
         has_token_usage: hasTokUsage,
         zero_token_reason: zeroTokenReason,
-        input_tokens: turn.context_summary.token_usage?.input_tokens ?? 0,
-        cached_input_tokens:
-          turn.context_summary.token_usage?.cached_input_tokens ??
-          (turn.context_summary.token_usage?.cache_read_input_tokens ?? 0) +
-            (turn.context_summary.token_usage?.cache_creation_input_tokens ?? 0),
-        output_tokens: turn.context_summary.token_usage?.output_tokens ?? 0,
-        reasoning_output_tokens: turn.context_summary.token_usage?.reasoning_output_tokens ?? 0,
-        total_tokens: turn.context_summary.token_usage?.total_tokens ?? turn.context_summary.total_tokens ?? 0,
+        input_tokens: usage.input_tokens ?? 0,
+        cached_input_tokens: usage.cached_input_tokens ?? 0,
+        output_tokens: usage.output_tokens ?? 0,
+        reasoning_output_tokens: usage.reasoning_output_tokens ?? 0,
+        total_tokens: usage.total_tokens ?? 0,
       };
     })
     .filter((row) => (filters.host_ids && filters.host_ids.length > 0 ? filters.host_ids.includes(row.host_id) : true))

@@ -44,7 +44,11 @@ import {
   orderSessionsByLastMessage,
   pathMatchesDirectoryScope,
   searchTurnsInMemory,
+  resolveTurnUsage,
+  summarizeSessionUsage,
   type ProjectionAuditIssue,
+  type SessionUsageProjection,
+  type TurnUsageProjection,
   type UsageFilters,
 } from "@cchistory/canonical";
 import type { SourceProbeProgressEvent } from "@cchistory/source-adapters";
@@ -77,6 +81,7 @@ export interface ScanLiteHistoryOptions extends ResolveLiteSourcesOptions {
   safeMode?: boolean;
   contextMode?: LiteContextMode;
   contextTarget?: LiteContextTarget;
+  contextTargets?: readonly LiteContextTarget[];
   sessionRefs?: readonly string[];
   directoryScope?: string;
   onProgress?: (event: SourceProbeProgressEvent) => void;
@@ -87,6 +92,18 @@ export type LiteContextMode = "full" | "none" | "matching";
 export interface LiteContextTarget {
   kind: "session" | "turn";
   ref: string;
+}
+
+export class AmbiguousReferenceError extends Error {
+  readonly ref: string;
+  readonly candidateIds: string[];
+
+  constructor(ref: string, candidateIds: readonly string[], prefix: boolean) {
+    super(`${prefix ? "Ambiguous ID prefix" : "Ambiguous reference"} ${JSON.stringify(ref)} matched ${candidateIds.length} objects.`);
+    this.name = "AmbiguousReferenceError";
+    this.ref = ref;
+    this.candidateIds = [...candidateIds];
+  }
 }
 
 export interface LiveDirectoryScopeOptions {
@@ -309,6 +326,16 @@ export class LiveHistorySnapshot {
     return turn ? this.contextsByTurnId.get(turn.id) : undefined;
   }
 
+  getTurnUsage(turnRef: string): TurnUsageProjection | undefined {
+    const turn = this.getTurn(turnRef);
+    return turn ? resolveTurnUsage(turn) : undefined;
+  }
+
+  getSessionUsage(sessionRef: string): SessionUsageProjection | undefined {
+    const session = this.getSession(sessionRef);
+    return session ? summarizeSessionUsage(this.sessionTurnBuckets().get(session.id) ?? []) : undefined;
+  }
+
   listProjectTurns(projectRef: string, options: LiveDirectoryScopeOptions = {}): UserTurnProjection[] {
     const project = this.getProject(projectRef);
     if (!project) return [];
@@ -404,8 +431,8 @@ export class LiveHistorySnapshot {
 }
 
 export async function scanLiteHistory(options: ScanLiteHistoryOptions = {}): Promise<LiveHistorySnapshot> {
-  if (options.contextMode === "matching" && !options.contextTarget) {
-    throw new Error("matching context mode requires a contextTarget.");
+  if (options.contextMode === "matching" && resolveContextTargets(options).length === 0) {
+    throw new Error("matching context mode requires at least one context target.");
   }
   let sources = await resolveLiteSources(options);
   const exactPlatforms = exactCanonicalSessionPlatforms(options.sessionRefs ?? []);
@@ -518,7 +545,7 @@ async function scanSourceWithCollector(
   if (!payload) {
     throw new Error(`Lite source probe produced no payload for ${source.display_name}.`);
   }
-  const compacted = compactSourcePayload(payload, contextMode, options.contextTarget);
+  const compacted = compactSourcePayload(payload, contextMode, resolveContextTargets(options));
   return {
     host: probe.host,
     payload: options.sessionRefs?.length
@@ -664,7 +691,7 @@ async function scanLogicalSessionGroups(
       sessionsById.set(session.id, session);
     }
     for (const turn of groupPayload.turns) turnsById.set(turn.id, turn);
-    for (const context of selectPayloadContexts(groupPayload, contextMode, options.contextTarget)) {
+    for (const context of selectPayloadContexts(groupPayload, contextMode, resolveContextTargets(options))) {
       contextsByTurnId.set(context.turn_id, context);
     }
     for (const askTurn of groupPayload.ask_user_question_turns) askTurnsById.set(askTurn.id, askTurn);
@@ -741,7 +768,7 @@ function buildProbeOptions(
 function compactSourcePayload(
   payload: SourceSyncPayload,
   contextMode: LiteContextMode,
-  contextTarget?: LiteContextTarget,
+  contextTargets: readonly LiteContextTarget[] = [],
 ): LiveSourcePayload {
   return {
     source: payload.source,
@@ -750,7 +777,7 @@ function compactSourcePayload(
     sessions: payload.sessions,
     related_work: flattenRelatedWorkIndex(buildSessionRelatedWorkIndex(payload.sessions, payload.fragments)),
     turns: payload.turns,
-    contexts: selectPayloadContexts(payload, contextMode, contextTarget),
+    contexts: selectPayloadContexts(payload, contextMode, contextTargets),
     ask_user_question_turns: payload.ask_user_question_turns,
     loss_audits: payload.loss_audits,
   };
@@ -759,28 +786,39 @@ function compactSourcePayload(
 function selectPayloadContexts(
   payload: Pick<SourceSyncPayload, "sessions" | "turns" | "contexts">,
   contextMode: LiteContextMode,
-  contextTarget?: LiteContextTarget,
+  contextTargets: readonly LiteContextTarget[] = [],
 ): TurnContextProjection[] {
   if (contextMode === "full") return [...payload.contexts];
   if (contextMode === "none") return [];
-  if (!contextTarget) throw new Error("matching context mode requires a contextTarget.");
+  if (contextTargets.length === 0) throw new Error("matching context mode requires at least one context target.");
 
-  let turnIds: Set<string>;
-  if (contextTarget.kind === "turn") {
-    turnIds = new Set(
-      payload.turns
-        .filter((turn) => turn.id === contextTarget.ref || turn.id.startsWith(contextTarget.ref))
-        .map((turn) => turn.id),
-    );
-  } else {
+  const turnIds = new Set<string>();
+  for (const contextTarget of contextTargets) {
+    if (contextTarget.kind === "turn") {
+      for (const turn of payload.turns) {
+        if (turn.id === contextTarget.ref || turn.id.startsWith(contextTarget.ref)) turnIds.add(turn.id);
+      }
+      continue;
+    }
     const sessionIds = new Set(
       payload.sessions
         .filter((session) => sessionPotentiallyMatchesRef(session, contextTarget.ref))
         .map((session) => session.id),
     );
-    turnIds = new Set(payload.turns.filter((turn) => sessionIds.has(turn.session_id)).map((turn) => turn.id));
+    for (const turn of payload.turns) if (sessionIds.has(turn.session_id)) turnIds.add(turn.id);
   }
   return payload.contexts.filter((context) => turnIds.has(context.turn_id));
+}
+
+function resolveContextTargets(options: Pick<ScanLiteHistoryOptions, "contextTarget" | "contextTargets">): LiteContextTarget[] {
+  const targets = [...(options.contextTargets ?? []), ...(options.contextTarget ? [options.contextTarget] : [])];
+  const seen = new Set<string>();
+  return targets.filter((target) => {
+    const key = `${target.kind}:${target.ref}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function sessionPotentiallyMatchesRef(session: SessionProjection, ref: string): boolean {
@@ -988,7 +1026,7 @@ function resolveUnique<T>(
   });
   if (exact.length === 1) return exact[0];
   if (exact.length > 1) {
-    throw new Error(`Ambiguous reference ${JSON.stringify(ref)} matched ${exact.length} objects.`);
+    throw new AmbiguousReferenceError(ref, exact.map(getId), false);
   }
 
   const prefix = values.filter(
@@ -998,7 +1036,7 @@ function resolveUnique<T>(
   );
   if (prefix.length === 1) return prefix[0];
   if (prefix.length > 1) {
-    throw new Error(`Ambiguous ID prefix ${JSON.stringify(ref)} matched ${prefix.length} objects.`);
+    throw new AmbiguousReferenceError(ref, prefix.map(getId), true);
   }
   return undefined;
 }

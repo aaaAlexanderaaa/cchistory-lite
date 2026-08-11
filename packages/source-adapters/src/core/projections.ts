@@ -454,6 +454,7 @@ export function buildTurnsAndContext(
     host_id: draft.host_id,
     source_platform: draft.source_platform,
     title: draft.title,
+    canonical_title: draft.canonical_title ?? canonicalizeSessionTitle(draft.title),
     created_at: draft.created_at ?? atoms[0]?.time_key ?? nowIso(),
     updated_at: draft.updated_at ?? atoms.at(-1)?.time_key ?? nowIso(),
     model: draft.model,
@@ -468,6 +469,11 @@ export function buildTurnsAndContext(
   };
 
   return { session, turnCandidates, contextCandidates, turns, contexts };
+}
+
+function canonicalizeSessionTitle(title: string | undefined): string | undefined {
+  if (!title) return undefined;
+  return applyMaskTemplates(title, "user_message").canonical_text || undefined;
 }
 
 interface TurnContextEdgeIndex {
@@ -591,6 +597,7 @@ export function buildTurnContext(
       const reply = {
         id: replyId,
         content,
+        canonical_text: masked.canonical_text,
         display_segments: masked.display_segments,
         content_preview: truncate(masked.canonical_text || content, 140),
         token_usage: tokenUsage,

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cchistory.dev/schemas/cchistory-lite-canonical-v1.schema.json",
+  "title": "CC History Lite canonical read response",
+  "type": "object",
+  "required": ["schema", "kind", "projection_issues"],
+  "properties": {
+    "schema": { "const": "cchistory-lite-canonical/v1" },
+    "kind": { "type": "string" },
+    "projection_issues": { "type": "array" }
+  },
+  "additionalProperties": true
+}

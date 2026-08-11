@@ -540,6 +540,7 @@ export function buildAdapterBlobResult(
     source_platform: source.platform,
     host_id: hostId,
     title: draftPatch.title,
+    canonical_title: draftPatch.canonical_title,
     created_at: draftPatch.created_at,
     updated_at: draftPatch.updated_at,
     model: draftPatch.model,
@@ -878,6 +879,7 @@ export function buildTextFragmentPayload(
     usage?: TokenUsageMetrics;
     stopReason?: AssistantStopReason;
     messageId?: string;
+    model?: string;
   } = {},
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
@@ -901,6 +903,9 @@ export function buildTextFragmentPayload(
   if (options.messageId) {
     payload.message_id = options.messageId;
   }
+  if (options.model) {
+    payload.model = options.model;
+  }
   return payload;
 }
 
@@ -908,10 +913,9 @@ export function buildTextFragmentPayload(
 // as one JSONL line per block, each carrying the same Anthropic `message.id` and
 // the same final aggregated usage. Without dedup, every non-text block re-emits a
 // token_usage fragment and the same API call is counted many times.
-// We collapse fragments sharing a `message.id` to one, keeping the highest
-// `total_tokens` (subsequent blocks of a streaming response carry progressively
-// more output, so max-total naturally selects the final state).
-function dedupeClaudeCodeTokenUsageFragments(fragments: SourceFragment[]): void {
+// We collapse exact (message.id, request_id) calls, keeping the non-sidechain,
+// largest, most complete checkpoint. Distinct request ids remain billable.
+export function dedupeClaudeCodeTokenUsageFragments(fragments: SourceFragment[]): Set<string> {
   const indexOfKept = new Map<string, number>();
   const removed = new Set<number>();
   for (let i = 0; i < fragments.length; i++) {
@@ -919,22 +923,84 @@ function dedupeClaudeCodeTokenUsageFragments(fragments: SourceFragment[]): void 
     if (!frag || frag.fragment_kind !== "token_usage_signal") continue;
     const messageId = typeof frag.payload.message_id === "string" ? frag.payload.message_id : undefined;
     if (!messageId) continue;
-    const existingIdx = indexOfKept.get(messageId);
+    const requestId = typeof frag.payload.request_id === "string" ? frag.payload.request_id : null;
+    const key = JSON.stringify([messageId, requestId]);
+    const existingIdx = indexOfKept.get(key);
     if (existingIdx === undefined) {
-      indexOfKept.set(messageId, i);
+      indexOfKept.set(key, i);
       continue;
     }
     const existing = fragments[existingIdx];
-    if (existing && tokenUsageTotal(frag.payload) > tokenUsageTotal(existing.payload)) {
-      fragments[existingIdx] = frag;
+    if (existing && compareClaudeTokenUsageFragments(frag, existing) > 0) {
+      removed.add(existingIdx);
+      indexOfKept.set(key, i);
+    } else {
+      removed.add(i);
     }
-    removed.add(i);
   }
+
+  // Sidechain replay records can carry a different request id. Collapse only
+  // an identical usage replay with a matching non-sidechain message.
+  const kept = [...indexOfKept.values()].filter((index) => !removed.has(index));
+  for (const sidechainIndex of kept) {
+    const sidechain = fragments[sidechainIndex];
+    if (!sidechain || sidechain.payload.is_sidechain !== true) continue;
+    const messageId = sidechain.payload.message_id;
+    const fingerprint = tokenUsageFingerprint(sidechain.payload);
+    const hasMainReplay = kept.some((mainIndex) => {
+      if (mainIndex === sidechainIndex || removed.has(mainIndex)) return false;
+      const main = fragments[mainIndex];
+      return Boolean(
+        main &&
+        main.payload.is_sidechain !== true &&
+        main.payload.message_id === messageId &&
+        tokenUsageFingerprint(main.payload) === fingerprint
+      );
+    });
+    if (hasMainReplay) removed.add(sidechainIndex);
+  }
+
+  const removedIds = new Set<string>();
   if (removed.size > 0) {
     for (let i = fragments.length - 1; i >= 0; i--) {
-      if (removed.has(i)) fragments.splice(i, 1);
+      if (!removed.has(i)) continue;
+      const fragment = fragments[i];
+      if (fragment) removedIds.add(fragment.id);
+      fragments.splice(i, 1);
     }
   }
+  return removedIds;
+}
+
+function compareClaudeTokenUsageFragments(left: SourceFragment, right: SourceFragment): number {
+  const leftMain = left.payload.is_sidechain === true ? 0 : 1;
+  const rightMain = right.payload.is_sidechain === true ? 0 : 1;
+  if (leftMain !== rightMain) return leftMain - rightMain;
+  const totalDifference = tokenUsageTotal(left.payload) - tokenUsageTotal(right.payload);
+  if (totalDifference !== 0) return totalDifference;
+  return tokenUsageCompleteness(left.payload) - tokenUsageCompleteness(right.payload);
+}
+
+function tokenUsageCompleteness(payload: Record<string, unknown>): number {
+  const usage = payload.token_usage;
+  const usageFields = usage && typeof usage === "object"
+    ? Object.values(usage as Record<string, unknown>).filter((value) => value !== undefined).length
+    : 0;
+  return usageFields + [payload.request_id, payload.model, payload.stop_reason]
+    .filter((value) => value !== undefined).length;
+}
+
+function tokenUsageFingerprint(payload: Record<string, unknown>): string {
+  const usage = payload.token_usage && typeof payload.token_usage === "object"
+    ? payload.token_usage as Record<string, unknown>
+    : {};
+  return JSON.stringify([
+    usage.input_tokens ?? null,
+    usage.cache_read_input_tokens ?? null,
+    usage.cache_creation_input_tokens ?? null,
+    usage.output_tokens ?? null,
+    usage.total_tokens ?? null,
+  ]);
 }
 
 function tokenUsageTotal(payload: Record<string, unknown>): number {
@@ -985,6 +1051,7 @@ export function appendChunkedTextFragments(
     stopReason?: AssistantStopReason;
     usageApplied?: boolean;
     messageId?: string;
+    model?: string;
   } = {},
 ): { nextSeq: number; usageApplied: boolean } {
   let usageApplied = options.usageApplied ?? false;
@@ -997,6 +1064,7 @@ export function appendChunkedTextFragments(
           usage: firstAssistantChunk ? options.usage : undefined,
           stopReason: firstAssistantChunk ? options.stopReason : undefined,
           messageId: firstAssistantChunk ? options.messageId : undefined,
+          model: firstAssistantChunk ? options.model : undefined,
         }),
       }),
     );

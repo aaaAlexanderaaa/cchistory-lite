@@ -10,6 +10,7 @@ import {
   type ScanLiteHistoryOptions,
 } from "@cchistory/live-runtime";
 import { colorizeHumanText, formatTuiLaunchError, runLiteCli, type LiteCliIo } from "./index.js";
+import { compactPayload } from "./json-v2.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const codexRoot = path.join(repoRoot, "mock_data", ".codex", "sessions");
@@ -43,6 +44,7 @@ test("Lite CLI searches, reports stats, and writes one-way export", async () => 
     };
     assert.equal(searchPayload.kind, "search");
     assert.ok(searchPayload.total > 0);
+    assert.equal((searchPayload as { schema?: string }).schema, "cchistory-lite/v2");
 
     const sources = captureIo(tempHome);
     assert.equal(await runLiteCli(["sources", ...rootArgs], sources.io), 0);
@@ -242,7 +244,7 @@ test("Lite CLI exposes projection diagnostics without corrupting the data stream
     id: target.id,
     detail: `declares ${target.turn_count + 1} turns but projects ${target.turn_count}`,
   }]);
-  assert.match(json.stderr.join(""), /Projection warnings: 1/);
+  assert.equal(json.stderr.join(""), "");
 
   const exported = captureIo(repoRoot, undefined, { scan: async () => broken });
   assert.equal(await runLiteCli(["export", "--format", "json", "--out", "-"], exported.io), 0);
@@ -294,7 +296,7 @@ test("Lite CLI tree and session detail preserve canonical related work", async (
       related_work: Array<{ relation_kind: string; query_session_ref: string }>;
     };
     assert.equal(detailPayload.related_work[0]?.relation_kind, "automation_run");
-    assert.equal(detailPayload.related_work[0]?.query_session_ref, sessionId);
+    assert.equal("query_session_ref" in (detailPayload.related_work[0] ?? {}), false);
 
     const ownerId = "sess:openclaw:11111111-2222-4333-8444-555555555555";
     const ownerDetail = captureIo(tempHome);
@@ -310,6 +312,233 @@ test("Lite CLI tree and session detail preserve canonical related work", async (
   } finally {
     await rm(tempHome, { recursive: true, force: true });
   }
+});
+
+test("Lite CLI compact JSON excludes raw evidence while canonical JSON retains it", async () => {
+  const snapshot = await getCodexSnapshot();
+  const target = snapshot.listResolvedTurns().find((turn) => snapshot.getTurnContext(turn.id)?.assistant_replies.length);
+  assert.ok(target);
+
+  const compact = captureIo(repoRoot, undefined, { scan: async () => snapshot });
+  assert.equal(await runLiteCli(["show", "turn", target.id, "--json"], compact.io), 0);
+  const compactPayload = JSON.parse(compact.stdout.join("")) as Record<string, unknown>;
+  assert.equal(compactPayload.schema, "cchistory-lite/v2");
+  assert.equal(compactPayload.content_trust, "untrusted_history");
+  assertNoKeysDeep(compactPayload, new Set([
+    "raw_text",
+    "display_segments",
+    "original_content",
+    "lineage",
+    "system_messages",
+    "tool_calls",
+  ]));
+  const compactContext = compactPayload.context as { assistant_replies: Array<{ canonical_text: string }> };
+  assert.ok(compactContext.assistant_replies.some((reply) => reply.canonical_text.length > 0));
+
+  const canonical = captureIo(repoRoot, undefined, { scan: async () => snapshot });
+  assert.equal(await runLiteCli(["show", "turn", target.id, "--json=canonical"], canonical.io), 0);
+  const canonicalPayload = JSON.parse(canonical.stdout.join("")) as {
+    schema: string;
+    turn: { raw_text: string; lineage: unknown };
+  };
+  assert.equal(canonicalPayload.schema, "cchistory-lite-canonical/v1");
+  assert.equal(typeof canonicalPayload.turn.raw_text, "string");
+  assert.ok(canonicalPayload.turn.lineage);
+});
+
+test("Lite CLI compact session titles cannot reintroduce text removed by canonical masks", async () => {
+  const snapshot = await getCodexSnapshot();
+  const baseSession = snapshot.listResolvedSessions().find((session) => snapshot.listSessionTurns(session.id).length > 0);
+  assert.ok(baseSession);
+  const turn = snapshot.listSessionTurns(baseSession.id)[0];
+  assert.ok(turn);
+  const secret = `sk-${"A".repeat(24)}`;
+  const rawTitle = `${secret} Rotate the credential.`;
+  const canonicalTitle = "Rotate the credential.";
+  const sessions = snapshot.data.sessions.map((session) => session.id === baseSession.id
+    ? { ...session, title: rawTitle, canonical_title: canonicalTitle }
+    : session);
+  const maskedSnapshot = new LiveHistorySnapshot({ ...snapshot.data, sessions });
+  const session = maskedSnapshot.getSession(baseSession.id);
+  assert.ok(session);
+  const relatedWork = {
+    id: "related-masked-title",
+    relation_kind: "delegated_session",
+    target_kind: "session",
+    direction: "outbound",
+    target_session_ref: "sess:codex:related-masked-title",
+    title: rawTitle,
+    canonical_title: canonicalTitle,
+    created_at: session.created_at,
+    updated_at: session.updated_at,
+    evidence_confidence: 1,
+  };
+  const compactPayloads = [
+    compactPayload({ kind: "sessions", sessions: [session] }, maskedSnapshot),
+    compactPayload({
+      kind: "search",
+      query: "Rotate",
+      total: 1,
+      results: [{ turn, session, highlights: [], relevance_score: 1 }],
+    }, maskedSnapshot),
+    compactPayload({ kind: "session_detail", session, related_work: [relatedWork], turns: [] }, maskedSnapshot),
+    compactPayload({ kind: "turn_detail", turn, session, context: undefined }, maskedSnapshot),
+  ];
+
+  for (const payload of compactPayloads) {
+    const serialized = JSON.stringify(payload);
+    assert.doesNotMatch(serialized, new RegExp(secret, "u"));
+    assert.match(serialized, /Rotate the credential\./u);
+  }
+
+  const missingCanonicalTitle = compactPayload({
+    kind: "sessions",
+    sessions: [{ ...session, canonical_title: undefined }],
+  }, maskedSnapshot) as { sessions: Array<{ title: string | null }> };
+  assert.equal(missingCanonicalTitle.sessions[0]?.title, null);
+
+  const query = captureIo(repoRoot, undefined, {
+    readStdin: async () => JSON.stringify({
+      schema: "cchistory-lite-query/v1",
+      operations: [{ id: "session", kind: "session", refs: [session.id] }],
+    }),
+    scan: async () => maskedSnapshot,
+  });
+  assert.equal(await runLiteCli(["query", "--request", "-"], query.io), 0);
+  assert.doesNotMatch(query.stdout.join(""), new RegExp(secret, "u"));
+  assert.match(query.stdout.join(""), /Rotate the credential\./u);
+
+  const canonical = captureIo(repoRoot, undefined, { scan: async () => maskedSnapshot });
+  assert.equal(await runLiteCli(["show", "session", session.id, "--json=canonical"], canonical.io), 0);
+  const canonicalOutput = JSON.parse(canonical.stdout.join("")) as { session: { title?: string } };
+  assert.equal(canonicalOutput.session.title, rawTitle);
+});
+
+test("Lite CLI compact turn and session usage consume the canonical runtime projection", async () => {
+  const snapshot = await getCodexSnapshot();
+  const target = snapshot.listResolvedTurns()[0];
+  assert.ok(target);
+  const turns = snapshot.data.turns.map((turn) => turn.id === target.id
+    ? {
+        ...turn,
+        context_summary: {
+          ...turn.context_summary,
+          token_usage: {
+            input_tokens: 10,
+            cache_read_input_tokens: 20,
+            cache_creation_input_tokens: 3,
+            output_tokens: 4,
+            total_tokens: 41,
+          },
+          total_tokens: 999,
+        },
+      }
+    : turn);
+  const inconsistent = new LiveHistorySnapshot({ ...snapshot.data, turns });
+  assert.ok(inconsistent.projectionIssues.some((issue) => issue.code === "turn-usage-total-mismatch"));
+
+  const turnPayload = compactPayload({ kind: "turns", turns: [inconsistent.getTurn(target.id)] }, inconsistent) as {
+    turns: Array<{ total_tokens: number }>;
+  };
+  assert.equal(turnPayload.turns[0]?.total_tokens, 41);
+
+  const session = inconsistent.getSession(target.session_id);
+  assert.ok(session);
+  const sessionPayload = compactPayload({ kind: "sessions", sessions: [session] }, inconsistent) as {
+    sessions: Array<{ total_tokens: number }>;
+  };
+  assert.equal(sessionPayload.sessions[0]?.total_tokens, inconsistent.getSessionUsage(session.id)?.total_tokens);
+});
+
+test("Lite CLI query executes one scan and returns operation-level errors", async () => {
+  const snapshot = await getCodexSnapshot();
+  const session = snapshot.listResolvedSessions()[0];
+  const turn = snapshot.listResolvedTurns().find((entry) => snapshot.getTurnContext(entry.id)?.assistant_replies.length);
+  assert.ok(session);
+  assert.ok(turn);
+  const calls: ScanLiteHistoryOptions[] = [];
+  const request = JSON.stringify({
+    schema: "cchistory-lite-query/v1",
+    operations: [
+      { id: "find", kind: "search", query: turn.canonical_text.split(/\s+/u)[0], limit: 2 },
+      { id: "session", kind: "session", refs: [session.id] },
+      { id: "replies", kind: "replies", turn_refs: [turn.id] },
+      { id: "missing", kind: "session", refs: ["sess:codex:not-present"] },
+      { id: "missing-reply", kind: "replies", turn_refs: ["turn-not-present"] },
+    ],
+  });
+  const captured = captureIo(repoRoot, undefined, {
+    readStdin: async () => request,
+    scan: async (options) => {
+      calls.push(options);
+      return snapshot;
+    },
+  });
+  assert.equal(await runLiteCli(["query", "--request", "-"], captured.io), 1);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.contextMode, "matching");
+  assert.deepEqual(calls[0]?.contextTargets, [
+    { kind: "turn", ref: turn.id },
+    { kind: "turn", ref: "turn-not-present" },
+  ]);
+  const payload = JSON.parse(captured.stdout.join("")) as {
+    schema: string;
+    operations: Array<{ id: string; status: string; result?: unknown; error?: { code: string } }>;
+  };
+  assert.equal(payload.schema, "cchistory-lite-query-result/v1");
+  assert.deepEqual(payload.operations.map((operation) => operation.status), ["ok", "ok", "ok", "error", "error"]);
+  assert.deepEqual(
+    payload.operations.slice(-2).map((operation) => operation.error?.code),
+    ["reference_not_found", "reference_not_found"],
+  );
+  assert.equal(captured.stderr.join(""), "");
+});
+
+test("Lite CLI query validates request JSON before scanning", async () => {
+  let scans = 0;
+  const captured = captureIo(repoRoot, undefined, {
+    readStdin: async () => JSON.stringify({ schema: "wrong/v1", operations: [] }),
+    scan: async () => {
+      scans += 1;
+      return getCodexSnapshot();
+    },
+  });
+  assert.equal(await runLiteCli(["--safe", "query", "--request", "-"], captured.io), 2);
+  assert.equal(scans, 0);
+  assert.equal(captured.stdout.join(""), "");
+  const error = JSON.parse(captured.stderr.join("")) as { schema: string; error: { code: string } };
+  assert.equal(error.schema, "cchistory-lite-error/v1");
+  assert.equal(error.error.code, "invalid_query_request");
+});
+
+test("Lite CLI keeps structured query errors after global options and during parsing or scanning", async () => {
+  const request = JSON.stringify({
+    schema: "cchistory-lite-query/v1",
+    operations: [{ id: "find", kind: "search", query: "anything" }],
+  });
+  const scanFailure = captureIo(repoRoot, undefined, {
+    readStdin: async () => request,
+    scan: async () => {
+      throw new Error("synthetic scan failure");
+    },
+  });
+  assert.equal(await runLiteCli(["--safe", "query", "--request", "-"], scanFailure.io), 1);
+  assert.equal(scanFailure.stdout.join(""), "");
+  const scanError = JSON.parse(scanFailure.stderr.join("")) as { schema: string; error: { code: string } };
+  assert.equal(scanError.schema, "cchistory-lite-error/v1");
+  assert.equal(scanError.error.code, "scan_failed");
+
+  const parseFailure = captureIo(repoRoot);
+  assert.equal(await runLiteCli(["--safe", "query", "--request"], parseFailure.io), 2);
+  const parseError = JSON.parse(parseFailure.stderr.join("")) as { schema: string; error: { code: string } };
+  assert.equal(parseError.schema, "cchistory-lite-error/v1");
+  assert.equal(parseError.error.code, "invalid_usage");
+
+  const shapeFailure = captureIo(repoRoot);
+  assert.equal(await runLiteCli(["--safe", "query", "unexpected", "--request", "-"], shapeFailure.io), 2);
+  const shapeError = JSON.parse(shapeFailure.stderr.join("")) as { schema: string; error: { code: string } };
+  assert.equal(shapeError.schema, "cchistory-lite-error/v1");
+  assert.equal(shapeError.error.code, "invalid_usage");
 });
 
 test("Lite CLI resolves export paths before writing through symlinks", async () => {
@@ -826,4 +1055,16 @@ function displayColumnsForTest(value: string): number {
     width += wide ? 2 : 1;
   }
   return width;
+}
+
+function assertNoKeysDeep(value: unknown, forbidden: ReadonlySet<string>): void {
+  if (Array.isArray(value)) {
+    for (const entry of value) assertNoKeysDeep(entry, forbidden);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [key, child] of Object.entries(value)) {
+    assert.equal(forbidden.has(key), false, `compact payload must not contain ${key}`);
+    assertNoKeysDeep(child, forbidden);
+  }
 }

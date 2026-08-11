@@ -344,7 +344,7 @@ function renderTurnPane(
   }
 
   const selectedIndex = state.mode === "search" ? state.selectedSearchTurnIndex : state.selectedTurnIndex;
-  const items = buildTurnDisplayItems(turns, selectedIndex, focused, columnWidth, now);
+  const items = buildTurnDisplayItems(model, turns, selectedIndex, focused, columnWidth, now);
   const selectedDisplayIndex = Math.max(0, items.findIndex((item) => item.turnIndex === selectedIndex));
   const window = viewportWindow(items.length, selectedDisplayIndex, viewportSize);
   if (window.start > 0) lines.push(muted(` ↑ ${window.start} more`));
@@ -359,6 +359,7 @@ interface TurnDisplayItem {
 }
 
 function buildTurnDisplayItems(
+  model: LiteBrowserModel,
   turns: LiteTurnEntry[],
   selectedIndex: number,
   focused: boolean,
@@ -382,7 +383,7 @@ function buildTurnDisplayItems(
       const selected = index === selectedIndex;
       const metaText = [
         entry.turn.context_summary.primary_model ?? "",
-        formatCompactCount(entry.turn.context_summary.total_tokens),
+        formatCompactCount(model.snapshot.getTurnUsage(entry.turn.id)?.total_tokens),
         formatShortDate(entry.turn.submission_started_at),
       ]
         .filter(Boolean)
@@ -443,6 +444,7 @@ function buildDetailRows(
   const index = state.mode === "search" ? state.selectedSearchTurnIndex : state.selectedTurnIndex;
   const contentWidth = Math.max(columnWidth - 4, 24);
   const summary = entry.turn.context_summary;
+  const usage = model.snapshot.getTurnUsage(entry.turn.id);
   const rows: string[] = [];
 
   const projectName = entry.turn.project_id
@@ -454,7 +456,7 @@ function buildDetailRows(
   );
   rows.push(
     `${metaLabel("Model:")} ${platformColor(summary.primary_model ?? "unknown")}${
-      summary.total_tokens ? ` ${dim("·")} ${formatTokenBreakdown(summary)}` : ""
+      usage?.total_tokens ? ` ${dim("·")} ${formatTokenBreakdown(usage)}` : ""
     } ${dim("·")} ${formatShortDate(entry.turn.submission_started_at)} ${dim(`(${formatRelativeTime(entry.turn.submission_started_at, now)})`)}`,
   );
   rows.push(`${metaLabel("Turn:")} ${entry.turn.id}`);
@@ -920,25 +922,16 @@ function pickUserTurnText(entry: LiteTurnEntry): string {
   return tameDetailMarkup(fallback);
 }
 
-function formatTokenBreakdown(summary: {
+function formatTokenBreakdown(usage: {
   total_tokens?: number;
-  token_usage?: {
-    input_tokens?: number;
-    cached_input_tokens?: number;
-    cache_read_input_tokens?: number;
-    cache_creation_input_tokens?: number;
-    output_tokens?: number;
-  };
+  input_tokens?: number;
+  cached_input_tokens?: number;
+  output_tokens?: number;
 }): string {
-  const total = summary.total_tokens;
+  const total = usage.total_tokens;
   if (!total) return "";
-  const usage = summary.token_usage;
-  if (!usage) return formatCompactCount(total);
-  const cached =
-    usage.cached_input_tokens ??
-    (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
   return `${formatCompactCount(total)} (in=${formatCompactCount(usage.input_tokens ?? 0) || "0"}, cached=${
-    formatCompactCount(cached) || "0"
+    formatCompactCount(usage.cached_input_tokens ?? 0) || "0"
   }, out=${formatCompactCount(usage.output_tokens ?? 0) || "0"})`;
 }
 

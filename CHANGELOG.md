@@ -7,17 +7,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-11
+
 ### Added
 
+- The JSON-only `query --request <file|->` command batches ordered search, session, and assistant
+  reply reads into one scan. Operation failures remain local to their result while successful
+  operations are preserved.
+- Public schemas for compact reads, canonical reads, batch requests/results, and structured
+  errors now ship in the standalone release artifact.
 - The Lite CLI now has `latest [sessions|turns] [N]`, default 20-row limits for `ls`, `--all`,
   and lexical `--dir <path>` filtering across session/project lists, latest results, search,
   stats, and `tree projects`.
 - Human-readable list and detail output now uses responsive columns, relative times,
   actionable short references, structured metadata, turn/context summaries, and explicit
-  truncation counts. Existing `show --json` payloads remain unchanged.
+  truncation counts.
 
 ### Changed
 
+- Bare `--json` now emits the breaking compact `cchistory-lite/v2` contract for agents;
+  `--json=canonical` retains full canonical evidence under `cchistory-lite-canonical/v1`.
+  Compact and query results mark archived content as `untrusted_history` and omit parser internals,
+  tool payloads, system messages, and lineage.
+- Codex-injected Skills, permissions, and collaboration metadata are classified as masks instead
+  of user-authored request text. Assistant replies now carry complete masked `canonical_text` for
+  read-only review workflows.
 - CC History Lite now ships as an independent repository. It was extracted from the CC History
   monorepo, which continues to host the Full CLI/TUI, the managed API/web surfaces, and the
   persistent store. The Lite pipeline — `domain`, `canonical`, `source-adapters`,

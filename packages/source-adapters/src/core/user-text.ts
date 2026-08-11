@@ -26,6 +26,44 @@ const SYNTHETIC_USER_SHAPED_PREFIXES = [
 
 const CONTINUATION_PREFIX = "This session is being continued from a previous conversation";
 
+const LEADING_INJECTED_ENVELOPES: readonly {
+  completePattern: RegExp;
+  malformedPrefix: string;
+}[] = [
+  {
+    completePattern: /^# AGENTS\.md instructions[^\n]*\n\n<INSTRUCTIONS>[\s\S]*?<\/INSTRUCTIONS>\s*/u,
+    malformedPrefix: "# AGENTS.md instructions",
+  },
+  {
+    completePattern: /^<INSTRUCTIONS>[\s\S]*?<\/INSTRUCTIONS>\s*/u,
+    malformedPrefix: "<INSTRUCTIONS>",
+  },
+  {
+    completePattern: /^<environment_context>[\s\S]*?<\/environment_context>\s*/u,
+    malformedPrefix: "<environment_context>",
+  },
+  {
+    completePattern: /^<system-reminder>[\s\S]*?<\/system-reminder>\s*/u,
+    malformedPrefix: "<system-reminder>",
+  },
+  {
+    completePattern: /^## Skills\nA skill is a set of local instructions[\s\S]*?<\/INSTRUCTIONS>\s*/u,
+    malformedPrefix: "## Skills\nA skill is a set of local instructions",
+  },
+  {
+    completePattern: /^<skills_instructions>[\s\S]*?<\/skills_instructions>\s*/u,
+    malformedPrefix: "<skills_instructions>",
+  },
+  {
+    completePattern: /^<permissions instructions>[\s\S]*?<\/permissions instructions>\s*/u,
+    malformedPrefix: "<permissions instructions>",
+  },
+  {
+    completePattern: /^<collaboration_mode>[\s\S]*?<\/collaboration_mode>\s*/u,
+    malformedPrefix: "<collaboration_mode>",
+  },
+];
+
 export function splitUserText(
   text: string,
   options: {
@@ -100,10 +138,7 @@ export function splitUserText(
 
   if (
     normalized.startsWith("[Assistant Rules") ||
-    normalized.startsWith("# AGENTS.md instructions") ||
-    normalized.startsWith("<environment_context>") ||
-    normalized.startsWith("<system-reminder>") ||
-    normalized.startsWith("<INSTRUCTIONS>")
+    LEADING_INJECTED_ENVELOPES.some(({ malformedPrefix }) => normalized.startsWith(malformedPrefix))
   ) {
     return [{ originKind: "injected_user_shaped", text: normalized, displayPolicy: "collapse" }];
   }
@@ -118,15 +153,8 @@ export function splitUserText(
 export function extractLeadingInjectedUserChunk(
   text: string,
 ): { text: string; rest: string } | undefined {
-  const patterns = [
-    /^# AGENTS\.md instructions[^\n]*\n\n<INSTRUCTIONS>[\s\S]*?<\/INSTRUCTIONS>\s*/u,
-    /^<INSTRUCTIONS>[\s\S]*?<\/INSTRUCTIONS>\s*/u,
-    /^<environment_context>[\s\S]*?<\/environment_context>\s*/u,
-    /^<system-reminder>[\s\S]*?<\/system-reminder>\s*/u,
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
+  for (const { completePattern } of LEADING_INJECTED_ENVELOPES) {
+    const match = text.match(completePattern);
     if (!match || !match[0]) {
       continue;
     }

@@ -1254,6 +1254,81 @@ export async function seedClaudeMultiChunkMessageFixture(tempRoot: string): Prom
   return createSourceDefinition("src-claude-multi-chunk", "claude_code", claudeDir);
 }
 
+export async function seedClaudeCcusageConformanceFixture(tempRoot: string): Promise<SourceDefinition> {
+  const claudeDir = path.join(tempRoot, "claude-ccusage-conformance");
+  const subagentDir = path.join(claudeDir, "subagents");
+  await mkdir(subagentDir, { recursive: true });
+  const sessionId = "11111111-2222-4333-8444-555555555555";
+  const messageId = "msg_shared_identity";
+  const assistant = (
+    timestamp: string,
+    requestId: string,
+    usage: Record<string, number>,
+    text: string,
+    isSidechain = false,
+  ) => ({
+    timestamp,
+    sessionId,
+    requestId,
+    isSidechain,
+    type: "assistant",
+    message: {
+      id: messageId,
+      role: "assistant",
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      usage,
+      content: [{ type: "text", text }],
+    },
+  });
+  const requestAFinal = {
+    input_tokens: 1,
+    cache_read_input_tokens: 10,
+    cache_creation_input_tokens: 2,
+    output_tokens: 7,
+  };
+  const requestB = {
+    input_tokens: 3,
+    cache_read_input_tokens: 20,
+    cache_creation_input_tokens: 4,
+    output_tokens: 5,
+  };
+
+  await writeFile(
+    path.join(claudeDir, `${sessionId}.jsonl`),
+    [
+      {
+        timestamp: "2026-03-10T05:00:00.000Z",
+        sessionId,
+        isSidechain: false,
+        type: "user",
+        message: { role: "user", content: "Check token accounting." },
+      },
+      assistant("2026-03-10T05:00:01.000Z", "req-a", {
+        input_tokens: 1,
+        cache_read_input_tokens: 10,
+        cache_creation_input_tokens: 2,
+        output_tokens: 2,
+      }, "Partial checkpoint."),
+      assistant("2026-03-10T05:00:02.000Z", "req-a", requestAFinal, "Final checkpoint."),
+      assistant("2026-03-10T05:00:03.000Z", "req-b", requestB, "A distinct request."),
+    ].map((record) => JSON.stringify(record)).join("\n") + "\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(claudeDir, "copied-record.jsonl"),
+    `${JSON.stringify(assistant("2026-03-10T05:00:04.000Z", "req-a", requestAFinal, "Copied final checkpoint."))}\n`,
+    "utf8",
+  );
+  await writeFile(
+    path.join(subagentDir, "agent-replay.jsonl"),
+    `${JSON.stringify(assistant("2026-03-10T05:00:05.000Z", "req-sidechain-replay", requestB, "Sidechain replay.", true))}\n`,
+    "utf8",
+  );
+
+  return createSourceDefinition("src-claude-ccusage-conformance", "claude_code", claudeDir);
+}
+
 export async function seedMultiTurnCodexTokenFixture(tempRoot: string): Promise<SourceDefinition> {
   const codexDir = path.join(tempRoot, "codex-token-checkpoints");
   await mkdir(codexDir, { recursive: true });

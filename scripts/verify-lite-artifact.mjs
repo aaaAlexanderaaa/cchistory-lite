@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile as execFileCallback } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -63,8 +63,37 @@ async function main() {
       { cwd: extractRoot, maxBuffer: 8 * 1024 * 1024 },
     );
     const payload = JSON.parse(search.stdout);
-    if (payload.kind !== 'search' || payload.total < 1) {
+    if (payload.schema !== 'cchistory-lite/v2' || payload.kind !== 'search' || payload.total < 1) {
       throw new Error(`Installed Lite CLI fixture search failed: ${search.stdout}`);
+    }
+    const schemaNames = [
+      'cchistory-lite-v2.schema.json',
+      'cchistory-lite-canonical-v1.schema.json',
+      'cchistory-lite-query-v1.schema.json',
+      'cchistory-lite-query-result-v1.schema.json',
+      'cchistory-lite-error-v1.schema.json',
+    ];
+    for (const schemaName of schemaNames) {
+      JSON.parse(await readFile(path.join(installedRoot, 'schemas', schemaName), 'utf8'));
+    }
+    const requestPath = path.join(tempRoot, 'query.json');
+    await writeFile(requestPath, `${JSON.stringify({
+      schema: 'cchistory-lite-query/v1',
+      operations: [{ id: 'find', kind: 'search', query: 'mock', limit: 1 }],
+    })}\n`, 'utf8');
+    const query = await execFile(
+      cli,
+      ['query', '--request', requestPath, '--source-root', `codex=${fixtureRoot}`, '--source', 'codex', '--safe'],
+      { cwd: extractRoot, maxBuffer: 8 * 1024 * 1024 },
+    );
+    const queryPayload = JSON.parse(query.stdout);
+    if (
+      queryPayload.schema !== 'cchistory-lite-query-result/v1'
+      || queryPayload.kind !== 'query_result'
+      || queryPayload.operations?.[0]?.status !== 'ok'
+      || queryPayload.operations[0].result?.total < 1
+    ) {
+      throw new Error(`Installed Lite CLI fixture query failed: ${query.stdout}`);
     }
     console.log('[cchistory] standalone Lite artifact verification passed');
     console.log(`[cchistory] verified binaries: ${cli}, ${tui}`);

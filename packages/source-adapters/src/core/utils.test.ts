@@ -175,4 +175,51 @@ Let me chronologically analyze the conversation...`;
     assert.equal(chunks.length, 1);
     assert.equal(chunks[0]!.originKind, "user_authored");
   });
+
+  test("Codex scaffold sequence keeps only the actual request as user-authored", () => {
+    const text = [
+      "# AGENTS.md instructions for /workspace/app",
+      "",
+      "<INSTRUCTIONS>Repository rules</INSTRUCTIONS>",
+      "",
+      "<environment_context><cwd>/workspace/app</cwd></environment_context>",
+      "",
+      "## Skills",
+      "A skill is a set of local instructions stored in a SKILL.md file.",
+      "### Available skills",
+      "- skill-creator: create skills",
+      "</INSTRUCTIONS>",
+      "",
+      "Review the validator behavior.",
+    ].join("\n");
+    const chunks = splitUserText(text);
+    assert.deepEqual(chunks.map((chunk) => chunk.originKind), [
+      "injected_user_shaped",
+      "injected_user_shaped",
+      "injected_user_shaped",
+      "user_authored",
+    ]);
+    assert.equal(chunks.at(-1)?.text, "Review the validator behavior.");
+  });
+
+  test("a user-authored Skills heading without the injected catalog signature stays authored", () => {
+    const text = "## Skills\n\nPlease add image editing and spreadsheet support.";
+    const chunks = splitUserText(text);
+    assert.equal(chunks.length, 1);
+    assert.equal(chunks[0]!.originKind, "user_authored");
+  });
+
+  test("truncated injected metadata envelopes stay injected instead of becoming user turns", () => {
+    const truncatedEnvelopes = [
+      "## Skills\nA skill is a set of local instructions stored in SKILL.md",
+      "<skills_instructions>\n<skill>review history</skill>",
+      "<permissions instructions>\nFilesystem access is read-only.",
+      "<collaboration_mode>\nDefault",
+    ];
+    for (const text of truncatedEnvelopes) {
+      const chunks = splitUserText(text);
+      assert.equal(chunks.length, 1, text);
+      assert.equal(chunks[0]!.originKind, "injected_user_shaped", text);
+    }
+  });
 });

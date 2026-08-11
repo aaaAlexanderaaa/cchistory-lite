@@ -629,6 +629,7 @@ export interface SessionProjection {
   source_platform: SourcePlatform;
   host_id: string;
   title?: string;
+  canonical_title?: string;
   created_at: string;
   updated_at: string;
   turn_count: number;
@@ -671,6 +672,7 @@ export interface SessionRelatedWorkProjection {
   automation_job_ref?: string;
   automation_run_key?: string;
   title?: string;
+  canonical_title?: string;
   status?: string;
   created_at: string;
   updated_at: string;
@@ -780,6 +782,7 @@ export interface SystemMessageProjection {
 export interface AssistantReplyProjection {
   id: string;
   content: string;
+  canonical_text: string;
   display_segments: DisplaySegment[];
   content_preview: string;
   token_usage?: TokenUsageSummary;

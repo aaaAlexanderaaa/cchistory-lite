@@ -13,6 +13,7 @@ import {
   seedCodexInterleavedCumulativeTokenFixture,
   seedCodexDelayedInterleavedTokenFixture,
   seedClaudeMultiChunkMessageFixture,
+  seedClaudeCcusageConformanceFixture,
 } from "../test-helpers.js";
 
 test("runSourceProbe projects token usage and stop reasons into turn context", async () => {
@@ -342,6 +343,33 @@ test("runSourceProbe dedupes Claude Code multi-chunk assistant messages by messa
     assert.equal(payload.turns[0]?.context_summary.token_usage?.input_tokens, 9);
     assert.equal(payload.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 132160);
     assert.equal(payload.turns[0]?.context_summary.token_usage?.output_tokens, 1824);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe matches ccusage identity, replay, checkpoint, and option-B semantics", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const source = await seedClaudeCcusageConformanceFixture(tempRoot);
+    const [payload] = (await runSourceProbe({}, [source])).sources;
+
+    assert.ok(payload);
+    const tokenUsageSignals = payload.fragments.filter(
+      (fragment) => fragment.fragment_kind === "token_usage_signal",
+    );
+    assert.equal(tokenUsageSignals.length, 2, "only req-a and req-b should remain billable");
+    assert.deepEqual(
+      new Set(tokenUsageSignals.map((fragment) => fragment.payload.request_id)),
+      new Set(["req-a", "req-b"]),
+    );
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.input_tokens, 4);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 30);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.cache_creation_input_tokens, 6);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.output_tokens, 12);
+    assert.equal(payload.turns[0]?.context_summary.total_tokens, 52);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
