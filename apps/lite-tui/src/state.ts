@@ -16,7 +16,7 @@ import {
 } from "./model.js";
 
 export type LiteFocusPane = "projects" | "turns" | "detail" | "conversation";
-/** What the left pane lists: linked projects, or every raw session. */
+/** What the left pane lists: linked projects, or top-level sessions. */
 export type LiteBrowseScope = "projects" | "sessions";
 export type LiteMode = "browse" | "search";
 export type LiteOverlay = "none" | "help" | "stats" | "sources";
@@ -437,8 +437,8 @@ function openSessionRef(model: LiteBrowserModel, state: LiteBrowserState, ref: s
   if (!session) return withError(state, `Session not found: ${ref}.`);
   const index = model.sessions.findIndex((entry) => entry.session.id === session.id);
   if (index < 0) return withError(state, `Session is not in this snapshot: ${ref}.`);
-  // Sessions scope, not project scope: a delegated session or automation run
-  // can carry related work without deriving a single UserTurn.
+  // Explicit entry points may include an otherwise hidden delegated child so
+  // its read-only relation evidence remains directly addressable.
   return clampState(
     {
       ...state,

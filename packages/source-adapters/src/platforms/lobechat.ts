@@ -5,6 +5,7 @@ export const lobechatAdapter: PlatformAdapter = {
   platform: "lobechat",
   supportTier: "experimental",
   sessionTargeting: "container",
+  projectionBoundary: "source",
   getDefaultBaseDirCandidates: (options) => [path.join(options.homeDir ?? "", ".config", "lobehub-storage")],
   matchesSourceFile: (filePath) => filePath.endsWith(".json"),
 };

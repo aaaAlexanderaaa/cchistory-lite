@@ -87,36 +87,78 @@ export function searchTurnsInMemory(input: SearchTurnsInMemoryInput): {
     }
   }
 
-  const ranked = input.turns
-    .map((turn) => ({
+  const retainedLimit = limit === 0 ? 0 : offset + limit;
+  const retained: TurnSearchResult[] = [];
+  let total = 0;
+
+  for (const turn of input.turns) {
+    const candidate = materializeSearchCandidate({
       turn,
-      candidate: materializeSearchCandidate({
-        turn,
-        session: sessionsById.get(turn.session_id),
-        project_observation_candidates: projectObservationCandidatesBySessionId.get(turn.session_id),
-      }),
-    }))
-    .filter(({ candidate }) => matchesSearchCandidateQuery(candidate, query))
-    .filter(({ turn }) => (input.project_id ? turn.project_id === input.project_id : true))
-    .filter(({ turn }) => (sourceIds ? sourceIds.has(turn.source_id) : true))
-    .filter(({ turn }) => (linkStates ? linkStates.has(turn.link_state) : true))
-    .filter(({ turn }) => (valueAxes ? valueAxes.has(turn.value_axis) : true))
-    .map(({ turn, candidate }) => {
-      const highlights = query.length > 0 ? findHighlights(candidate.canonical_text ?? "", query) : [];
-      return {
-        turn,
-        session: sessionsById.get(turn.session_id),
-        project: turn.project_id ? projectsById.get(turn.project_id) : undefined,
-        highlights,
-        relevance_score: computeRelevanceScore(turn, highlights, nowMs),
-      } satisfies TurnSearchResult;
-    })
-    .sort(compareTurnSearchResults);
+      session: sessionsById.get(turn.session_id),
+      project_observation_candidates: projectObservationCandidatesBySessionId.get(turn.session_id),
+    });
+    if (!matchesSearchCandidateQuery(candidate, query)) continue;
+    if (input.project_id && turn.project_id !== input.project_id) continue;
+    if (sourceIds && !sourceIds.has(turn.source_id)) continue;
+    if (linkStates && !linkStates.has(turn.link_state)) continue;
+    if (valueAxes && !valueAxes.has(turn.value_axis)) continue;
+
+    total += 1;
+    if (retainedLimit === 0) continue;
+    const highlights = query.length > 0 ? findHighlights(candidate.canonical_text ?? "", query) : [];
+    retainBestSearchResult(retained, {
+      turn,
+      session: sessionsById.get(turn.session_id),
+      project: turn.project_id ? projectsById.get(turn.project_id) : undefined,
+      highlights,
+      relevance_score: computeRelevanceScore(turn, highlights, nowMs),
+    }, retainedLimit);
+  }
+
+  retained.sort(compareTurnSearchResults);
 
   return {
-    results: ranked.slice(offset, offset + limit),
-    total: ranked.length,
+    results: retained.slice(offset),
+    total,
   };
+}
+
+/** Keep a max-heap whose root is the worst currently retained result. */
+function retainBestSearchResult(heap: TurnSearchResult[], result: TurnSearchResult, limit: number): void {
+  if (heap.length < limit) {
+    heap.push(result);
+    siftWorstSearchResultUp(heap, heap.length - 1);
+    return;
+  }
+  if (compareTurnSearchResults(result, heap[0]!) >= 0) return;
+  heap[0] = result;
+  siftWorstSearchResultDown(heap, 0);
+}
+
+function siftWorstSearchResultUp(heap: TurnSearchResult[], startIndex: number): void {
+  let index = startIndex;
+  while (index > 0) {
+    const parentIndex = Math.floor((index - 1) / 2);
+    if (compareTurnSearchResults(heap[index]!, heap[parentIndex]!) <= 0) break;
+    [heap[index], heap[parentIndex]] = [heap[parentIndex]!, heap[index]!];
+    index = parentIndex;
+  }
+}
+
+function siftWorstSearchResultDown(heap: TurnSearchResult[], startIndex: number): void {
+  let index = startIndex;
+  while (true) {
+    const leftIndex = index * 2 + 1;
+    if (leftIndex >= heap.length) return;
+    const rightIndex = leftIndex + 1;
+    const worseChildIndex = rightIndex < heap.length &&
+        compareTurnSearchResults(heap[rightIndex]!, heap[leftIndex]!) > 0
+      ? rightIndex
+      : leftIndex;
+    if (compareTurnSearchResults(heap[worseChildIndex]!, heap[index]!) <= 0) return;
+    [heap[index], heap[worseChildIndex]] = [heap[worseChildIndex]!, heap[index]!];
+    index = worseChildIndex;
+  }
 }
 
 export function materializeSearchCandidate(input: MaterializeSearchCandidateInput): SearchCandidateFields {

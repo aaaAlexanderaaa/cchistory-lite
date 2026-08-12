@@ -39,6 +39,7 @@ import {
   deriveProjectLinkSnapshot,
   filterProjectsByDirectoryScope,
   filterSessionsByDirectoryScope,
+  filterTopLevelSessions,
   filterTurnsByDirectoryScope,
   installRuntimeWarningFilter,
   orderSessionsByLastMessage,
@@ -203,6 +204,13 @@ export class LiveHistorySnapshot {
     return filterSessionsByDirectoryScope(this.data.sessions, options.directoryScope);
   }
 
+  listTopLevelSessions(options: LiveDirectoryScopeOptions = {}): SessionProjection[] {
+    return filterSessionsByDirectoryScope(
+      filterTopLevelSessions(this.data.sessions, this.data.related_work),
+      options.directoryScope,
+    );
+  }
+
   listResolvedTurns(options: LiveDirectoryScopeOptions = {}): UserTurnProjection[] {
     return filterTurnsByDirectoryScope(this.data.turns, this.data.sessions, options.directoryScope);
   }
@@ -217,6 +225,7 @@ export class LiveHistorySnapshot {
       projects: this.listProjects(),
       sessions: this.data.sessions,
       turns: this.data.turns,
+      relatedWork: this.data.related_work,
       directoryScope: options.directoryScope,
     });
   }
@@ -447,20 +456,23 @@ export async function scanLiteHistory(options: ScanLiteHistoryOptions = {}): Pro
   const payloads: LiveSourcePayload[] = [];
   let host: Host | undefined;
 
-  // Scan one source at a time so raw adapter payloads from a completed source
-  // can be released before the next source begins. Adapters that declare a
-  // canonical logical-session grouping boundary are projected one session at
-  // a time; all other adapters retain the source-level canonical fallback.
+  // Rebuild the native file inventory on every invocation, then scan one
+  // source at a time so raw adapter payloads can be released promptly. Each
+  // adapter explicitly declares its minimum safe projection boundary; the
+  // runtime never infers independence from a file-oriented source shape.
   for (const source of sources) {
     const adapter = sourceAdapters.listPlatformAdapters().find((entry) => entry.platform === source.platform);
-    const result = adapter?.logicalSessionGrouping === "source_session_id"
+    const result = adapter?.projectionBoundary === "logical_session"
       ? await scanLogicalSessionGroups(
           source,
           options,
           contextMode,
           sourceAdapters,
-          (filePath) => sourceAdapters.deriveSourceFileLogicalSessionKey(source.platform, filePath),
-          (filePaths) => sourceAdapters.inspectSourceFilesLogicalSessionMetadata(source.platform, filePaths),
+          (filePaths, includeWorkspaceMetadata) => sourceAdapters.inspectSourceFilesLogicalSessionMetadata(
+            source.platform,
+            filePaths,
+            { includeWorkspaceMetadata },
+          ),
         )
       : await scanSourceWithCollector(source, options, contextMode, sourceAdapters);
     host ??= result.host;
@@ -559,9 +571,9 @@ async function scanLogicalSessionGroups(
   options: ScanLiteHistoryOptions,
   contextMode: LiteContextMode,
   sourceAdapters: typeof import("@cchistory/source-adapters"),
-  getGroupKey: (filePath: string) => Promise<string>,
   inspectGroupFiles: (
     filePaths: readonly string[],
+    includeWorkspaceMetadata: boolean,
   ) => Promise<import("@cchistory/source-adapters").SourceFileLogicalSessionMetadata[]>,
 ): Promise<{ host: Host; payload: LiveSourcePayload }> {
   const files = await sourceAdapters.listSourceFiles(source.platform, source.base_dir, options.limitFiles);
@@ -573,20 +585,23 @@ async function scanLogicalSessionGroups(
     files: string[];
     workingDirectoryState: "known" | "absent" | "uncertain";
     workingDirectory?: string;
+    relatedSessionRefs: Set<string>;
   }>();
-  const inspectedFiles = options.directoryScope ? await inspectGroupFiles(files) : undefined;
+  const requestedSessionRefs = options.sessionRefs?.filter((ref) => ref.trim().length > 0) ?? [];
+  const inspectedFiles = await inspectGroupFiles(
+    files,
+    Boolean(options.directoryScope || requestedSessionRefs.length > 0),
+  );
+  if (inspectedFiles.some((metadata) => metadata.sessionKeyState === "uncertain")) {
+    return scanSourceWithCollector(source, options, contextMode, sourceAdapters);
+  }
   for (const [fileIndex, filePath] of files.entries()) {
-    const metadata = inspectedFiles
-      ? inspectedFiles[fileIndex]!
-      : {
-          sessionKey: await getGroupKey(filePath),
-          workingDirectoryState: "absent" as const,
-          workingDirectory: undefined,
-        };
+    const metadata = inspectedFiles[fileIndex]!;
     const key = metadata.sessionKey;
     const group = filesByGroup.get(key);
     if (group) {
       group.files.push(filePath);
+      for (const ref of metadata.relatedSessionRefs ?? []) group.relatedSessionRefs.add(ref);
       if (
         group.workingDirectoryState === "uncertain" ||
         metadata.workingDirectoryState === "uncertain" ||
@@ -607,13 +622,28 @@ async function scanLogicalSessionGroups(
         files: [filePath],
         workingDirectoryState: metadata.workingDirectoryState,
         workingDirectory: metadata.workingDirectory,
+        relatedSessionRefs: new Set(metadata.relatedSessionRefs ?? []),
       });
     }
   }
 
-  const requestedSessionRefs = options.sessionRefs?.filter((ref) => ref.trim().length > 0) ?? [];
-  const matchingGroupEntries = [...filesByGroup.entries()]
+  const directMatchingGroupEntries = [...filesByGroup.entries()]
     .filter(([groupKey]) => requestedSessionRefs.some((ref) => sessionRefMatchesGroup(ref, groupKey, source)));
+  const relatedMatchingGroupEntries = [...filesByGroup.entries()]
+    .filter(([, group]) => requestedSessionRefs.some((ref) =>
+      [...group.relatedSessionRefs].some((relatedRef) => sessionRefMatchesGroup(ref, relatedRef, source))
+    ));
+  const companionRefs = new Set(
+    directMatchingGroupEntries.flatMap(([, group]) => [...group.relatedSessionRefs]),
+  );
+  const matchingGroupEntries = [...filesByGroup.entries()].filter(([groupKey, group]) =>
+    directMatchingGroupEntries.some(([directKey]) => directKey === groupKey) ||
+    relatedMatchingGroupEntries.some(([relatedKey]) => relatedKey === groupKey) ||
+    [...companionRefs].some((ref) => sessionRefMatchesGroup(ref, groupKey, source)) ||
+    [...group.relatedSessionRefs].some((relatedRef) =>
+      directMatchingGroupEntries.some(([directKey]) => sessionRefMatchesGroup(relatedRef, directKey, source))
+    )
+  );
   const targetGroups = requestedSessionRefs.length === 0 || matchingGroupEntries.length === 0
     ? [...filesByGroup.entries()]
     : matchingGroupEntries;
@@ -624,10 +654,10 @@ async function scanLogicalSessionGroups(
       !group.workingDirectory ||
       pathMatchesDirectoryScope(group.workingDirectory, options.directoryScope),
     )
-    .map(([groupKey, group]) => ({
+    .map(([, group]) => ({
       files: group.files,
       targetSessionRefs: matchingGroupEntries.length > 0
-        ? requestedSessionRefs.filter((ref) => sessionRefMatchesGroup(ref, groupKey, source))
+        ? []
         : requestedSessionRefs.length > 0
           ? []
           : undefined,

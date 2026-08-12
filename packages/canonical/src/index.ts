@@ -73,6 +73,7 @@ export {
   buildSessionRelatedWorkIndex,
   listSessionRelatedWork,
 } from "./related-work.js";
+export { filterTopLevelSessions } from "./session-collections.js";
 export {
   auditProjectionConsistency,
   type ProjectionAuditInput,

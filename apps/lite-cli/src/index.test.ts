@@ -705,7 +705,7 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
   const latestSessions = captureIo(repoRoot, undefined, { scan: async () => zeroTurnSnapshot });
   assert.equal(await runLiteCli(["latest"], latestSessions.io), 0);
   const latestSessionText = latestSessions.stdout.join("");
-  assert.match(latestSessionText, /Latest sessions \(5, newest first; one record = one session\)/);
+  assert.match(latestSessionText, /Latest sessions \(6, newest first; one record = one session\)/);
   assert.match(latestSessionText, /● just now ·/);
   assert.match(latestSessionText, /Pending session/);
   assert.doesNotMatch(latestSessionText, /Zero-turn session/);
@@ -737,13 +737,17 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
   const firstTurnSession = snapshot.getSession(firstTurn.session_id);
   const firstTurnModel = firstTurn.context_summary.primary_model ?? firstTurnSession?.model;
   const firstTurnTokens = firstTurn.context_summary.token_usage?.total_tokens ?? firstTurn.context_summary.total_tokens;
-  assert.ok(firstTurnModel && firstTurnTokens !== undefined);
-  assert.match(latestTurnText, /Latest turns \(1 of 4, newest first; one record = one UserTurn\)/);
+  assert.ok(firstTurnModel);
+  assert.match(latestTurnText, /Latest turns \(1 of 5, newest first; one record = one UserTurn\)/);
   assert.match(latestTurnText, /● .* · Codex/);
   assert.doesNotMatch(latestTurnText, /SESSION\s+TURN\s+MODEL\s+TOKENS\s+PROMPT/);
   assert.ok(latestTurnText.includes(snapshot.getTurnDisplayRef(firstTurn.id) ?? firstTurn.id));
   assert.ok(latestTurnText.includes(firstTurnModel));
-  assert.ok(latestTurnText.includes(new Intl.NumberFormat("en-US").format(firstTurnTokens)));
+  if (firstTurnTokens === undefined) {
+    assert.match(latestTurnText, /tokens n\/a/);
+  } else {
+    assert.ok(latestTurnText.includes(new Intl.NumberFormat("en-US").format(firstTurnTokens)));
+  }
 
   const narrowTurns = captureIo(repoRoot, undefined, { scan: scanner, columns: 70 });
   assert.equal(await runLiteCli(["latest", "turns", "1"], narrowTurns.io), 0);
@@ -763,7 +767,7 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
   assert.equal(defaultPayload.kind, "sessions");
   assert.equal(
     defaultPayload.total,
-    zeroTurnSnapshot.listResolvedSessions().filter((session) => session.turn_count > 0).length,
+    zeroTurnSnapshot.listTopLevelSessions().filter((session) => session.turn_count > 0).length,
   );
   assert.equal(defaultPayload.shown, defaultPayload.sessions.length);
   assert.ok(defaultPayload.sessions.every((session) => session.turn_count > 0));
@@ -816,10 +820,10 @@ test("Lite CLI ls limits human and JSON output and rejects conflicting controls 
 
   const limited = captureIo(repoRoot, undefined, { scan: scanner });
   assert.equal(await runLiteCli(["ls", "sessions", "--limit", "1"], limited.io), 0);
-  assert.match(limited.stdout.join(""), /Sessions \(1 of 4, newest first; one record = one session\)/);
+  assert.match(limited.stdout.join(""), /Sessions \(1 of 5, newest first; one record = one session\)/);
   assert.match(limited.stdout.join(""), /● .* · Codex/);
   assert.doesNotMatch(limited.stdout.join(""), /UPDATED\s+SOURCE\s+SESSION\s+TURNS/);
-  assert.match(limited.stdout.join(""), /… and 3 more \(use --limit <n> or --all\)/);
+  assert.match(limited.stdout.join(""), /… and 4 more \(use --limit <n> or --all\)/);
   assert.ok(
     limited.stdout.join("").split("\n").every((line) => displayColumnsForTest(line) <= 100),
     "timeline rows must stay within the injected terminal width",
@@ -832,7 +836,8 @@ test("Lite CLI ls limits human and JSON output and rejects conflicting controls 
     shown: number;
     sessions: Array<{ id: string; model_summary: string; total_tokens: number | null }>;
   };
-  assert.equal(allPayload.total, snapshot.listResolvedSessions().length);
+  assert.equal(allPayload.total, snapshot.listTopLevelSessions().length);
+  assert.equal(allPayload.sessions.some((session) => session.id === "sess:codex:codex-delegation-child"), false);
   assert.equal(allPayload.shown, allPayload.total);
   assert.equal(allPayload.sessions.length, allPayload.total);
   for (const session of allPayload.sessions) {

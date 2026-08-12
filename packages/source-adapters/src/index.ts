@@ -21,4 +21,9 @@ export type { HostDiscoveryCandidate, HostDiscoveryEntry } from "./core/legacy.j
 export type { SourceFileInventory } from "./core/legacy.js";
 export type { SourceFileLogicalSessionMetadata } from "./core/legacy.js";
 export type { SourceProbeProgressEvent, SourceProbeProgressStage, SourceProbeEvent, SourceProbeFileChunk, SourceProbeFileSkipReason } from "./core/types.js";
-export type { AdapterSupportTier, PlatformAdapter, SupportedSourcePlatform } from "./platforms/types.js";
+export type {
+  AdapterProjectionBoundary,
+  AdapterSupportTier,
+  PlatformAdapter,
+  SupportedSourcePlatform,
+} from "./platforms/types.js";

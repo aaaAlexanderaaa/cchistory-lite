@@ -68,12 +68,7 @@ export interface LiteSearchPage {
 export class LiteBrowserModel {
   readonly snapshot: LiveHistorySnapshot;
   readonly projects: LiteProjectEntry[];
-  /**
-   * Every session, including sessions that derived no `UserTurn`.
-   *
-   * Delegated sessions and automation runs routinely carry related work but no
-   * user ask; a project/turn-only browser would make them unreachable.
-   */
+  /** Top-level sessions plus any explicitly requested session detail. */
   readonly sessions: LiteSessionEntry[];
   readonly counts: LiteCounts;
   readonly sourceHealth: LiteSourceHealth;
@@ -83,10 +78,19 @@ export class LiteBrowserModel {
   private readonly contextOverlay = new Map<string, TurnContextProjection>();
   private readonly searchCache = new Map<string, LiteSearchPage>();
 
-  constructor(snapshot: LiveHistorySnapshot) {
+  constructor(snapshot: LiveHistorySnapshot, options: { includeSessionRefs?: readonly string[] } = {}) {
     this.snapshot = snapshot;
-    const sessions = snapshot.listResolvedSessions();
-    this.sessionsById = new Map(sessions.map((session) => [session.id, session]));
+    const resolvedSessions = snapshot.listResolvedSessions();
+    const sessions = snapshot.listTopLevelSessions();
+    const includedIds = new Set(sessions.map((session) => session.id));
+    for (const ref of options.includeSessionRefs ?? []) {
+      const session = snapshot.getSession(ref);
+      if (session && !includedIds.has(session.id)) {
+        sessions.push(session);
+        includedIds.add(session.id);
+      }
+    }
+    this.sessionsById = new Map(resolvedSessions.map((session) => [session.id, session]));
     this.projects = buildProjectEntries(snapshot, this.sessionsById);
     const sourceNames = new Map(snapshot.listSources().map((source) => [source.id, source.display_name]));
     this.sessions = sessions.map((session) => ({

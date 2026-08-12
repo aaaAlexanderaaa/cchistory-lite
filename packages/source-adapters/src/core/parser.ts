@@ -551,6 +551,9 @@ export function buildAdapterBlobResult(
     resume_command_confidence: draftPatch.resume_command_confidence,
     last_cumulative_token_usage: draftPatch.last_cumulative_token_usage,
     cumulative_token_usage_by_baseline: draftPatch.cumulative_token_usage_by_baseline,
+    delegated_parent_session_id: draftPatch.delegated_parent_session_id,
+    delegated_history_start_ordinal: draftPatch.delegated_history_start_ordinal,
+    delegated_agent_key: draftPatch.delegated_agent_key,
   };
 
   for (const record of records) {
@@ -575,7 +578,7 @@ export function buildAdapterBlobResult(
   // correctly using the latest cwd on each supported upstream version before
   // assuming the projected command is interchangeable with the session's first
   // cwd.
-  const resume = isOrdinaryResumeEligibleSourceFile(source.platform, filePath)
+  const resume = isOrdinaryResumeEligibleSourceFile(source.platform, filePath, draft)
     ? buildSourceResumeCommand({
         platform: draft.source_platform,
         sourceSessionId: draft.source_session_id,
@@ -599,7 +602,14 @@ export function buildAdapterBlobResult(
   };
 }
 
-export function isOrdinaryResumeEligibleSourceFile(platform: SourcePlatform, filePath: string): boolean {
+export function isOrdinaryResumeEligibleSourceFile(
+  platform: SourcePlatform,
+  filePath: string,
+  draft?: Pick<SessionDraft, "delegated_parent_session_id">,
+): boolean {
+  if (draft?.delegated_parent_session_id) {
+    return false;
+  }
   if (platform === "claude_code" && /(^|[\\/])subagents([\\/]|$)/u.test(filePath)) {
     return false;
   }

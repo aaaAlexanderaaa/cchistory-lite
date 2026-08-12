@@ -1,5 +1,4 @@
 import { createReadStream } from "node:fs";
-import { createInterface } from "node:readline";
 import { readFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
 import path from "node:path";
@@ -10,8 +9,10 @@ import { coerceIso } from "./type-guards.js";
 
 export interface SourceFileLogicalSessionMetadata {
   sessionKey: string;
+  sessionKeyState: "known" | "uncertain";
   workingDirectoryState: "known" | "absent" | "uncertain";
   workingDirectory?: string;
+  relatedSessionRefs?: string[];
 }
 
 interface SessionMetadataWorkerResponse {
@@ -26,7 +27,15 @@ type LogicalSessionWorkspaceMetadata =
 const CWD_FIELD = Buffer.from('"cwd"');
 const TIMESTAMP_FIELD = Buffer.from('"timestamp"');
 const TYPE_FIELD = Buffer.from('"type"');
-const SESSION_METADATA_PREFIX_BYTES = 64 * 1024;
+export const SESSION_METADATA_MAX_LINE_BYTES = 1024 * 1024;
+
+interface WorkspaceScanState {
+  firstWorkingDirectory?: string;
+  latest?: { workingDirectory: string; timeKey: string; seqNo: number };
+  sawWorkspaceChange: boolean;
+  allSignalTimesValid: boolean;
+  uncertain: boolean;
+}
 
 /**
  * Resolve the same logical session identity used by the canonical parser while
@@ -59,21 +68,20 @@ export async function deriveSourceFileLogicalSessionKey(
     }
   }
   const input = createReadStream(filePath);
-  const lines = createInterface({ input, crlfDelay: Infinity });
   try {
-    for await (const line of lines) {
-      if (!line.trim()) continue;
-      return deriveSessionId(platform, filePath, Buffer.from(line, "utf8"));
+    for await (const line of streamBoundedJsonlLines(input, SESSION_METADATA_MAX_LINE_BYTES)) {
+      if (!hasNonWhitespaceBytes(line.buffer) && !line.oversized) continue;
+      return line.oversized
+        ? deriveSessionId(platform, filePath, Buffer.alloc(0))
+        : deriveSessionId(platform, filePath, line.buffer);
     }
     return deriveSessionId(platform, filePath, Buffer.alloc(0));
   } catch {
     // A file that cannot be read (deleted or rotated mid-scan, EACCES, EIO)
     // degrades to the same path-based key an empty file gets, so the scan
-    // continues; the per-group probe re-reads the file and records its own
-    // file_error event instead of aborting the whole source.
+    // continues and the subsequent probe records its own file error.
     return deriveSessionId(platform, filePath, Buffer.alloc(0));
   } finally {
-    lines.close();
     input.destroy();
   }
 }
@@ -86,48 +94,105 @@ export async function deriveSourceFileLogicalSessionKey(
 export async function inspectSourceFileLogicalSessionMetadata(
   platform: SourcePlatform,
   filePath: string,
+  options: { includeWorkspaceMetadata?: boolean } = {},
 ): Promise<SourceFileLogicalSessionMetadata> {
   if (platform !== "codex" && platform !== "claude_code") {
     return {
       sessionKey: await deriveSourceFileLogicalSessionKey(platform, filePath),
+      sessionKeyState: "known",
       workingDirectoryState: "absent",
     };
   }
 
   try {
-    const { buffer: fileBuffer, truncated } = await readFilePrefix(filePath);
-    const firstLine = firstNonemptyLineFromBuffer(fileBuffer);
+    const input = createReadStream(filePath);
+    let firstLine = Buffer.alloc(0);
+    let firstLineOversized = false;
+    const workspaceState: WorkspaceScanState = {
+      sawWorkspaceChange: false,
+      allSignalTimesValid: true,
+      uncertain: false,
+    };
+    try {
+      for await (const line of streamBoundedJsonlLines(input, SESSION_METADATA_MAX_LINE_BYTES)) {
+        if (!hasNonWhitespaceBytes(line.buffer) && !line.oversized) continue;
+        if (firstLine.length === 0) {
+          firstLine = Buffer.from(line.buffer);
+          firstLineOversized = line.oversized;
+          if (options.includeWorkspaceMetadata === false) break;
+        }
+        if (line.oversized) inspectOversizedWorkspaceMetadataLine(platform, line.buffer, workspaceState);
+        else inspectWorkspaceMetadataLine(platform, line.buffer, workspaceState);
+      }
+    } finally {
+      input.destroy();
+    }
     const sessionKey = deriveSessionId(
       platform,
       filePath,
       firstLine,
     );
-    const workspace = truncated
-      ? { state: "uncertain" as const }
-      : scanLogicalSessionWorkspaceMetadata(platform, fileBuffer);
+    const relatedSessionRefs = platform === "codex"
+      ? extractCodexRelatedSessionRefs(firstLine)
+      : undefined;
+    const sessionKeyState = firstLineOversized ? "uncertain" as const : "known" as const;
+    const workspace = options.includeWorkspaceMetadata === false
+      ? { state: "absent" as const }
+      : finishWorkspaceMetadataScan(workspaceState);
     return workspace.state === "known"
       ? {
           sessionKey,
+          sessionKeyState,
           workingDirectoryState: "known",
           workingDirectory: workspace.workingDirectory,
+          ...(relatedSessionRefs ? { relatedSessionRefs } : {}),
         }
-      : { sessionKey, workingDirectoryState: workspace.state };
+      : {
+          sessionKey,
+          sessionKeyState,
+          workingDirectoryState: workspace.state,
+          ...(relatedSessionRefs ? { relatedSessionRefs } : {}),
+        };
   } catch {
     return {
       sessionKey: deriveSessionId(platform, filePath, Buffer.alloc(0)),
+      sessionKeyState: "uncertain",
       workingDirectoryState: "uncertain",
     };
   }
 }
 
+function extractCodexRelatedSessionRefs(firstLine: Buffer): string[] | undefined {
+  try {
+    const parsed = JSON.parse(firstLine.toString("utf8")) as Record<string, unknown>;
+    const payload = isObjectRecord(parsed.payload) ? parsed.payload : undefined;
+    const source = isObjectRecord(payload?.source) ? payload.source : undefined;
+    const subagent = isObjectRecord(source?.subagent) ? source.subagent : undefined;
+    const threadSpawn = isObjectRecord(subagent?.thread_spawn) ? subagent.thread_spawn : undefined;
+    const parentRef = firstString(threadSpawn?.parent_thread_id);
+    return parentRef ? [parentRef, `sess:codex:${parentRef}`] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  return values.find((value): value is string => typeof value === "string" && value.length > 0);
+}
+
 export async function inspectSourceFilesLogicalSessionMetadata(
   platform: SourcePlatform,
   filePaths: readonly string[],
+  options: { includeWorkspaceMetadata?: boolean } = {},
 ): Promise<SourceFileLogicalSessionMetadata[]> {
   if (filePaths.length < 16) {
     const results: SourceFileLogicalSessionMetadata[] = [];
     for (const filePath of filePaths) {
-      results.push(await inspectSourceFileLogicalSessionMetadata(platform, filePath));
+      results.push(await inspectSourceFileLogicalSessionMetadata(platform, filePath, options));
     }
     return results;
   }
@@ -153,7 +218,7 @@ export async function inspectSourceFilesLogicalSessionMetadata(
       const index = nextIndex;
       nextIndex += 1;
       if (index >= filePaths.length) return;
-      worker.postMessage({ index, platform, filePath: filePaths[index] });
+      worker.postMessage({ index, platform, filePath: filePaths[index], options });
     };
 
     for (let index = 0; index < workerCount; index += 1) {
@@ -182,119 +247,129 @@ export async function inspectSourceFilesLogicalSessionMetadata(
   });
 }
 
-function firstNonemptyLineFromBuffer(buffer: Buffer): Buffer {
-  let offset = 0;
-  while (offset < buffer.length) {
-    const newlineOffset = buffer.indexOf(0x0a, offset);
-    const endOffset = newlineOffset < 0 ? buffer.length : newlineOffset;
-    const line = buffer.subarray(offset, endOffset).toString("utf8").trim();
-    if (line) return Buffer.from(line, "utf8");
-    if (newlineOffset < 0) break;
-    offset = newlineOffset + 1;
-  }
-  return Buffer.alloc(0);
+interface BoundedJsonlLine {
+  buffer: Buffer;
+  oversized: boolean;
 }
 
-async function readFilePrefix(filePath: string): Promise<{ buffer: Buffer; truncated: boolean }> {
-  const input = createReadStream(filePath, {
-    start: 0,
-    end: SESSION_METADATA_PREFIX_BYTES,
-  });
-  const chunks: Buffer[] = [];
-  let totalBytes = 0;
-  try {
-    for await (const chunk of input) {
-      const buffer = Buffer.from(chunk);
-      chunks.push(buffer);
-      totalBytes += buffer.length;
-    }
-  } finally {
-    input.destroy();
-  }
-  return {
-    buffer: Buffer.concat(chunks, Math.min(totalBytes, SESSION_METADATA_PREFIX_BYTES)),
-    truncated: totalBytes > SESSION_METADATA_PREFIX_BYTES,
+async function* streamBoundedJsonlLines(
+  input: AsyncIterable<Buffer | string>,
+  maxLineBytes: number,
+): AsyncGenerator<BoundedJsonlLine> {
+  let fragments: Buffer[] = [];
+  let retainedBytes = 0;
+  let oversized = false;
+
+  const append = (segment: Buffer): void => {
+    if (segment.length === 0 || retainedBytes >= maxLineBytes) return;
+    const retained = segment.subarray(0, Math.min(segment.length, maxLineBytes - retainedBytes));
+    fragments.push(retained);
+    retainedBytes += retained.length;
+    if (retained.length < segment.length) oversized = true;
   };
+  const finish = (): BoundedJsonlLine => {
+    const buffer = fragments.length === 0
+      ? Buffer.alloc(0)
+      : fragments.length === 1
+        ? Buffer.from(fragments[0]!)
+        : Buffer.concat(fragments, retainedBytes);
+    const result = { buffer, oversized };
+    fragments = [];
+    retainedBytes = 0;
+    oversized = false;
+    return result;
+  };
+
+  for await (const rawChunk of input) {
+    const chunk = typeof rawChunk === "string" ? Buffer.from(rawChunk, "utf8") : rawChunk;
+    let segmentStart = 0;
+    while (segmentStart < chunk.length) {
+      const newlineOffset = chunk.indexOf(0x0a, segmentStart);
+      if (newlineOffset < 0) {
+        if (retainedBytes + chunk.length - segmentStart > maxLineBytes) oversized = true;
+        append(chunk.subarray(segmentStart));
+        break;
+      }
+      const segment = chunk.subarray(segmentStart, newlineOffset);
+      if (retainedBytes + segment.length > maxLineBytes) oversized = true;
+      append(segment);
+      yield finish();
+      segmentStart = newlineOffset + 1;
+    }
+  }
+  if (fragments.length > 0 || oversized) yield finish();
 }
 
-function scanLogicalSessionWorkspaceMetadata(
-  platform: "codex" | "claude_code",
-  buffer: Buffer,
-): LogicalSessionWorkspaceMetadata {
-  let workingDirectory: string | undefined;
-  const expectedDepth = platform === "claude_code" ? 1 : 2;
-  let searchOffset = 0;
-
-  while (searchOffset < buffer.length) {
-    const fieldOffset = buffer.indexOf(CWD_FIELD, searchOffset);
-    if (fieldOffset < 0) break;
-    const lineStart = fieldOffset === 0 ? 0 : buffer.lastIndexOf(0x0a, fieldOffset - 1) + 1;
-    const depth = jsonNestingDepthAtOffset(buffer, lineStart, fieldOffset);
-    if (depth === undefined) return { state: "uncertain" };
-    if (depth !== expectedDepth) {
-      searchOffset = fieldOffset + CWD_FIELD.length;
-      continue;
-    }
-
-    const field = parseCwdField(buffer, fieldOffset);
-    if (field.kind === "incomplete" || field.kind === "invalid") return { state: "uncertain" };
-    if (field.kind === "not_field") {
-      searchOffset = fieldOffset + CWD_FIELD.length;
-      continue;
-    }
-    if (workingDirectory !== undefined && workingDirectory !== field.value) {
-      return resolveChangedWorkspaceMetadata(platform, buffer);
-    }
-    workingDirectory = field.value;
-    searchOffset = field.endOffset;
+function hasNonWhitespaceBytes(buffer: Buffer): boolean {
+  for (const byte of buffer) {
+    if (!isJsonWhitespace(byte)) return true;
   }
-
-  return workingDirectory === undefined
-    ? { state: "absent" }
-    : { state: "known", workingDirectory };
+  return false;
 }
 
-function resolveChangedWorkspaceMetadata(
+function inspectOversizedWorkspaceMetadataLine(
+  _platform: "codex" | "claude_code",
+  _prefix: Buffer,
+  state: WorkspaceScanState,
+): void {
+  state.uncertain = true;
+}
+
+function inspectWorkspaceMetadataLine(
   platform: "codex" | "claude_code",
   buffer: Buffer,
-): LogicalSessionWorkspaceMetadata {
-  let latest: { workingDirectory: string; timeKey: string; seqNo: number } | undefined;
-  let offset = 0;
-  while (offset < buffer.length) {
-    const newlineOffset = buffer.indexOf(0x0a, offset);
-    const endOffset = newlineOffset < 0 ? buffer.length : newlineOffset;
-    const cwd = findJsonStringFieldsAtDepth(buffer, offset, endOffset, CWD_FIELD, platform === "claude_code" ? 1 : 2);
-    if (cwd.state === "uncertain") return { state: "uncertain" };
-    if (cwd.state === "known") {
-      let seqNo = 0;
-      if (platform === "codex") {
-        const type = findJsonStringFieldsAtDepth(buffer, offset, endOffset, TYPE_FIELD, 1);
-        if (type.state === "uncertain") return { state: "uncertain" };
-        if (type.state !== "known" || (type.value !== "session_meta" && type.value !== "turn_context")) {
-          if (newlineOffset < 0) break;
-          offset = newlineOffset + 1;
-          continue;
-        }
-        if (cwd.count !== 1) return { state: "uncertain" };
-        seqNo = type.value === "session_meta" ? 1 : 0;
-      }
-      const timestamp = findJsonStringFieldsAtDepth(buffer, offset, endOffset, TIMESTAMP_FIELD, 1);
-      const timeKey = timestamp.state === "known" ? coerceIso(timestamp.value) : undefined;
-      if (!timeKey) return { state: "uncertain" };
-      if (
-        !latest ||
-        timeKey > latest.timeKey ||
-        (timeKey === latest.timeKey && seqNo >= latest.seqNo)
-      ) {
-        latest = { workingDirectory: cwd.value, timeKey, seqNo };
-      }
-    }
-    if (newlineOffset < 0) break;
-    offset = newlineOffset + 1;
+  state: WorkspaceScanState,
+): void {
+  if (state.uncertain || buffer.indexOf(CWD_FIELD) < 0) return;
+  const cwd = findJsonStringFieldsAtDepth(buffer, 0, buffer.length, CWD_FIELD, platform === "claude_code" ? 1 : 2);
+  if (cwd.state === "uncertain") {
+    state.uncertain = true;
+    return;
   }
-  return latest
-    ? { state: "known", workingDirectory: latest.workingDirectory }
-    : { state: "absent" };
+  if (cwd.state !== "known") return;
+
+  let seqNo = 0;
+  if (platform === "codex") {
+    const type = findJsonStringFieldsAtDepth(buffer, 0, buffer.length, TYPE_FIELD, 1);
+    if (type.state === "uncertain") {
+      state.uncertain = true;
+      return;
+    }
+    if (type.state !== "known" || (type.value !== "session_meta" && type.value !== "turn_context")) return;
+    if (cwd.count !== 1) {
+      state.uncertain = true;
+      return;
+    }
+    seqNo = type.value === "session_meta" ? 1 : 0;
+  }
+
+  if (state.firstWorkingDirectory === undefined) {
+    state.firstWorkingDirectory = cwd.value;
+  } else if (state.firstWorkingDirectory !== cwd.value) {
+    state.sawWorkspaceChange = true;
+  }
+
+  const timestamp = findJsonStringFieldsAtDepth(buffer, 0, buffer.length, TIMESTAMP_FIELD, 1);
+  const timeKey = timestamp.state === "known" ? coerceIso(timestamp.value) : undefined;
+  if (!timeKey) {
+    state.allSignalTimesValid = false;
+    return;
+  }
+  if (
+    !state.latest ||
+    timeKey > state.latest.timeKey ||
+    (timeKey === state.latest.timeKey && seqNo >= state.latest.seqNo)
+  ) {
+    state.latest = { workingDirectory: cwd.value, timeKey, seqNo };
+  }
+}
+
+function finishWorkspaceMetadataScan(state: WorkspaceScanState): LogicalSessionWorkspaceMetadata {
+  if (state.uncertain) return { state: "uncertain" };
+  if (state.firstWorkingDirectory === undefined) return { state: "absent" };
+  if (!state.sawWorkspaceChange) return { state: "known", workingDirectory: state.firstWorkingDirectory };
+  if (!state.allSignalTimesValid || !state.latest) return { state: "uncertain" };
+  return { state: "known", workingDirectory: state.latest.workingDirectory };
 }
 
 function findJsonStringFieldsAtDepth(
@@ -373,13 +448,6 @@ function jsonNestingDepthAtOffset(
     }
   }
   return inString ? undefined : depth;
-}
-
-function parseCwdField(
-  buffer: Buffer,
-  fieldOffset: number,
-): JsonStringFieldParseResult {
-  return parseJsonStringField(buffer, fieldOffset, CWD_FIELD.length, buffer.length);
 }
 
 type JsonStringFieldParseResult =

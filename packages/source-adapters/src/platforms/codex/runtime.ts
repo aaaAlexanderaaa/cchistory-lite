@@ -20,16 +20,45 @@ export function parseCodexRecord(
 
   if (type === "session_meta" && helpers.isObject(parsed.payload)) {
     const payload = parsed.payload;
-    draft.working_directory = helpers.asString(payload.cwd) ?? draft.working_directory;
+    const source = helpers.isObject(payload.source) ? payload.source : undefined;
+    const subagent = helpers.isObject(source?.subagent) ? source.subagent : undefined;
+    const threadSpawn = helpers.isObject(subagent?.thread_spawn) ? subagent.thread_spawn : undefined;
+    const parentSessionId = helpers.asString(threadSpawn?.parent_thread_id);
+    const historyStartOrdinal = helpers.asNumber(payload.subagent_history_start_ordinal);
+    const agentNickname = helpers.asString(threadSpawn?.agent_nickname) ?? helpers.asString(payload.agent_nickname);
+    const agentPath = helpers.asString(threadSpawn?.agent_path) ?? helpers.asString(payload.agent_path);
+    const agentKey = agentPath ?? agentNickname;
+    const isPrimarySessionMeta = helpers.asString(payload.id) === draft.source_session_id;
+    if (parentSessionId && isPrimarySessionMeta) {
+      draft.delegated_parent_session_id = parentSessionId;
+      draft.delegated_history_start_ordinal = historyStartOrdinal;
+      draft.delegated_agent_key = agentKey;
+      draft.title = agentNickname ?? draft.title;
+      fragments.push(
+        helpers.createFragment(context, record, fragments.length, "session_relation", timeKey, {
+          parent_uuid: parentSessionId,
+          child_session_id: draft.source_session_id,
+          is_sidechain: true,
+          agent_id: agentKey,
+          agent_nickname: agentNickname,
+          agent_path: agentPath,
+          relation_source: "session_meta.source.subagent.thread_spawn",
+        }),
+      );
+    }
+    const inheritedMeta = isInheritedCodexRecord(record, draft) && !isPrimarySessionMeta;
+    if (!inheritedMeta) {
+      draft.working_directory = helpers.asString(payload.cwd) ?? draft.working_directory;
+    }
     fragments.push(helpers.createFragment(context, record, fragments.length, "session_meta", timeKey, payload));
-    if (helpers.asString(payload.cwd)) {
+    if (!inheritedMeta && helpers.asString(payload.cwd)) {
       fragments.push(
         helpers.createFragment(context, record, fragments.length, "workspace_signal", timeKey, {
           path: helpers.asString(payload.cwd),
         }),
       );
     }
-    if (helpers.asString(payload.model)) {
+    if (!inheritedMeta && helpers.asString(payload.model)) {
       fragments.push(
         helpers.createFragment(context, record, fragments.length, "model_signal", timeKey, {
           model: helpers.asString(payload.model),
@@ -41,7 +70,7 @@ export function parseCodexRecord(
 
   if (type === "turn_context" && helpers.isObject(parsed.payload)) {
     const payload = parsed.payload;
-    if (helpers.asString(payload.cwd)) {
+    if (!isInheritedCodexRecord(record, draft) && helpers.asString(payload.cwd)) {
       draft.working_directory = helpers.asString(payload.cwd) ?? draft.working_directory;
       fragments.push(
         helpers.createFragment(context, record, fragments.length, "workspace_signal", timeKey, {
@@ -49,7 +78,7 @@ export function parseCodexRecord(
         }),
       );
     }
-    if (helpers.asString(payload.model)) {
+    if (!isInheritedCodexRecord(record, draft) && helpers.asString(payload.model)) {
       draft.model = helpers.asString(payload.model) ?? draft.model;
       fragments.push(
         helpers.createFragment(context, record, fragments.length, "model_signal", timeKey, {
@@ -66,6 +95,7 @@ export function parseCodexRecord(
     if (payloadType === "message") {
       const role = helpers.asString(payload.role) ?? "assistant";
       const actorKind = helpers.mapRoleToActor(role);
+      const inheritedRecord = isInheritedCodexRecord(record, draft);
       const content = helpers.asArray(payload.content);
       const usage = helpers.extractTokenUsage(payload);
       const stopReason = helpers.normalizeStopReason(payload.stop_reason);
@@ -78,18 +108,28 @@ export function parseCodexRecord(
         const itemType = helpers.asString(item.type) ?? "unknown";
         const text = helpers.extractTextFromContentItem(item);
         if (text) {
-          const appended = helpers.appendChunkedTextFragments(
-            context,
-            record,
-            fragments,
-            timeKey,
-            actorKind,
-            text,
-            localSeq,
-            { usage, stopReason, usageApplied },
-          );
-          localSeq = appended.nextSeq;
-          usageApplied = appended.usageApplied;
+          if (
+            draft.delegated_parent_session_id &&
+            (inheritedRecord || role === "user" || role === "developer")
+          ) {
+            fragments.push(createDelegatedTextFragment(context, record, localSeq++, timeKey, text, helpers, {
+              inherited: inheritedRecord,
+              sourceRole: role,
+            }));
+          } else {
+            const appended = helpers.appendChunkedTextFragments(
+              context,
+              record,
+              fragments,
+              timeKey,
+              actorKind,
+              text,
+              localSeq,
+              { usage, stopReason, usageApplied },
+            );
+            localSeq = appended.nextSeq;
+            usageApplied = appended.usageApplied;
+          }
           continue;
         }
         if (isCodexOpaqueReasoningItem(item, helpers)) {
@@ -111,6 +151,26 @@ export function parseCodexRecord(
       }
       if (!usageApplied && usage) {
         fragments.push(helpers.createTokenUsageFragment(context, record, localSeq++, timeKey, usage, stopReason));
+      }
+      return { fragments, lossAudits };
+    }
+
+    if (payloadType === "agent_message") {
+      const content = helpers.asArray(payload.content);
+      let localSeq = 0;
+      for (const item of content) {
+        if (!helpers.isObject(item)) continue;
+        const text = helpers.extractTextFromContentItem(item);
+        if (text) {
+          fragments.push(createDelegatedTextFragment(context, record, localSeq++, timeKey, text, helpers, {
+            inherited: false,
+            sourceRole: "agent_message",
+            author: helpers.asString(payload.author),
+            recipient: helpers.asString(payload.recipient),
+          }));
+        } else if (helpers.asString(item.type) === "encrypted_content") {
+          fragments.push(createCodexOpaqueReasoningFragment(context, record, localSeq++, timeKey, item, helpers));
+        }
       }
       return { fragments, lossAudits };
     }
@@ -177,6 +237,16 @@ export function parseCodexRecord(
     return { fragments, lossAudits };
   }
 
+  if (type === "world_state" || type === "inter_agent_communication_metadata") {
+    const payload = helpers.isObject(parsed.payload) ? parsed.payload : {};
+    fragments.push(helpers.createFragment(context, record, 0, "unknown", timeKey, {
+      signal_kind: type,
+      source_event_type: type,
+      trigger_turn: payload.trigger_turn === true,
+    }));
+    return { fragments, lossAudits };
+  }
+
   if (type === "event_msg" && helpers.isObject(parsed.payload)) {
     const payload = parsed.payload;
     const eventType = helpers.asString(payload.type) ?? "unknown";
@@ -213,7 +283,15 @@ export function parseCodexRecord(
     if (eventType === "user_message") {
       const text = helpers.asString(payload.message);
       if (text) {
-        helpers.appendChunkedTextFragments(context, record, fragments, timeKey, "user", text, 0);
+        if (draft.delegated_parent_session_id) {
+          fragments.push(createDelegatedTextFragment(context, record, 0, timeKey, text, helpers, {
+            inherited: isInheritedCodexRecord(record, draft),
+            sourceRole: "user",
+            sourceEventType: eventType,
+          }));
+        } else {
+          helpers.appendChunkedTextFragments(context, record, fragments, timeKey, "user", text, 0);
+        }
       } else {
         fragments.push(createCodexEventMetaFragment(context, record, 0, timeKey, eventType, payload, helpers));
       }
@@ -223,8 +301,16 @@ export function parseCodexRecord(
     if (eventType === "agent_message") {
       const text = helpers.asString(payload.message);
       if (text) {
-        const appended = helpers.appendChunkedTextFragments(context, record, fragments, timeKey, "assistant", text, 0);
-        appendCodexEventMetaFragment(context, record, fragments, timeKey, eventType, payload, helpers, appended.nextSeq);
+        if (draft.delegated_parent_session_id && isInheritedCodexRecord(record, draft)) {
+          fragments.push(createDelegatedTextFragment(context, record, 0, timeKey, text, helpers, {
+            inherited: true,
+            sourceRole: "agent",
+            sourceEventType: eventType,
+          }));
+        } else {
+          const appended = helpers.appendChunkedTextFragments(context, record, fragments, timeKey, "assistant", text, 0);
+          appendCodexEventMetaFragment(context, record, fragments, timeKey, eventType, payload, helpers, appended.nextSeq);
+        }
       } else {
         fragments.push(createCodexEventMetaFragment(context, record, 0, timeKey, eventType, payload, helpers));
       }
@@ -297,7 +383,31 @@ function isCodexLifecycleEventType(eventType: string): boolean {
     eventType === "entered_review_mode" ||
     eventType === "exited_review_mode" ||
     eventType === "thread_rolled_back" ||
-    eventType === "item_completed";
+    eventType === "item_completed" ||
+    eventType === "thread_settings_applied";
+}
+
+function isInheritedCodexRecord(record: RawRecord, draft: SessionDraftLike): boolean {
+  return draft.delegated_history_start_ordinal !== undefined &&
+    record.ordinal < draft.delegated_history_start_ordinal;
+}
+
+function createDelegatedTextFragment(
+  context: FragmentBuildContextLike,
+  record: RawRecord,
+  seqNo: number,
+  timeKey: string,
+  text: string,
+  helpers: CodexParseRuntimeHelpers,
+  metadata: Record<string, unknown>,
+): SourceFragment {
+  return helpers.createFragment(context, record, seqNo, "text", timeKey, {
+    actor_kind: "system",
+    origin_kind: "delegated_instruction",
+    display_policy: text.length > 180 ? "collapse" : "show",
+    text,
+    ...metadata,
+  });
 }
 
 function createCodexLifecycleEventFragment(

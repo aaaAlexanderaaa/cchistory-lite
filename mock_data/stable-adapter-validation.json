@@ -46,7 +46,8 @@
       "scenario_ids": [
         "claude-workspace-path",
         "claude-sidechain-subagent",
-        "claude-local-command-meta-noise"
+        "claude-local-command-meta-noise",
+        "claude-ordinary-parent-uuid"
       ],
       "validation_basis": [
         "sanitized_local_disk"
@@ -75,7 +76,9 @@
         "codex-long-instructions",
         "codex-missing-structured-cwd",
         "codex-cross-host-same-project",
-        "codex-same-repo-name-different-paths"
+        "codex-same-repo-name-different-paths",
+        "codex-delegated-child-history",
+        "codex-ordinary-fork-session"
       ],
       "validation_basis": [
         "sanitized_local_disk"

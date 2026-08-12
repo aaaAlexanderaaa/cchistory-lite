@@ -10,6 +10,7 @@ export const opencodeAdapter: PlatformAdapter = {
   platform: "opencode",
   supportTier: "stable",
   sessionTargeting: "file",
+  projectionBoundary: "source",
   getDefaultBaseDirCandidates: (options) => [
     path.join(options.homeDir ?? "", ".local", "share", "opencode", "storage"),
     path.join(options.homeDir ?? "", ".local", "share", "opencode", "project"),

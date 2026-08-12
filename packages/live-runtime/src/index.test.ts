@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { buildProjectDisplayList } from "@cchistory/canonical";
 import type { ProjectIdentity, SessionProjection, UserTurnProjection } from "@cchistory/domain";
-import { runSourceProbe } from "@cchistory/source-adapters";
+import { listPlatformAdapters, runSourceProbe } from "@cchistory/source-adapters";
 import {
   assertLiteSourceRoot,
   buildLiveSnapshot,
@@ -238,6 +238,100 @@ test("Lite targeted probes preserve one-session parity across the fixture adapte
   }
 });
 
+test("every logical-session projection boundary preserves source-wide canonical parity", async () => {
+  const logicalPlatforms = listPlatformAdapters()
+    .filter((adapter) => adapter.projectionBoundary === "logical_session")
+    .map((adapter) => adapter.platform);
+
+  for (const platform of logicalPlatforms) {
+    const relativePath = fixtureRoots[platform as keyof typeof fixtureRoots];
+    assert.ok(relativePath, `missing live-runtime fixture root for ${platform}`);
+    const scanOptions = {
+      homeDir: path.join(mockDataRoot, "empty-home"),
+      hostname: `cchistory-lite-projection-boundary-${platform}`,
+      sourceRefs: [platform],
+      sourceRoots: [{ sourceRef: platform, baseDir: path.join(mockDataRoot, relativePath) }],
+      safeMode: true,
+    } as const;
+    const sources = await resolveLiteSources(scanOptions);
+    const sourceWide = buildLiveSnapshot(await runSourceProbe({ safe_mode: true }, sources));
+    const grouped = await scanLiteHistory({ ...scanOptions, contextMode: "full" });
+
+    assert.deepEqual(grouped.listResolvedSessions(), sourceWide.listResolvedSessions(), `${platform} sessions`);
+    assert.deepEqual(grouped.listResolvedTurns(), sourceWide.listResolvedTurns(), `${platform} turns`);
+    assert.deepEqual(grouped.data.contexts, sourceWide.data.contexts, `${platform} contexts`);
+    assert.deepEqual(normalizeProjects(grouped.listProjects()), normalizeProjects(sourceWide.listProjects()), `${platform} projects`);
+    assert.deepEqual(grouped.data.related_work, sourceWide.data.related_work, `${platform} related work`);
+    assert.deepEqual(grouped.listAskUserQuestionTurns(), sourceWide.listAskUserQuestionTurns(), `${platform} questions`);
+    assert.deepEqual(grouped.projectionIssues, sourceWide.projectionIssues, `${platform} projection issues`);
+    assert.deepEqual(
+      withoutGeneratedAt(grouped.getUsageOverview({ include_known_zero_token: true })),
+      withoutGeneratedAt(sourceWide.getUsageOverview({ include_known_zero_token: true })),
+      `${platform} usage`,
+    );
+  }
+});
+
+test("Lite keeps Codex delegated children addressable but out of top-level projections", async () => {
+  const common = {
+    homeDir: path.join(mockDataRoot, "empty-home"),
+    hostname: "cchistory-lite-codex-delegation-host",
+    sourceRefs: ["codex"],
+    sourceRoots: [{ sourceRef: "codex", baseDir: path.join(mockDataRoot, fixtureRoots.codex) }],
+    safeMode: true,
+    contextMode: "full" as const,
+  };
+  const parentId = "sess:codex:codex-delegation-parent";
+  const childId = "sess:codex:codex-delegation-child";
+  const full = await scanLiteHistory(common);
+  const child = full.getSession(childId);
+
+  assert.ok(full.getSession(parentId));
+  assert.ok(child);
+  assert.equal(child.title, "Atlas");
+  assert.equal(child.turn_count, 0);
+  assert.equal(child.resume_command, undefined);
+  assert.equal(full.listResolvedSessions().some((session) => session.id === childId), true);
+  assert.equal(full.listTopLevelSessions().some((session) => session.id === childId), false);
+  const treeSessionIds = full.getProjectsTreeProjection().projects
+    .flatMap((node) => node.sessions)
+    .concat(full.getProjectsTreeProjection().unlinkedSessions)
+    .map((session) => session.id);
+  assert.equal(treeSessionIds.includes(childId), false);
+  assert.equal(full.search({ query: "Keep this delegated instruction as evidence only." }).total, 0);
+  assert.equal(full.getUsageOverview({ include_known_zero_token: true }).total_turns, full.listResolvedTurns().length);
+  assert.deepEqual(full.projectionIssues, []);
+
+  const parentRelated = full.listSessionRelatedWork(parentId);
+  assert.ok(parentRelated.some((entry) =>
+    entry.relation_kind === "delegated_session" &&
+    entry.direction === "outbound" &&
+    entry.child_session_ref === childId
+  ));
+  const childRelated = full.listSessionRelatedWork(childId);
+  assert.ok(childRelated.some((entry) =>
+    entry.relation_kind === "delegated_session" &&
+    entry.direction === "inbound" &&
+    entry.parent_session_ref === parentId
+  ));
+
+  const targetedParent = await scanLiteHistory({ ...common, sessionRefs: [parentId] });
+  assert.deepEqual(targetedParent.listResolvedSessions().map((session) => session.id), [parentId]);
+  assert.ok(targetedParent.listSessionRelatedWork(parentId).some((entry) =>
+    entry.direction === "outbound" && entry.child_session_ref === childId
+  ));
+  assert.deepEqual(targetedParent.projectionIssues, []);
+
+  const targetedChild = await scanLiteHistory({ ...common, sessionRefs: [childId] });
+  assert.deepEqual(targetedChild.listResolvedSessions().map((session) => session.id), [childId]);
+  assert.deepEqual(targetedChild.listTopLevelSessions(), []);
+  assert.equal(targetedChild.getSession(childId)?.title, "Atlas");
+  assert.ok(targetedChild.listSessionRelatedWork(childId).some((entry) =>
+    entry.direction === "inbound" && entry.parent_session_ref === parentId
+  ));
+  assert.deepEqual(targetedChild.projectionIssues, []);
+});
+
 test("Lite scans explicit roots without creating or reading a Full store", async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-no-store-"));
   try {
@@ -295,6 +389,55 @@ test("Lite scans explicit roots without creating or reading a Full store", async
       assertLiteSourceRoot(tempHome, { homeDir: tempHome }),
       /overlapping the Full store are not allowed in Lite/,
     );
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("Lite rebuilds native inventory for appended, added, and deleted sessions", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-live-inventory-"));
+  const sourceRoot = path.join(tempHome, "sessions");
+  const firstPath = path.join(sourceRoot, "rollout-2026-08-12T00-00-00-live-first.jsonl");
+  const secondPath = path.join(sourceRoot, "rollout-2026-08-12T00-01-00-live-second.jsonl");
+  const common = {
+    homeDir: tempHome,
+    hostname: "cchistory-lite-live-inventory-host",
+    sourceRefs: ["codex"],
+    sourceRoots: [{ sourceRef: "codex", baseDir: sourceRoot }],
+    safeMode: true,
+    contextMode: "none" as const,
+  };
+
+  try {
+    await mkdir(sourceRoot, { recursive: true });
+    await writeFile(firstPath, codexSessionJsonl("live-first", "First live inventory turn.", "00:00"), "utf8");
+    const initial = await scanLiteHistory(common);
+    assert.deepEqual(initial.listResolvedSessions().map((session) => session.source_session_id), ["live-first"]);
+    assert.equal(initial.listResolvedTurns().length, 1);
+
+    await appendFile(
+      firstPath,
+      `\n${codexTurnJsonl("live-first", "Appended live inventory turn.", "00:02")}`,
+      "utf8",
+    );
+    const advancedMtime = new Date("2030-01-01T00:00:00.000Z");
+    await utimes(firstPath, advancedMtime, advancedMtime);
+    const appended = await scanLiteHistory(common);
+    assert.equal(appended.listResolvedTurns().length, 2);
+    assert.equal(appended.search({ query: "Appended live inventory" }).total, 1);
+
+    await writeFile(secondPath, codexSessionJsonl("live-second", "Second live inventory session.", "00:01"), "utf8");
+    const added = await scanLiteHistory(common);
+    assert.deepEqual(
+      added.listResolvedSessions().map((session) => session.source_session_id).sort(),
+      ["live-first", "live-second"],
+    );
+
+    await rm(firstPath);
+    const deleted = await scanLiteHistory(common);
+    assert.deepEqual(deleted.listResolvedSessions().map((session) => session.source_session_id), ["live-second"]);
+    assert.equal(deleted.search({ query: "Appended live inventory" }).total, 0);
+    await assert.rejects(access(path.join(tempHome, ".cchistory")));
   } finally {
     await rm(tempHome, { recursive: true, force: true });
   }
@@ -1150,6 +1293,45 @@ function withoutGeneratedAt<T extends { generated_at: string }>(value: T): Omit<
 function withoutRunTimestamp<T extends { last_sync?: string | null }>(value: T): Omit<T, "last_sync"> {
   const { last_sync: _lastSync, ...rest } = value;
   return rest;
+}
+
+function codexSessionJsonl(sessionId: string, userText: string, minute: string): string {
+  return [
+    JSON.stringify({
+      timestamp: `2026-08-12T${minute}:00.000Z`,
+      type: "session_meta",
+      payload: { id: sessionId, cwd: "/workspace/live-inventory", model: "gpt-5" },
+    }),
+    codexTurnJsonl(sessionId, userText, minute),
+  ].join("\n");
+}
+
+function codexTurnJsonl(_sessionId: string, userText: string, minute: string): string {
+  return [
+    JSON.stringify({
+      timestamp: `2026-08-12T${minute}:01.000Z`,
+      type: "turn_context",
+      payload: { cwd: "/workspace/live-inventory", model: "gpt-5" },
+    }),
+    JSON.stringify({
+      timestamp: `2026-08-12T${minute}:02.000Z`,
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: userText }],
+      },
+    }),
+    JSON.stringify({
+      timestamp: `2026-08-12T${minute}:03.000Z`,
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: `Acknowledged: ${userText}` }],
+      },
+    }),
+  ].join("\n");
 }
 
 function jsonNormalize<T>(value: T): T {

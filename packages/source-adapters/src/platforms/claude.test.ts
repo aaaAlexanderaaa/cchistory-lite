@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -232,28 +232,21 @@ test("[claude] preserves source session UUID and resume command provenance", asy
     await mkdir(claudeDir, { recursive: true });
     const sourceSessionId = "9d77cfc2-1e2e-4fcb-a0f5-0013bd8cf101";
 
+    const sessionPath = path.join(claudeDir, `${sourceSessionId}.jsonl`);
+    const fixturePath = path.join(
+      getRepoMockDataRoot(),
+      "fixtures",
+      "source-shapes",
+      "claude",
+      "ordinary-parent-uuid.jsonl",
+    );
     await writeFile(
-      path.join(claudeDir, `${sourceSessionId}.jsonl`),
-      [
-        {
-          timestamp: "2026-03-09T01:00:00.000Z",
-          type: "user",
-          sessionId: sourceSessionId,
-          cwd: "/workspace/claude-resume",
-          message: { role: "user", content: [{ type: "text", text: "Recover Claude resume command." }] },
-        },
-        {
-          timestamp: "2026-03-09T01:00:01.000Z",
-          type: "assistant",
-          sessionId: sourceSessionId,
-          cwd: "/workspace/claude-resume",
-          message: { role: "assistant", content: [{ type: "text", text: "Done." }] },
-        },
-      ]
-        .map((line) => JSON.stringify(line))
-        .join("\n"),
+      sessionPath,
+      await readFile(fixturePath),
       "utf8",
     );
+    const oldDate = new Date("2020-01-01T00:00:00.000Z");
+    await utimes(sessionPath, oldDate, oldDate);
 
     const source = createSourceDefinition("src-claude-resume", "claude_code", claudeDir);
     const result = await runSourceProbe({ source_ids: [source.id] }, [source]);
@@ -267,6 +260,21 @@ test("[claude] preserves source session UUID and resume command provenance", asy
     assert.equal(session.resume_command, `cd /workspace/claude-resume && claude --resume ${sourceSessionId}`);
     assert.equal(session.resume_command_confidence, 1);
     assert.match(payload?.turns[0]?.path_text ?? "", /\/workspace\/claude-resume/u);
+
+    const progressStages: string[] = [];
+    const reusedPayload = (await runSourceProbe({
+      source_ids: [source.id],
+      changed_since: "1h",
+      previous_payloads: { [source.id]: payload },
+      on_progress: (event) => progressStages.push(event.stage),
+    }, [source])).sources[0];
+    const reusedSession = reusedPayload?.sessions[0];
+
+    assert.ok(progressStages.includes("file_skip"), "unchanged old file should be reused");
+    assert.ok(reusedSession);
+    assert.equal(reusedSession.resume_working_directory, "/workspace/claude-resume");
+    assert.equal(reusedSession.resume_command, `cd /workspace/claude-resume && claude --resume ${sourceSessionId}`);
+    assert.equal(reusedSession.resume_command_confidence, 1);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

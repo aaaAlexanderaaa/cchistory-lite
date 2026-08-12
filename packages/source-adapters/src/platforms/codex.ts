@@ -5,8 +5,8 @@ export const codexAdapter: PlatformAdapter = {
   platform: "codex",
   supportTier: "stable",
   sessionTargeting: "file",
+  projectionBoundary: "logical_session",
   getDefaultBaseDirCandidates: (options) => [path.join(options.homeDir ?? "", ".codex", "sessions")],
-  logicalSessionGrouping: "source_session_id",
   matchesSourceFile: (filePath) => {
     const base = path.basename(filePath);
     if (base === "history.jsonl" || base === "session.jsonl") return false;

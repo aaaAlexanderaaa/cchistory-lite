@@ -6,6 +6,7 @@ export const zcodeAdapter: PlatformAdapter = {
   platform: "zcode",
   supportTier: "experimental",
   sessionTargeting: "container",
+  projectionBoundary: "source",
   getDefaultBaseDirCandidates: (options) => [path.join(options.homeDir ?? "", ".zcode")],
   getSourceRoots: (baseDir) => resolveZcodeSourceRoots(baseDir),
   matchesSourceFile: (filePath) => path.basename(filePath) === "db.sqlite",

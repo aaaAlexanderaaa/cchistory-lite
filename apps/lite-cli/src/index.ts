@@ -271,7 +271,7 @@ function runList(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
     return;
   }
   if (target === "sessions") {
-    const allSessions = snapshot.listResolvedSessions({ directoryScope });
+    const allSessions = snapshot.listTopLevelSessions({ directoryScope });
     const sessions = allSessions.slice(0, limit);
     output(
       io,
@@ -309,7 +309,7 @@ function runLatest(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCl
   const directoryScope = resolveDirectoryScope(parsed, io);
   if (kind === "sessions") {
     const candidates = snapshot
-      .listResolvedSessions({ directoryScope })
+      .listTopLevelSessions({ directoryScope })
       .filter((session) => session.turn_count > 0);
     const allSessions = candidates;
     const sessions = allSessions.slice(0, limit);

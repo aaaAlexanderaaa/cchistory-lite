@@ -15,14 +15,18 @@ import {
   boundSearchCanonicalText,
   buildProjectDisplayList,
   buildSearchPlan,
+  compareTurnSearchResults,
   compareSessionsByRecency,
   compareTurnsByChronology,
   compareTurnsByRecency,
+  computeRelevanceScore,
   computeUsageOverview,
   deriveProjectLinkSnapshot,
   filterProjectsByDirectoryScope,
   filterSessionsByDirectoryScope,
+  filterTopLevelSessions,
   filterTurnsByDirectoryScope,
+  findHighlights,
   matchesSearchCandidatePlan,
   materializeSearchCandidate,
   orderSessionsByLastMessage,
@@ -207,6 +211,53 @@ test("shared canonical helpers link, search, and aggregate one live turn", () =>
   assert.equal(overview.total_tokens, 15);
 });
 
+test("in-memory search preserves exact totals and ranking while retaining only the requested page boundary", () => {
+  const source = createSource();
+  const session = createSession(source);
+  const turns = Array.from({ length: 200 }, (_, index) => ({
+    ...createTurn(source, session),
+    id: `turn-search-page-${String(index).padStart(3, "0")}`,
+    turn_id: `turn-search-page-${String(index).padStart(3, "0")}`,
+    canonical_text: index % 3 === 0 ? "needle needle" : "needle",
+    submission_started_at: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+  }));
+  const nowMs = Date.parse("2026-02-01T00:00:00.000Z");
+  const expected = turns
+    .map((turn) => ({
+      turn,
+      session,
+      project: undefined,
+      highlights: findHighlights(turn.canonical_text, "needle"),
+      relevance_score: computeRelevanceScore(turn, findHighlights(turn.canonical_text, "needle"), nowMs),
+    }))
+    .sort(compareTurnSearchResults);
+
+  const actual = searchTurnsInMemory({
+    turns: [...turns].reverse(),
+    sessions: [session],
+    projects: [],
+    query: "needle",
+    offset: 73,
+    limit: 11,
+    now_ms: nowMs,
+  });
+
+  assert.equal(actual.total, turns.length);
+  assert.deepEqual(
+    actual.results.map((entry) => entry.turn.id),
+    expected.slice(73, 84).map((entry) => entry.turn.id),
+  );
+  assert.deepEqual(searchTurnsInMemory({
+    turns,
+    sessions: [session],
+    projects: [],
+    query: "needle",
+    offset: 150,
+    limit: 0,
+    now_ms: nowMs,
+  }), { results: [], total: turns.length });
+});
+
 test("shared read ordering uses stable IDs to break timestamp ties", () => {
   const source = createSource();
   const session = createSession(source);
@@ -378,6 +429,53 @@ test("shared canonical related-work projection preserves an outbound edge with a
     ]),
     [["outbound", "sess:factory_droid:child-native"]],
   );
+});
+
+test("top-level session collections exclude only resolved delegated children", () => {
+  const source = createSource();
+  const parent = { ...createSession(source), id: "session-parent", source_session_id: "parent-native" };
+  const child = { ...createSession(source), id: "session-child", source_session_id: "child-native" };
+  const ordinary = { ...createSession(source), id: "session-ordinary", source_session_id: "ordinary-native" };
+  const nonCodexChild = {
+    ...createSession(source),
+    id: "session-non-codex-child",
+    source_platform: "claude_code" as const,
+  };
+  const relation: SourceFragment = {
+    id: "fragment-delegated-child",
+    source_id: source.id,
+    session_ref: child.id,
+    record_id: "record-delegated-child",
+    seq_no: 0,
+    fragment_kind: "session_relation",
+    time_key: "2026-01-01T00:00:01.000Z",
+    payload: {
+      parent_uuid: parent.source_session_id,
+      child_session_id: child.source_session_id,
+      is_sidechain: true,
+    },
+    raw_refs: [],
+    source_format_profile_id: "codex:test:v1",
+  };
+  const relatedWork = [...buildSessionRelatedWorkIndex([parent, child, ordinary], [relation]).values()].flat();
+  const nonCodexRelatedWork = [{
+    ...relatedWork.find((entry) => entry.query_session_ref === child.id && entry.direction === "inbound")!,
+    id: "related-work-non-codex-child",
+    query_session_ref: nonCodexChild.id,
+    child_session_ref: nonCodexChild.id,
+    source_platform: "claude_code" as const,
+  }];
+
+  assert.deepEqual(
+    filterTopLevelSessions(
+      [parent, child, ordinary, nonCodexChild],
+      [...relatedWork, ...nonCodexRelatedWork],
+    ).map((session) => session.id),
+    [parent.id, ordinary.id, nonCodexChild.id],
+  );
+  assert.equal(relatedWork.some((entry) =>
+    entry.query_session_ref === parent.id && entry.direction === "outbound"
+  ), true);
 });
 
 test("shared search materialization matches the bounded Full candidate surface", () => {

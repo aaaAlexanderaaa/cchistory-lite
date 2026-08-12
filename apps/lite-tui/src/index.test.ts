@@ -475,6 +475,34 @@ test("sessions that derived no UserTurn stay reachable with their related work",
   assert.match(output, /derived no UserTurn/);
 });
 
+test("an explicitly requested Codex delegated child stays directly reachable", async () => {
+  const snapshot = await scanLiteHistory({
+    homeDir: repoRoot,
+    hostname: "cchistory-lite-tui-delegated-child-host",
+    sourceRoots: [{ sourceRef: "codex", baseDir: codexRoot }],
+    sourceRefs: ["codex"],
+    safeMode: true,
+    contextMode: "none",
+  });
+  assert.equal(
+    snapshot.listTopLevelSessions().some((session) => session.id === "sess:codex:codex-delegation-child"),
+    false,
+  );
+
+  const { stdout, io } = captureIo({ columns: 140, rows: 40, scan: async () => snapshot });
+  const exitCode = await runLiteTui(
+    ["--no-color", "--session", "sess:codex:codex-delegation-child"],
+    io,
+  );
+
+  assert.equal(exitCode, 0);
+  const output = stdout.join("");
+  assert.match(output, /Atlas/);
+  assert.match(output, /Related work \(1\)/);
+  assert.match(output, /delegated session · inbound/);
+  assert.match(output, /derived no UserTurn/);
+});
+
 test("every project and turn of a large snapshot is reachable by keyboard", async () => {
   const base = await scanLiteHistory({
     homeDir: repoRoot,

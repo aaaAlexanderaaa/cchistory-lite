@@ -44,7 +44,11 @@ import { extractAntigravityLiveSeeds } from "../platforms/antigravity/live.js";
 import { isAntigravityBrainSourceFile, isAntigravityHistoryIndexFile } from "../platforms/antigravity.js";
 import { extractCursorChatStoreSeed } from "../platforms/cursor/runtime.js";
 import { getPlatformAdapter } from "../platforms/registry.js";
-import { deriveSourceFileLogicalSessionKey } from "./session-grouping.js";
+import {
+  deriveSourceFileLogicalSessionKey,
+  inspectSourceFileLogicalSessionMetadata,
+  SESSION_METADATA_MAX_LINE_BYTES,
+} from "./session-grouping.js";
 import {
   extractRecords,
   extractMultiSessionSeeds,
@@ -926,8 +930,22 @@ async function selectTargetSourceFiles(
       selected.push(filePath);
       continue;
     }
-    const sessionKey = await deriveSourceFileLogicalSessionKey(source.platform, filePath);
-    if (sessionRefs.some((ref) => targetRefMatchesSession(ref, sessionKey))) selected.push(filePath);
+    const metadata = source.platform === "codex" || source.platform === "claude_code"
+      ? await inspectSourceFileLogicalSessionMetadata(source.platform, filePath, { includeWorkspaceMetadata: false })
+      : undefined;
+    if (metadata?.sessionKeyState === "uncertain") {
+      selected.push(filePath);
+      continue;
+    }
+    const sessionKey = metadata?.sessionKey ?? await deriveSourceFileLogicalSessionKey(source.platform, filePath);
+    if (
+      sessionRefs.some((ref) => targetRefMatchesSession(ref, sessionKey)) ||
+      metadata?.relatedSessionRefs?.some((relatedRef) =>
+        sessionRefs.some((ref) => targetRefMatchesSession(ref, relatedRef))
+      )
+    ) {
+      selected.push(filePath);
+    }
   }
   return selected;
 }
@@ -958,7 +976,7 @@ function resultReferencesTargetSession(
   result: AdapterBlobResult,
   sessionRefs: readonly string[],
 ): boolean {
-  if (source.platform !== "openclaw") return false;
+  if (source.platform !== "openclaw" && source.platform !== "codex") return false;
   return result.fragments.some((fragment) => {
     if (fragment.fragment_kind !== "session_relation") return false;
     const parentRef = fragment.payload.parent_uuid;
@@ -1093,7 +1111,7 @@ function backfillReusableSessionResumeFields(
 ): SessionDraft {
   const sourceSessionId = draft.source_session_id ??
     extractSourceSessionIdFromCanonicalSessionId(platform, draft.id);
-  const resume = isOrdinaryResumeEligibleSourceFile(platform, filePath)
+  const resume = isOrdinaryResumeEligibleSourceFile(platform, filePath, draft)
     ? buildSourceResumeCommand({
         platform,
         sourceSessionId,
@@ -1106,6 +1124,46 @@ function backfillReusableSessionResumeFields(
     resume_command: draft.resume_command ?? resume?.command,
     resume_working_directory: draft.resume_working_directory ?? resume?.working_directory,
     resume_command_confidence: draft.resume_command_confidence ?? resume?.confidence,
+  };
+}
+
+function hydrateDelegatedDraftFromFragments(
+  platform: SourcePlatform,
+  draft: SessionDraft,
+  fragments: readonly SourceFragment[],
+): SessionDraft {
+  if (platform !== "codex") return draft;
+  const sourceSessionId = draft.source_session_id ?? extractSourceSessionIdFromCanonicalSessionId(platform, draft.id);
+  const childMeta = fragments.find((fragment) =>
+    fragment.fragment_kind === "session_meta" &&
+    fragment.payload.id === sourceSessionId
+  );
+  const source = isObject(childMeta?.payload.source) ? childMeta.payload.source : undefined;
+  const subagent = isObject(source?.subagent) ? source.subagent : undefined;
+  const threadSpawn = isObject(subagent?.thread_spawn) ? subagent.thread_spawn : undefined;
+  const explicitParentSessionId = asString(threadSpawn?.parent_thread_id);
+  if (!explicitParentSessionId) return draft;
+  const relation = fragments.find((fragment) =>
+    fragment.fragment_kind === "session_relation" &&
+    fragment.payload.parent_uuid === explicitParentSessionId &&
+    fragment.payload.child_session_id === sourceSessionId &&
+    fragment.payload.relation_source === "session_meta.source.subagent.thread_spawn"
+  );
+  if (!relation) return draft;
+  return {
+    ...draft,
+    delegated_parent_session_id: String(relation.payload.parent_uuid),
+    delegated_history_start_ordinal:
+      typeof childMeta?.payload.subagent_history_start_ordinal === "number"
+        ? childMeta.payload.subagent_history_start_ordinal
+        : draft.delegated_history_start_ordinal,
+    delegated_agent_key:
+      typeof relation.payload.agent_id === "string"
+        ? relation.payload.agent_id
+        : draft.delegated_agent_key,
+    resume_command: undefined,
+    resume_working_directory: undefined,
+    resume_command_confidence: undefined,
   };
 }
 
@@ -1188,7 +1246,7 @@ function buildPreviousSourceIndex(
       const draft = backfillReusableSessionResumeFields(
         previousPayload.source.platform,
         originPath,
-        {
+        hydrateDelegatedDraftFromFragments(previousPayload.source.platform, {
           id: sessionRef,
           source_id: previousPayload.source.id,
           source_platform: previousPayload.source.platform,
@@ -1206,7 +1264,7 @@ function buildPreviousSourceIndex(
           resume_command_confidence: session?.resume_command_confidence,
           last_cumulative_token_usage: findLastCumulativeTokenUsage(fragments),
           cumulative_token_usage_by_baseline: findCumulativeTokenUsageByBaseline(fragments),
-        },
+        }, fragments),
       );
       sessionInputs.push({
         draft,
@@ -1340,6 +1398,7 @@ async function processAppendedJsonlBlob(
       previousInput.draft.source_session_id ??
       extractSourceSessionIdFromCanonicalSessionId(source.platform, sessionId),
   };
+  Object.assign(draft, hydrateDelegatedDraftFromFragments(source.platform, draft, previousInput.fragments));
   const appendedFragments: SourceFragment[] = [];
   const appendedLossAudits: LossAuditRecord[] = [];
   for (const record of appendedRecords) {
@@ -1765,6 +1824,7 @@ async function processBlob(
   const sessionId = deriveSessionId(source.platform, filePath, fileBuffer);
   if (
     targetSessionRefs?.length &&
+    source.platform !== "codex" &&
     !targetSessionRefs.some((ref) => targetRefMatchesSession(ref, sessionId)) &&
     !(source.platform === "openclaw" && isOpenClawCronRunFile(filePath))
   ) {
@@ -1837,8 +1897,6 @@ async function processBlob(
 // seeds (cursor state.vscdb), AMP root-JSON, Gemini, and other non-JSONL
 // shapes are not reachable here — the routing in streamSingleFileInputs
 // gates on isIncrementalJsonlPlatform before calling this.
-const STREAMING_SESSION_ID_PREFIX_BYTES = 64 * 1024;
-
 async function processStreamingJsonlBlob(
   source: SourceDefinition,
   sourceFormatProfile: SourceFormatProfile,
@@ -1849,7 +1907,7 @@ async function processStreamingJsonlBlob(
   const blobId = blob.id;
   const profileId = sourceFormatProfile.id;
 
-  const head = await capturedBlob.prefixReader(STREAMING_SESSION_ID_PREFIX_BYTES);
+  const head = await capturedBlob.prefixReader(SESSION_METADATA_MAX_LINE_BYTES);
   const sessionId = deriveSessionId(source.platform, filePath, head);
   const context = {
     source,

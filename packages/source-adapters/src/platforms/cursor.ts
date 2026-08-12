@@ -5,6 +5,7 @@ export const cursorAdapter: PlatformAdapter = {
   platform: "cursor",
   supportTier: "stable",
   sessionTargeting: "hybrid",
+  projectionBoundary: "source",
   getDefaultBaseDirCandidates: (options) => {
     const homeDir = options.homeDir ?? "";
     const hostPlatform = options.platform ?? process.platform;

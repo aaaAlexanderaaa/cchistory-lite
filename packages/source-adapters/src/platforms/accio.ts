@@ -70,6 +70,7 @@ export const accioAdapter: PlatformAdapter = {
   platform: "accio",
   supportTier: "experimental",
   sessionTargeting: "file",
+  projectionBoundary: "source",
   getDefaultBaseDirCandidates: (options) => {
     const homeDir = options.homeDir ?? "";
     const accountsDir = path.join(homeDir, ".accio", "accounts");

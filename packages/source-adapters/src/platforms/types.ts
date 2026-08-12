@@ -2,6 +2,13 @@ import type { SourcePlatform } from "@cchistory/domain";
 
 export type AdapterSupportTier = "stable" | "experimental";
 
+/**
+ * The smallest batch that can be projected without changing canonical
+ * semantics. Every adapter declares this explicitly so the live runtime never
+ * guesses that file-oriented storage is independently projectable.
+ */
+export type AdapterProjectionBoundary = "logical_session" | "source";
+
 export type SupportedSourcePlatform =
   | "codex"
   | "claude_code"
@@ -36,11 +43,12 @@ export interface PlatformAdapter {
   /** Describes how a targeted probe narrows work before canonical projection. */
   sessionTargeting: "file" | "container" | "hybrid";
   /**
-   * Declares that source files can be grouped by the canonical source-session
-   * identity and each group projected independently. Omit when the adapter
-   * requires source-wide assembly or has not proved a narrower boundary.
+   * Declares the adapter's minimum safe canonical projection batch. A source
+   * boundary is the conservative default for formats whose files share
+   * metadata, relations, or containers. A logical-session boundary may only
+   * be used after parity with source-wide projection has been established.
    */
-  logicalSessionGrouping?: "source_session_id";
+  projectionBoundary: AdapterProjectionBoundary;
   getSourceFilePriority?(filePath: string): number;
   getSupplementalSourceRoots?(baseDir: string): string[];
   getCompanionEvidencePaths?(baseDir: string, filePath: string): string[] | Promise<string[]>;

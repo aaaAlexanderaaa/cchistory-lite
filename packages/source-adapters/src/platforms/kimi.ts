@@ -53,6 +53,7 @@ export const kimiAdapter: PlatformAdapter = {
   platform: "kimi",
   supportTier: "experimental",
   sessionTargeting: "file",
+  projectionBoundary: "source",
   getDefaultBaseDirCandidates: (options) => [path.join(options.homeDir ?? "", ".kimi-code")],
   getSourceRoots: (baseDir) => listKimiSourceRoots(baseDir),
   matchesSourceFile: (filePath) => resolveKimiSessionDir(filePath) !== undefined,

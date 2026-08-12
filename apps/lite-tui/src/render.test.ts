@@ -336,7 +336,7 @@ test("the browser preserves canonical session order without a surface-specific s
   const model = await buildModel();
   assert.deepEqual(
     model.sessions.map((entry) => entry.session.id),
-    model.snapshot.listResolvedSessions().map((session) => session.id),
+    model.snapshot.listTopLevelSessions().map((session) => session.id),
   );
 });
 
@@ -543,17 +543,23 @@ test("the conversation view renders replies and tool calls once context is loade
 
 test("the conversation view keeps both scroll indicators inside the frame height", async () => {
   const model = await buildFullModel();
+  const targetTurn = model.snapshot.listResolvedTurns()
+    .map((turn) => ({
+      turn,
+      contextBytes: JSON.stringify(model.snapshot.getTurnContext(turn.id) ?? {}).length,
+    }))
+    .sort((left, right) => right.contextBytes - left.contextBytes)[0]?.turn;
+  assert.ok(targetTurn);
   const drilled = apply(
     model,
     createLiteBrowserState(model),
-    { type: "drill" },
-    { type: "drill" },
+    { type: "open-turn-ref", ref: targetTurn.id },
     { type: "drill" },
   );
   // A mid-scroll offset must show both the above and below indicators, and the
   // emitted rows must not exceed contentHeight (which used to slice the "more
   // below" hint and the last content line off the bottom).
-  const mid = { ...drilled, conversationScrollOffset: 5 };
+  const mid = { ...drilled, conversationScrollOffset: 2 };
   const output = frame(model, mid, 100, 14);
   assert.equal(output.split("\n").length, 14, "conversation frame must stay exactly the requested height");
   assert.match(output, /↑ \d+ more lines above/);

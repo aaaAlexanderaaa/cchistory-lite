@@ -1,0 +1,2 @@
+{"timestamp":"2026-03-09T01:00:00.000Z","type":"user","sessionId":"9d77cfc2-1e2e-4fcb-a0f5-0013bd8cf101","cwd":"/workspace/claude-resume","uuid":"claude-resume-user","message":{"role":"user","content":[{"type":"text","text":"Recover Claude resume command."}]}}
+{"timestamp":"2026-03-09T01:00:01.000Z","type":"assistant","sessionId":"9d77cfc2-1e2e-4fcb-a0f5-0013bd8cf101","cwd":"/workspace/claude-resume","uuid":"claude-resume-assistant","parentUuid":"claude-resume-user","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}

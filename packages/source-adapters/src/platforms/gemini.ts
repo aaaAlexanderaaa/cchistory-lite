@@ -56,6 +56,7 @@ export const geminiAdapter: PlatformAdapter = {
   platform: "gemini",
   supportTier: "stable",
   sessionTargeting: "file",
+  projectionBoundary: "source",
   getDefaultBaseDirCandidates: (options) => [path.join(options.homeDir ?? "", ".gemini")],
   getSourceRoots: (baseDir) => listGeminiSourceRoots(baseDir),
   matchesSourceFile: (filePath) => {

@@ -5,6 +5,7 @@ export const ampAdapter: PlatformAdapter = {
   platform: "amp",
   supportTier: "stable",
   sessionTargeting: "file",
+  projectionBoundary: "source",
   getDefaultBaseDirCandidates: (options) => [path.join(options.homeDir ?? "", ".local", "share", "amp", "threads")],
   matchesSourceFile: (filePath) => filePath.endsWith(".json"),
 };

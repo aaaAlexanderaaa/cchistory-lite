@@ -2,8 +2,10 @@ import {
   normalizeLocalPathIdentity,
   type ProjectIdentity,
   type SessionProjection,
+  type SessionRelatedWorkProjection,
   type UserTurnProjection,
 } from "@cchistory/domain";
+import { filterTopLevelSessions } from "./session-collections.js";
 
 export interface DirectoryScopeOptions {
   platform?: NodeJS.Platform;
@@ -125,10 +127,12 @@ export function buildDirectoryScopedProjectTreeProjection(params: {
   projects: readonly ProjectIdentity[];
   sessions: readonly SessionProjection[];
   turns: readonly UserTurnProjection[];
+  relatedWork?: readonly SessionRelatedWorkProjection[];
   directoryScope?: string;
 }): DirectoryScopedProjectTreeProjection {
-  const { projects, sessions, turns, directoryScope } = params;
-  const scopedSessions = filterSessionsByDirectoryScope(sessions, directoryScope);
+  const { projects, sessions, turns, relatedWork = [], directoryScope } = params;
+  const topLevelSessions = filterTopLevelSessions(sessions, relatedWork);
+  const scopedSessions = filterSessionsByDirectoryScope(topLevelSessions, directoryScope);
   const scopedSessionIds = new Set(scopedSessions.map((session) => session.id));
   const scopedTurns = turns.filter((turn) => scopedSessionIds.has(turn.session_id));
   const projectNodes = projects.flatMap((project) => {

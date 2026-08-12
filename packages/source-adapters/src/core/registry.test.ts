@@ -31,6 +31,18 @@ test("platform adapter registry provides exactly one adapter per supported platf
     adapters.every((adapter) => ["file", "container", "hybrid"].includes(adapter.sessionTargeting)),
     "every registered adapter must declare its targeted-session strategy",
   );
+  assert.ok(
+    adapters.every((adapter) => ["logical_session", "source"].includes(adapter.projectionBoundary)),
+    "every registered adapter must declare its minimum safe projection boundary",
+  );
+  assert.deepEqual(
+    adapters
+      .filter((adapter) => adapter.projectionBoundary === "logical_session")
+      .map((adapter) => adapter.platform)
+      .sort(),
+    ["claude_code", "codex"],
+    "only adapters with source-wide parity evidence may project logical sessions independently",
+  );
 });
 
 test("platform adapter registry distinguishes stable and experimental support tiers", () => {

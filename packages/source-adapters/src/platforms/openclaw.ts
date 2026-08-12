@@ -52,6 +52,7 @@ export const openclawAdapter: PlatformAdapter = {
   platform: "openclaw",
   supportTier: "stable",
   sessionTargeting: "file",
+  projectionBoundary: "source",
   getDefaultBaseDirCandidates: (options) => [path.join(options.homeDir ?? "", ".openclaw", "agents")],
   getSupplementalSourceRoots: (baseDir) => [path.join(resolveOpenClawHome(baseDir), "cron", "runs")],
   matchesSourceFile: (filePath) => {

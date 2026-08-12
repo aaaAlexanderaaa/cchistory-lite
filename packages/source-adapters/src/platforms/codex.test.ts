@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -7,8 +7,150 @@ import type { SourceSyncPayload } from "@cchistory/domain";
 import { runSourceProbe } from "../index.js";
 import { 
   createSourceDefinition,
+  getRepoMockDataRoot,
   seedSupportedSourceFixtures 
 } from "../test-helpers.js";
+
+test("[codex] delegated child rollouts preserve evidence without projecting replay as UserTurns", async () => {
+  const baseDir = path.join(getRepoMockDataRoot(), ".codex", "sessions", "2026", "04", "12");
+  const source = createSourceDefinition("src-codex-delegation-fixture", "codex", baseDir);
+  const payload = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources[0];
+
+  assert.ok(payload);
+  const parent = payload.sessions.find((session) => session.source_session_id === "codex-delegation-parent");
+  const child = payload.sessions.find((session) => session.source_session_id === "codex-delegation-child");
+  assert.ok(parent && child);
+  assert.equal(parent.turn_count, 1);
+  assert.equal(child.title, "Atlas");
+  assert.equal(child.turn_count, 0);
+  assert.equal(child.resume_command, undefined);
+  assert.equal(child.resume_working_directory, undefined);
+  assert.equal(payload.turns.some((turn) => turn.session_id === child.id), false);
+
+  const relation = payload.fragments.find((fragment) =>
+    fragment.session_ref === child.id && fragment.fragment_kind === "session_relation"
+  );
+  assert.ok(relation);
+  assert.equal(relation.payload.parent_uuid, "codex-delegation-parent");
+  assert.equal(relation.payload.child_session_id, "codex-delegation-child");
+  assert.equal(relation.payload.agent_id, "/root/fixture_audit");
+  assert.equal(relation.payload.agent_nickname, "Atlas");
+
+  const delegatedAtoms = payload.atoms.filter((atom) =>
+    atom.session_ref === child.id && atom.origin_kind === "delegated_instruction"
+  );
+  assert.ok(delegatedAtoms.some((atom) => atom.payload.text === "Review the fixture release checklist."));
+  assert.ok(delegatedAtoms.some((atom) => atom.payload.text === "Inspect the fixture deployment notes and report findings."));
+  assert.ok(delegatedAtoms.some((atom) => atom.payload.text === "Keep this delegated instruction as evidence only."));
+  assert.equal(
+    payload.loss_audits.some((audit) => audit.severity === "warning" || audit.severity === "error"),
+    false,
+  );
+
+  const targetedParent = (await runSourceProbe({
+    source_ids: [source.id],
+    target_session_refs: ["codex-delegation-parent"],
+  }, [source])).sources[0];
+  assert.ok(targetedParent);
+  assert.ok(targetedParent.sessions.some((session) => session.id === parent.id));
+  assert.ok(targetedParent.fragments.some((fragment) =>
+    fragment.fragment_kind === "session_relation" &&
+    fragment.payload.parent_uuid === "codex-delegation-parent"
+  ));
+});
+
+test("[codex] ordinary fork rollouts remain resumable top-level sessions", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-codex-ordinary-fork-"));
+  try {
+    const codexDir = path.join(tempRoot, "codex-ordinary-fork");
+    await mkdir(codexDir, { recursive: true });
+    const sourceSessionId = "codex-ordinary-fork";
+    const fixturePath = path.join(
+      getRepoMockDataRoot(),
+      "fixtures",
+      "source-shapes",
+      "codex",
+      "ordinary-fork.jsonl",
+    );
+    await writeFile(
+      path.join(codexDir, "rollout-2026-04-12T09-02-00-codex-ordinary-fork.jsonl"),
+      await readFile(fixturePath),
+      "utf8",
+    );
+
+    const source = createSourceDefinition("src-codex-ordinary-fork", "codex", codexDir);
+    const payload = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources[0];
+    const session = payload?.sessions[0];
+
+    assert.ok(payload && session);
+    assert.equal(session.turn_count, 1);
+    assert.equal(
+      session.resume_command,
+      `cd /workspace/codex-ordinary-fork && codex resume ${sourceSessionId}`,
+    );
+    assert.equal(payload.turns[0]?.canonical_text, "Continue this ordinary fork.");
+    assert.equal(payload.fragments.some((fragment) => fragment.fragment_kind === "session_relation"), false);
+    assert.equal(payload.atoms.some((atom) => atom.origin_kind === "delegated_instruction"), false);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("[codex] incremental append restores delegated child state before parsing new records", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-codex-delegation-append-"));
+  try {
+    const codexDir = path.join(tempRoot, "codex-delegation");
+    await mkdir(codexDir, { recursive: true });
+    const fixturePath = path.join(
+      getRepoMockDataRoot(),
+      ".codex",
+      "sessions",
+      "2026",
+      "04",
+      "12",
+      "rollout-2026-04-12T09-01-00-codex-delegation-child.jsonl",
+    );
+    const sessionPath = path.join(codexDir, path.basename(fixturePath));
+    await writeFile(sessionPath, await readFile(fixturePath), "utf8");
+
+    const source = createSourceDefinition("src-codex-delegation-append", "codex", codexDir);
+    const firstPayload = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources[0];
+    assert.ok(firstPayload);
+
+    await appendFile(sessionPath, `${JSON.stringify({
+      timestamp: "2026-04-12T01:01:07.000Z",
+      type: "event_msg",
+      payload: {
+        type: "user_message",
+        message: "An appended delegated instruction must remain evidence.",
+      },
+    })}\n`, "utf8");
+    const advancedMtime = new Date("2030-01-01T00:00:00.000Z");
+    await utimes(sessionPath, advancedMtime, advancedMtime);
+
+    const progressStages: string[] = [];
+    const updatedPayload = (await runSourceProbe({
+      source_ids: [source.id],
+      changed_since: "1h",
+      previous_payloads: { [source.id]: firstPayload },
+      on_progress: (event) => progressStages.push(event.stage),
+    }, [source])).sources[0];
+
+    assert.ok(updatedPayload);
+    assert.ok(progressStages.includes("file_append_done"));
+    assert.equal(updatedPayload.sessions[0]?.title, "Atlas");
+    assert.equal(updatedPayload.sessions[0]?.turn_count, 0);
+    assert.equal(updatedPayload.sessions[0]?.resume_command, undefined);
+    assert.equal(updatedPayload.turns.length, 0);
+    assert.ok(updatedPayload.fragments.some((fragment) => fragment.fragment_kind === "session_relation"));
+    assert.ok(updatedPayload.atoms.some((atom) =>
+      atom.origin_kind === "delegated_instruction" &&
+      atom.payload.text === "An appended delegated instruction must remain evidence."
+    ));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
 
 test("[codex] turn with only tool calls (no assistant text) gets model from turn_context", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-codex-model-fallback-"));

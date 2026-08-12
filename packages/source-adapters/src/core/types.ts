@@ -186,6 +186,9 @@ export interface SessionDraft {
   resume_command_confidence?: number;
   last_cumulative_token_usage?: TokenUsageMetrics;
   cumulative_token_usage_by_baseline?: Record<string, TokenUsageMetrics>;
+  delegated_parent_session_id?: string;
+  delegated_history_start_ordinal?: number;
+  delegated_agent_key?: string;
 }
 
 export interface SessionBuildInput {

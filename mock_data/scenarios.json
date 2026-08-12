@@ -58,6 +58,21 @@
     ]
   },
   {
+    "id": "codex-delegated-child-history",
+    "apps": [
+      "Codex"
+    ],
+    "visible_cue": "A Codex parent rollout and its spawned child rollout share inherited conversation history before the child's own ordinal boundary.",
+    "tricky": "The child keeps a native session identity and transcript evidence, but inherited parent messages must not become child user turns or make the child look like a top-level user session.",
+    "visible_roots": [
+      "/workspace/codex-delegated"
+    ],
+    "paths": [
+      ".codex/sessions/2026/04/12/rollout-2026-04-12T09-00-00-codex-delegation-parent.jsonl",
+      ".codex/sessions/2026/04/12/rollout-2026-04-12T09-01-00-codex-delegation-child.jsonl"
+    ]
+  },
+  {
     "id": "codex-root-history-loop-prompts",
     "apps": [
       "Codex"
@@ -72,6 +87,20 @@
     ]
   },
   {
+    "id": "codex-ordinary-fork-session",
+    "apps": [
+      "Codex"
+    ],
+    "visible_cue": "A user-created Codex fork carries forked_from_id but remains an ordinary resumable session.",
+    "tricky": "Using forked_from_id as subagent evidence hides the fork from top-level history and converts its prompt into delegated evidence.",
+    "visible_roots": [
+      "/workspace/codex-ordinary-fork"
+    ],
+    "paths": [
+      "fixtures/source-shapes/codex/ordinary-fork.jsonl"
+    ]
+  },
+  {
     "id": "claude-workspace-path",
     "apps": [
       "Claude"
@@ -83,6 +112,20 @@
     ],
     "paths": [
       ".claude/projects/-Users-mock-user-workspace-chat-ui-kit/cc1df109-4282-4321-8248-8bbcd471da78.jsonl"
+    ]
+  },
+  {
+    "id": "claude-ordinary-parent-uuid",
+    "apps": [
+      "Claude"
+    ],
+    "visible_cue": "A normal Claude transcript links adjacent messages with parentUuid and remains resumable.",
+    "tricky": "Message ancestry produces session_relation evidence but must not be rehydrated as Codex delegated-session state during incremental reuse.",
+    "visible_roots": [
+      "/workspace/claude-resume"
+    ],
+    "paths": [
+      "fixtures/source-shapes/claude/ordinary-parent-uuid.jsonl"
     ]
   },
   {

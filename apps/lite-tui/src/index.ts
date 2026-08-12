@@ -111,7 +111,8 @@ export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): P
     };
 
     const snapshot = await scan(scanOptions);
-    const model = new LiteBrowserModel(snapshot);
+    const includeSessionRefs = parsed.sessionRef ? [parsed.sessionRef] : undefined;
+    const model = new LiteBrowserModel(snapshot, { includeSessionRefs });
     const state = applyEntryPoints(model, createLiteBrowserState(model), parsed);
 
     if (!io.isInteractiveTerminal) {
@@ -119,7 +120,7 @@ export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): P
       return 0;
     }
 
-    return await runInteractive({ io, scan, scanOptions, model, state });
+    return await runInteractive({ io, scan, scanOptions, model, state, includeSessionRefs });
   } catch (error) {
     io.stderr(`${errorMessage(error)}\n`);
     return error instanceof TuiUsageError ? 2 : 1;
@@ -134,6 +135,7 @@ interface InteractiveOptions {
   scanOptions: ScanLiteHistoryOptions;
   model: LiteBrowserModel;
   state: LiteBrowserState;
+  includeSessionRefs?: readonly string[];
 }
 
 async function runInteractive(options: InteractiveOptions): Promise<number> {
@@ -209,7 +211,7 @@ async function runInteractive(options: InteractiveOptions): Promise<number> {
       const replacement = await scan({ ...scanOptions, onProgress: undefined });
       // Assign only after the rescan resolves: a failed refresh must leave the
       // previous complete snapshot in place.
-      model = new LiteBrowserModel(replacement);
+      model = new LiteBrowserModel(replacement, { includeSessionRefs: options.includeSessionRefs });
       state = createLiteBrowserState(model);
       dispatch({ type: "set-status", status: { kind: "info", text: "Snapshot refreshed." } });
     } catch (error) {
