@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import type { RawRecord, SourceDefinition } from "@cchistory/domain";
-import { captureBlob, captureBlobStreaming } from "./parser.js";
+import { captureBlob, captureBlobStreaming, fileIdentityFromStats } from "./parser.js";
 import {
   collectJsonlRecordsStreaming,
   extractContentMaxTimestamp,
@@ -123,6 +123,16 @@ test("extractContentMaxTimestamp ignores records older than the cut when reading
     Buffer.from(tailLines, "utf8"),
   ]);
   assert.equal(extractContentMaxTimestamp(buffer), "2026-03-12T10:00:02.000Z");
+});
+
+test("fileIdentityFromStats matches captureBlob's before/after rule", () => {
+  const stats = { size: 1024, mtimeMs: 100, ctimeMs: 90 };
+  assert.equal(fileIdentityFromStats(stats, stats), true);
+  assert.equal(fileIdentityFromStats(stats, stats, 1024), true);
+  assert.equal(fileIdentityFromStats(stats, stats, 512), false);
+  assert.equal(fileIdentityFromStats(stats, { ...stats, mtimeMs: 101 }), false);
+  assert.equal(fileIdentityFromStats(stats, { ...stats, ctimeMs: 91 }), false);
+  assert.equal(fileIdentityFromStats(stats, { ...stats, size: 2048 }), false);
 });
 
 test("captureBlob populates content_max_timestamp for codex JSONL append-only files", async () => {

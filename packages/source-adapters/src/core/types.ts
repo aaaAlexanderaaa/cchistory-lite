@@ -308,7 +308,14 @@ export interface StreamingCapturedBlobInput {
   readSuffix: (offset: number) => Promise<Buffer>;
 }
 
-export type AnyCapturedBlobInput = CapturedBlobInput | StreamingCapturedBlobInput;
+export type AnyCapturedBlobInput =
+  | CapturedBlobInput
+  | StreamingCapturedBlobInput
+  | PathBackedCapturedBlobInput;
+
+export interface PathBackedCapturedBlobInput {
+  blob: CapturedBlob;
+}
 
 export interface LossAuditOptions {
   stageKind?: StageKind;

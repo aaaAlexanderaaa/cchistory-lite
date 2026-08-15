@@ -55,6 +55,7 @@ import {
   buildAdapterBlobResult,
   captureBlob,
   captureBlobStreaming,
+  fileIdentityFromStats,
   parseRecord,
   isOrdinaryResumeEligibleSourceFile,
   extractGenericSessionMetadata,
@@ -81,6 +82,7 @@ import type {
   CapturedBlobInput,
   AnyCapturedBlobInput,
   StreamingCapturedBlobInput,
+  PathBackedCapturedBlobInput,
   SessionBuildInput,
   ExtractedSessionSeed,
   SourceProbeProgressEvent,
@@ -598,12 +600,12 @@ async function* streamSingleFileInputs(
     const sizeBytes = fileStats.size;
     const maxFileBytes = options.max_file_bytes ?? DEFAULT_MAX_FILE_BYTES;
     const isOversized = sizeBytes > maxFileBytes;
-    // Stage 3: incremental JSONL platforms (codex/claude_code/factory_droid)
-    // route oversized files through captureBlobStreaming instead of skipping.
-    // Non-JSONL platforms keep the loss-audit skip — they need full-file
-    // materialization for parsing.
-    const canStreamOversized = isOversized && isIncrementalJsonlPlatform(source.platform);
-    if (isOversized && !canStreamOversized) {
+    // Oversized files are skipped only when parsing needs the whole file in
+    // memory. Incremental JSONL streams; path-backed SQLite is opened by path.
+    const canProcessOversizedWithoutMaterializing =
+      isOversized &&
+      (isIncrementalJsonlPlatform(source.platform) || isPathBackedSqliteSourceFile(source.platform, filePath));
+    if (isOversized && !canProcessOversizedWithoutMaterializing) {
       const detail = `Skipped oversized source file ${filePath}: ${sizeBytes} bytes exceeds ${maxFileBytes} byte limit`;
       const blobRef = stableId("blob", source.id, filePath, "oversized");
       fileLossAudits.push(
@@ -659,8 +661,10 @@ async function* streamSingleFileInputs(
         earlyYield = true;
       } else {
         const captureStartedAt = Date.now();
-        capturedBlob = canStreamOversized
-          ? await captureBlobStreaming(source, host.id, filePath, captureRunId)
+        capturedBlob = canProcessOversizedWithoutMaterializing
+          ? isPathBackedSqliteSourceFile(source.platform, filePath)
+            ? await capturePathBackedBlob(source, host.id, filePath, captureRunId)
+            : await captureBlobStreaming(source, host.id, filePath, captureRunId)
           : await captureBlob(source, host.id, filePath, captureRunId);
         emitProbeProgress(options, source, {
           stage: "file_capture_done",
@@ -677,7 +681,7 @@ async function* streamSingleFileInputs(
             fileOrphanBlobs.push(capturedBlob.blob);
             // Stage 3: streaming variant has no fileBuffer — storage will
             // stream-read the bytes from captured_path if needed.
-            if ("fileBuffer" in capturedBlob) {
+            if (capturedBlobHasFileBuffer(capturedBlob)) {
               fileTrustedBytesByBlobId.set(capturedBlob.blob.id, capturedBlob.fileBuffer);
             }
             fileSkipReason = "metadata_only";
@@ -705,7 +709,7 @@ async function* streamSingleFileInputs(
             const sessionsById = new Map<string, SessionBuildInput>();
             mergePreviousFileEntry(sessionsById, fileOrphanBlobs, fileLossAudits, previousEntry, capturedBlob.blob);
             fileSessionInputs.push(...sessionsById.values());
-            if ("fileBuffer" in capturedBlob) {
+            if (capturedBlobHasFileBuffer(capturedBlob)) {
               fileTrustedBytesByBlobId.set(capturedBlob.blob.id, capturedBlob.fileBuffer);
             }
             fileSkipReason = "unchanged";
@@ -790,9 +794,17 @@ async function* streamSingleFileInputs(
       });
     }
     const adapterResults = appendedResults ?? (capturedBlob
-      ? ("fileBuffer" in capturedBlob
+      ? (capturedBlobHasFileBuffer(capturedBlob)
         ? await processBlob(source, sourceFormatProfile, filePath, capturedBlob, options.target_session_refs)
-        : await processStreamingJsonlBlob(source, sourceFormatProfile, filePath, capturedBlob))
+        : capturedBlobIsStreaming(capturedBlob)
+          ? await processStreamingJsonlBlob(source, sourceFormatProfile, filePath, capturedBlob)
+          : await processPathBackedSqliteBlob(
+              source,
+              sourceFormatProfile,
+              filePath,
+              capturedBlob.blob,
+              options.target_session_refs,
+            ))
       : []);
     const sessionsById = new Map<string, SessionBuildInput>();
     const targetedResults = options.target_session_refs?.length
@@ -805,7 +817,7 @@ async function* streamSingleFileInputs(
     for (const adapterResult of targetedResults) {
       mergeAdapterBlobResult(sessionsById, adapterResult);
     }
-    if (capturedBlob && "fileBuffer" in capturedBlob) {
+    if (capturedBlob && capturedBlobHasFileBuffer(capturedBlob)) {
       fileTrustedBytesByBlobId.set(capturedBlob.blob.id, capturedBlob.fileBuffer);
     }
     emitProbeProgress(options, source, {
@@ -878,7 +890,7 @@ async function* streamSingleFileInputs(
           diagnosticCode: "blob_processing_failed",
           severity: "error",
           blobRef: orphanBlob.id,
-          sessionRef: capturedBlob && "fileBuffer" in capturedBlob
+          sessionRef: capturedBlob && capturedBlobHasFileBuffer(capturedBlob)
             ? deriveSessionId(source.platform, filePath, capturedBlob.fileBuffer)
             : undefined,
           sourceFormatProfileId: sourceFormatProfile.id,
@@ -965,6 +977,52 @@ function isMultiSessionContainer(platform: SourcePlatform, filePath: string): bo
     ((platform === "cursor" || platform === "antigravity") &&
       (basename === "state.vscdb" || basename === "store.db"))
   );
+}
+
+function isPathBackedSqliteSourceFile(platform: SourcePlatform, filePath: string): boolean {
+  const basename = path.basename(filePath);
+  if (platform === "zcode") {
+    return basename === "db.sqlite";
+  }
+  return (
+    (platform === "cursor" || platform === "antigravity") &&
+    (basename === "state.vscdb" || basename === "store.db")
+  );
+}
+
+function capturedBlobHasFileBuffer(captured: AnyCapturedBlobInput): captured is CapturedBlobInput {
+  return Buffer.isBuffer((captured as CapturedBlobInput).fileBuffer);
+}
+
+function capturedBlobIsStreaming(captured: AnyCapturedBlobInput): captured is StreamingCapturedBlobInput {
+  return typeof (captured as StreamingCapturedBlobInput).streamingLineReader === "function";
+}
+
+async function capturePathBackedBlob(
+  source: SourceDefinition,
+  hostId: string,
+  filePath: string,
+  captureRunId: string,
+): Promise<PathBackedCapturedBlobInput> {
+  const beforeStats = await stat(filePath);
+  const afterStats = await stat(filePath);
+  const fileIdentityStable = fileIdentityFromStats(beforeStats, afterStats);
+  const checksum = sha1(`path-backed:${afterStats.size}:${afterStats.mtimeMs}:${afterStats.ctimeMs}`);
+  return {
+    blob: {
+      id: stableId("blob", source.id, filePath, checksum),
+      source_id: source.id,
+      host_id: hostId,
+      origin_path: filePath,
+      checksum,
+      size_bytes: afterStats.size,
+      captured_at: nowIso(),
+      capture_run_id: captureRunId,
+      file_modified_at: afterStats.mtime.toISOString(),
+      file_changed_at: fileIdentityStable ? afterStats.ctime.toISOString() : undefined,
+      file_identity_stable: fileIdentityStable,
+    },
+  };
 }
 
 function isOpenClawCronRunFile(filePath: string): boolean {
@@ -1342,7 +1400,7 @@ async function processAppendedJsonlBlob(
   // Stage 3: streaming variant uses hashPrefix (incremental, no allocation)
   // + readSuffix instead of materializing the whole file. The CapturedBlobInput
   // path keeps the existing fileBuffer.subarray behavior.
-  const isStreaming = !("fileBuffer" in capturedBlob);
+  const isStreaming = capturedBlobIsStreaming(capturedBlob);
   let prefixSha1: string;
   let prefixLastByte: number | null;
   let appendedBuffer: Buffer;
@@ -1351,11 +1409,13 @@ async function processAppendedJsonlBlob(
     prefixSha1 = hashed;
     prefixLastByte = lastByte;
     appendedBuffer = await capturedBlob.readSuffix(previousTail.size_bytes);
-  } else {
+  } else if (capturedBlobHasFileBuffer(capturedBlob)) {
     const previousPrefix = capturedBlob.fileBuffer.subarray(0, previousTail.size_bytes);
     prefixSha1 = sha1(previousPrefix);
     prefixLastByte = previousPrefix.length > 0 ? previousPrefix[previousPrefix.length - 1]! : null;
     appendedBuffer = capturedBlob.fileBuffer.subarray(previousTail.size_bytes);
+  } else {
+    return undefined;
   }
   if (prefixSha1 !== previousTail.checksum) {
     return undefined;
@@ -1702,14 +1762,31 @@ async function getFileSize(filePath: string): Promise<number> {
   return (await stat(filePath)).size;
 }
 
-async function processBlob(
+async function processPathBackedSqliteBlob(
   source: SourceDefinition,
   sourceFormatProfile: SourceFormatProfile,
   filePath: string,
-  capturedBlob: CapturedBlobInput,
+  blob: CapturedBlob,
   targetSessionRefs?: readonly string[],
 ): Promise<AdapterBlobResult[]> {
-  const { blob, fileBuffer } = capturedBlob;
+  return (await tryProcessPathOpenedContainer(
+    source,
+    sourceFormatProfile,
+    filePath,
+    blob,
+    Buffer.alloc(0),
+    targetSessionRefs,
+  )) ?? [];
+}
+
+async function tryProcessPathOpenedContainer(
+  source: SourceDefinition,
+  sourceFormatProfile: SourceFormatProfile,
+  filePath: string,
+  blob: CapturedBlob,
+  fileBuffer: Buffer,
+  targetSessionRefs?: readonly string[],
+): Promise<AdapterBlobResult[] | undefined> {
   const blobId = blob.id;
 
   if (source.platform === "cursor" && path.basename(filePath) === "store.db") {
@@ -1782,44 +1859,67 @@ async function processBlob(
   }
 
   const multiSessionSeeds = await extractMultiSessionSeeds(source, filePath, fileBuffer, blobId, targetSessionRefs);
-  if (multiSessionSeeds) {
-    const results: AdapterBlobResult[] = [];
-    for (const seed of multiSessionSeeds.filter((entry) =>
-      !targetSessionRefs?.length || targetSessionRefs.some((ref) => targetRefMatchesSession(ref, entry.sessionId)),
-    )) {
-      results.push(
-        buildAdapterBlobResult(
-          source,
-          sourceFormatProfile,
-          blob.host_id,
-          filePath,
-          blob.capture_run_id,
-          blob,
-          seed.sessionId,
-          seed.records.map((record, ordinal) => ({
-            id: stableId("record", source.id, seed.sessionId, blobId, String(ordinal), record.pointer),
-            source_id: source.id,
-            blob_id: blobId,
-            session_ref: seed.sessionId,
-            ordinal,
-            record_path_or_offset: record.pointer,
-            observed_at: record.observedAt ?? nowIso(),
-            parseable: true,
-            raw_json: record.rawJson,
-          })),
-          {
-            title: seed.title,
-            created_at: seed.createdAt,
-            updated_at: seed.updatedAt,
-            model: seed.model,
-            working_directory: seed.workingDirectory,
-          },
-        ),
-      );
-    }
-    return results;
+  if (!multiSessionSeeds) {
+    return undefined;
+  }
+  const results: AdapterBlobResult[] = [];
+  for (const seed of multiSessionSeeds.filter((entry) =>
+    !targetSessionRefs?.length || targetSessionRefs.some((ref) => targetRefMatchesSession(ref, entry.sessionId)),
+  )) {
+    results.push(
+      buildAdapterBlobResult(
+        source,
+        sourceFormatProfile,
+        blob.host_id,
+        filePath,
+        blob.capture_run_id,
+        blob,
+        seed.sessionId,
+        seed.records.map((record, ordinal) => ({
+          id: stableId("record", source.id, seed.sessionId, blobId, String(ordinal), record.pointer),
+          source_id: source.id,
+          blob_id: blobId,
+          session_ref: seed.sessionId,
+          ordinal,
+          record_path_or_offset: record.pointer,
+          observed_at: record.observedAt ?? nowIso(),
+          parseable: true,
+          raw_json: record.rawJson,
+        })),
+        {
+          title: seed.title,
+          created_at: seed.createdAt,
+          updated_at: seed.updatedAt,
+          model: seed.model,
+          working_directory: seed.workingDirectory,
+        },
+      ),
+    );
+  }
+  return results;
+}
+
+async function processBlob(
+  source: SourceDefinition,
+  sourceFormatProfile: SourceFormatProfile,
+  filePath: string,
+  capturedBlob: CapturedBlobInput,
+  targetSessionRefs?: readonly string[],
+): Promise<AdapterBlobResult[]> {
+  const { blob, fileBuffer } = capturedBlob;
+  const pathOpened = await tryProcessPathOpenedContainer(
+    source,
+    sourceFormatProfile,
+    filePath,
+    blob,
+    fileBuffer,
+    targetSessionRefs,
+  );
+  if (pathOpened) {
+    return pathOpened;
   }
 
+  const blobId = blob.id;
   const profileId = sourceFormatProfile.id;
   const sessionId = deriveSessionId(source.platform, filePath, fileBuffer);
   if (
@@ -1893,10 +1993,11 @@ async function processBlob(
 // session id from the head of the file, and streamingLineReader to parse
 // records without materializing the whole file in memory.
 //
-// Only supports the incremental-JSONL branch of processBlob. Multi-session
-// seeds (cursor state.vscdb), AMP root-JSON, Gemini, and other non-JSONL
-// shapes are not reachable here — the routing in streamSingleFileInputs
-// gates on isIncrementalJsonlPlatform before calling this.
+// Only supports the incremental-JSONL branch of processBlob. Path-backed
+// SQLite (zcode db.sqlite, cursor/antigravity state.vscdb and store.db) is
+// captured from file identity and opened by path instead of being hashed
+// into memory. AMP root-JSON, Gemini, and other non-JSONL shapes still take
+// the oversized skip.
 async function processStreamingJsonlBlob(
   source: SourceDefinition,
   sourceFormatProfile: SourceFormatProfile,

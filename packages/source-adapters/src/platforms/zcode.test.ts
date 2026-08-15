@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { getDefaultSourcesForHost, runSourceProbe } from "../index.js";
+import { getDefaultSourcesForHost, runSourceProbe, streamSourceProbe } from "../index.js";
 import { extractMultiSessionSeeds } from "../core/parser.js";
 import { assertFragmentKinds } from "../test-helpers.js";
 
@@ -77,6 +77,90 @@ test("[zcode] reads ~/.zcode CLI SQLite messages, parts, tools, and token usage"
     );
     assert.ok(targetedRelation);
     assert.equal(targetedRelation.payload.child_session_id, "sess:zcode:sess_zcode_child");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("[zcode] probes an oversized SQLite store instead of skipping it", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-zcode-oversized-"));
+
+  try {
+    const zcodeRoot = path.join(tempRoot, ".zcode");
+    const dbDir = path.join(zcodeRoot, "cli", "db");
+    await mkdir(dbDir, { recursive: true });
+    const dbPath = path.join(dbDir, "db.sqlite");
+    createZcodeFixtureDb(dbPath);
+    const dbSize = (await stat(dbPath)).size;
+    assert.ok(dbSize > 256, "fixture sqlite must exceed the test size cap");
+
+    const zcodeSource = getDefaultSourcesForHost({ homeDir: tempRoot, includeMissing: true }).find(
+      (source) => source.platform === "zcode",
+    );
+    assert.ok(zcodeSource);
+
+    const probeOptions = {
+      source_ids: [zcodeSource.id],
+      max_file_bytes: 256,
+    };
+    const [payload] = (await runSourceProbe(probeOptions, [zcodeSource])).sources;
+    assert.ok(payload);
+    assert.equal(payload.source.sync_status, "healthy");
+    assert.equal(payload.source.error_message, undefined);
+    assert.equal(payload.sessions.length, 2);
+    assert.equal(payload.turns.length, 2);
+
+    const fileEvents = [];
+    for await (const event of streamSourceProbe(probeOptions, [zcodeSource])) {
+      if (event.kind === "file_error" || event.kind === "file_skip" || event.kind === "file_chunk") {
+        fileEvents.push(event);
+      }
+    }
+    assert.equal(fileEvents.filter((event) => event.kind === "file_error" || event.kind === "file_skip").length, 0);
+    const fileChunk = fileEvents.find((event) => event.kind === "file_chunk");
+    assert.ok(fileChunk);
+    assert.equal(fileChunk.kind, "file_chunk");
+    for (const bytes of fileChunk.chunk.trusted_bytes_by_blob_id.values()) {
+      assert.ok(
+        bytes.byteLength < dbSize,
+        `oversized sqlite must not be fully materialized (${bytes.byteLength} >= ${dbSize})`,
+      );
+    }
+    const sqliteBlob = payload.blobs.find((blob) => blob.origin_path === dbPath);
+    assert.ok(sqliteBlob);
+    if (sqliteBlob.file_identity_stable) {
+      assert.ok(sqliteBlob.file_changed_at);
+    } else {
+      assert.equal(sqliteBlob.file_changed_at, undefined);
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("[zcode] does not invent a JSONL session for an oversized empty SQLite store", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-zcode-oversized-empty-"));
+
+  try {
+    const zcodeRoot = path.join(tempRoot, ".zcode");
+    const dbDir = path.join(zcodeRoot, "cli", "db");
+    await mkdir(dbDir, { recursive: true });
+    const dbPath = path.join(dbDir, "db.sqlite");
+    createEmptyZcodeFixtureDb(dbPath);
+    assert.ok((await stat(dbPath)).size > 256);
+
+    const zcodeSource = getDefaultSourcesForHost({ homeDir: tempRoot, includeMissing: true }).find(
+      (source) => source.platform === "zcode",
+    );
+    assert.ok(zcodeSource);
+
+    const [payload] = (
+      await runSourceProbe({ source_ids: [zcodeSource.id], max_file_bytes: 256 }, [zcodeSource])
+    ).sources;
+    assert.ok(payload);
+    assert.equal(payload.sessions.length, 0);
+    assert.ok(!payload.sessions.some((session) => session.id === "sess:zcode:db"));
+    assert.ok(!payload.loss_audits.some((audit) => audit.diagnostic_code === "records_missing"));
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

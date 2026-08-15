@@ -616,6 +616,19 @@ export function isOrdinaryResumeEligibleSourceFile(
   return true;
 }
 
+export function fileIdentityFromStats(
+  before: { size: number; mtimeMs: number; ctimeMs: number },
+  after: { size: number; mtimeMs: number; ctimeMs: number },
+  capturedByteLength?: number,
+): boolean {
+  return (
+    before.size === after.size &&
+    before.mtimeMs === after.mtimeMs &&
+    before.ctimeMs === after.ctimeMs &&
+    (capturedByteLength === undefined || capturedByteLength === after.size)
+  );
+}
+
 export async function captureBlob(
   source: SourceDefinition,
   hostId: string,
@@ -625,11 +638,7 @@ export async function captureBlob(
   const beforeStats = await fs.stat(filePath);
   const fileBuffer = await fs.readFile(filePath);
   const afterStats = await fs.stat(filePath);
-  const fileIdentityStable =
-    beforeStats.size === afterStats.size &&
-    beforeStats.mtimeMs === afterStats.mtimeMs &&
-    beforeStats.ctimeMs === afterStats.ctimeMs &&
-    fileBuffer.byteLength === afterStats.size;
+  const fileIdentityStable = fileIdentityFromStats(beforeStats, afterStats, fileBuffer.byteLength);
   const checksum = sha1(fileBuffer);
   const content_max_timestamp = isIncrementalJsonlPlatform(source.platform)
     ? extractContentMaxTimestamp(fileBuffer)
