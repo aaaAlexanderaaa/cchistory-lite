@@ -20,31 +20,26 @@ export function parseCodexRecord(
 
   if (type === "session_meta" && helpers.isObject(parsed.payload)) {
     const payload = parsed.payload;
-    const source = helpers.isObject(payload.source) ? payload.source : undefined;
-    const subagent = helpers.isObject(source?.subagent) ? source.subagent : undefined;
-    const threadSpawn = helpers.isObject(subagent?.thread_spawn) ? subagent.thread_spawn : undefined;
-    const parentSessionId = helpers.asString(threadSpawn?.parent_thread_id);
-    const historyStartOrdinal = helpers.asNumber(payload.subagent_history_start_ordinal);
-    const agentNickname = helpers.asString(threadSpawn?.agent_nickname) ?? helpers.asString(payload.agent_nickname);
-    const agentPath = helpers.asString(threadSpawn?.agent_path) ?? helpers.asString(payload.agent_path);
-    const agentKey = agentPath ?? agentNickname;
+    const delegation = resolveCodexSubagentDelegation(payload, helpers);
     const isPrimarySessionMeta = helpers.asString(payload.id) === draft.source_session_id;
-    if (parentSessionId && isPrimarySessionMeta) {
-      draft.delegated_parent_session_id = parentSessionId;
-      draft.delegated_history_start_ordinal = historyStartOrdinal;
-      draft.delegated_agent_key = agentKey;
-      draft.title = agentNickname ?? draft.title;
-      fragments.push(
-        helpers.createFragment(context, record, fragments.length, "session_relation", timeKey, {
-          parent_uuid: parentSessionId,
-          child_session_id: draft.source_session_id,
-          is_sidechain: true,
-          agent_id: agentKey,
-          agent_nickname: agentNickname,
-          agent_path: agentPath,
-          relation_source: "session_meta.source.subagent.thread_spawn",
-        }),
-      );
+    if (delegation && isPrimarySessionMeta) {
+      draft.delegated_parent_session_id = delegation.parentSessionId ?? draft.delegated_parent_session_id;
+      draft.delegated_history_start_ordinal = delegation.historyStartOrdinal ?? draft.delegated_history_start_ordinal;
+      draft.delegated_agent_key = delegation.agentKey ?? draft.delegated_agent_key;
+      draft.title = delegation.agentNickname ?? draft.title;
+      if (delegation.parentSessionId) {
+        fragments.push(
+          helpers.createFragment(context, record, fragments.length, "session_relation", timeKey, {
+            parent_uuid: delegation.parentSessionId,
+            child_session_id: draft.source_session_id,
+            is_sidechain: true,
+            agent_id: delegation.agentKey,
+            agent_nickname: delegation.agentNickname,
+            agent_path: delegation.agentPath,
+            relation_source: delegation.relationSource,
+          }),
+        );
+      }
     }
     const inheritedMeta = isInheritedCodexRecord(record, draft) && !isPrimarySessionMeta;
     if (!inheritedMeta) {
@@ -109,7 +104,7 @@ export function parseCodexRecord(
         const text = helpers.extractTextFromContentItem(item);
         if (text) {
           if (
-            draft.delegated_parent_session_id &&
+            isDelegatedCodexDraft(draft) &&
             (inheritedRecord || role === "user" || role === "developer")
           ) {
             fragments.push(createDelegatedTextFragment(context, record, localSeq++, timeKey, text, helpers, {
@@ -283,7 +278,7 @@ export function parseCodexRecord(
     if (eventType === "user_message") {
       const text = helpers.asString(payload.message);
       if (text) {
-        if (draft.delegated_parent_session_id) {
+        if (isDelegatedCodexDraft(draft)) {
           fragments.push(createDelegatedTextFragment(context, record, 0, timeKey, text, helpers, {
             inherited: isInheritedCodexRecord(record, draft),
             sourceRole: "user",
@@ -301,7 +296,7 @@ export function parseCodexRecord(
     if (eventType === "agent_message") {
       const text = helpers.asString(payload.message);
       if (text) {
-        if (draft.delegated_parent_session_id && isInheritedCodexRecord(record, draft)) {
+        if (isDelegatedCodexDraft(draft) && isInheritedCodexRecord(record, draft)) {
           fragments.push(createDelegatedTextFragment(context, record, 0, timeKey, text, helpers, {
             inherited: true,
             sourceRole: "agent",
@@ -385,6 +380,52 @@ function isCodexLifecycleEventType(eventType: string): boolean {
     eventType === "thread_rolled_back" ||
     eventType === "item_completed" ||
     eventType === "thread_settings_applied";
+}
+
+function resolveCodexSubagentDelegation(
+  payload: Record<string, unknown>,
+  helpers: CodexParseRuntimeHelpers,
+): {
+  parentSessionId?: string;
+  agentNickname?: string;
+  agentPath?: string;
+  agentKey?: string;
+  historyStartOrdinal?: number;
+  relationSource?: string;
+} | undefined {
+  const source = helpers.isObject(payload.source) ? payload.source : undefined;
+  const subagent = helpers.isObject(source?.subagent) ? source.subagent : undefined;
+  const threadSpawn = helpers.isObject(subagent?.thread_spawn) ? subagent.thread_spawn : undefined;
+  const isSubagent =
+    Boolean(threadSpawn) ||
+    Boolean(subagent) ||
+    helpers.asString(payload.thread_source) === "subagent";
+  if (!isSubagent) {
+    return undefined;
+  }
+
+  const parentSessionId =
+    helpers.asString(threadSpawn?.parent_thread_id) ??
+    helpers.asString(payload.parent_thread_id);
+  const agentNickname =
+    helpers.asString(threadSpawn?.agent_nickname) ??
+    helpers.asString(payload.agent_nickname) ??
+    helpers.asString(subagent?.other);
+  const agentPath = helpers.asString(threadSpawn?.agent_path) ?? helpers.asString(payload.agent_path);
+  return {
+    parentSessionId,
+    agentNickname,
+    agentPath,
+    agentKey: agentPath ?? agentNickname,
+    historyStartOrdinal: helpers.asNumber(payload.subagent_history_start_ordinal),
+    relationSource: threadSpawn
+      ? "session_meta.source.subagent.thread_spawn"
+      : "session_meta.parent_thread_id",
+  };
+}
+
+function isDelegatedCodexDraft(draft: SessionDraftLike): boolean {
+  return Boolean(draft.delegated_parent_session_id || draft.delegated_agent_key);
 }
 
 function isInheritedCodexRecord(record: RawRecord, draft: SessionDraftLike): boolean {

@@ -22,6 +22,8 @@ const SYNTHETIC_USER_SHAPED_PREFIXES = [
   "<local-command-stdout>",
   "<bash-input>",
   "<bash-stdout>",
+  "The following is the Codex agent history added since",
+  "The following is the Codex agent history whose request action you are assessing",
 ] as const;
 
 const CONTINUATION_PREFIX = "This session is being continued from a previous conversation";

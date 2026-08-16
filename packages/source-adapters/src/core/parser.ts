@@ -610,9 +610,9 @@ export function buildAdapterBlobResult(
 export function isOrdinaryResumeEligibleSourceFile(
   platform: SourcePlatform,
   filePath: string,
-  draft?: Pick<SessionDraft, "delegated_parent_session_id">,
+  draft?: Pick<SessionDraft, "delegated_parent_session_id" | "delegated_agent_key">,
 ): boolean {
-  if (draft?.delegated_parent_session_id) {
+  if (draft?.delegated_parent_session_id || draft?.delegated_agent_key) {
     return false;
   }
   if (platform === "claude_code" && /(^|[\\/])subagents([\\/]|$)/u.test(filePath)) {

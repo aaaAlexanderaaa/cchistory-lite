@@ -1305,26 +1305,40 @@ function hydrateDelegatedDraftFromFragments(
   const source = isObject(childMeta?.payload.source) ? childMeta.payload.source : undefined;
   const subagent = isObject(source?.subagent) ? source.subagent : undefined;
   const threadSpawn = isObject(subagent?.thread_spawn) ? subagent.thread_spawn : undefined;
-  const explicitParentSessionId = asString(threadSpawn?.parent_thread_id);
-  if (!explicitParentSessionId) return draft;
-  const relation = fragments.find((fragment) =>
-    fragment.fragment_kind === "session_relation" &&
-    fragment.payload.parent_uuid === explicitParentSessionId &&
-    fragment.payload.child_session_id === sourceSessionId &&
-    fragment.payload.relation_source === "session_meta.source.subagent.thread_spawn"
-  );
-  if (!relation) return draft;
+  const isSubagent =
+    Boolean(threadSpawn) ||
+    Boolean(subagent) ||
+    asString(childMeta?.payload.thread_source) === "subagent";
+  if (!isSubagent) return draft;
+  const explicitParentSessionId =
+    asString(threadSpawn?.parent_thread_id) ??
+    asString(childMeta?.payload.parent_thread_id);
+  const agentNickname =
+    asString(threadSpawn?.agent_nickname) ??
+    asString(childMeta?.payload.agent_nickname) ??
+    asString(subagent?.other);
+  const agentPath = asString(threadSpawn?.agent_path) ?? asString(childMeta?.payload.agent_path);
+  const agentKey = agentPath ?? agentNickname;
+  const relation = explicitParentSessionId
+    ? fragments.find((fragment) =>
+        fragment.fragment_kind === "session_relation" &&
+        fragment.payload.parent_uuid === explicitParentSessionId &&
+        fragment.payload.child_session_id === sourceSessionId
+      )
+    : undefined;
+  if (!explicitParentSessionId && !agentKey) return draft;
   return {
     ...draft,
-    delegated_parent_session_id: String(relation.payload.parent_uuid),
+    delegated_parent_session_id: explicitParentSessionId ?? draft.delegated_parent_session_id,
     delegated_history_start_ordinal:
       typeof childMeta?.payload.subagent_history_start_ordinal === "number"
         ? childMeta.payload.subagent_history_start_ordinal
         : draft.delegated_history_start_ordinal,
     delegated_agent_key:
-      typeof relation.payload.agent_id === "string"
-        ? relation.payload.agent_id
-        : draft.delegated_agent_key,
+      (typeof relation?.payload.agent_id === "string" ? relation.payload.agent_id : undefined) ??
+      agentKey ??
+      draft.delegated_agent_key,
+    title: draft.title ?? agentNickname,
     resume_command: undefined,
     resume_working_directory: undefined,
     resume_command_confidence: undefined,

@@ -170,6 +170,44 @@ test("[zcode] does not invent a JSONL session for an oversized empty SQLite stor
   }
 });
 
+test("[zcode] keeps synthetic TodoWrite reminders out of UserTurns", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-zcode-reminder-"));
+
+  try {
+    const zcodeRoot = path.join(tempRoot, ".zcode");
+    const dbDir = path.join(zcodeRoot, "cli", "db");
+    await mkdir(dbDir, { recursive: true });
+    createZcodeReminderFixtureDb(path.join(dbDir, "db.sqlite"));
+
+    const zcodeSource = getDefaultSourcesForHost({ homeDir: tempRoot, includeMissing: true }).find(
+      (source) => source.platform === "zcode",
+    );
+    assert.ok(zcodeSource);
+
+    const [payload] = (await runSourceProbe({ source_ids: [zcodeSource.id] }, [zcodeSource])).sources;
+    assert.ok(payload);
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.sessions[0]?.title, "ZCode reminder fixture");
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.turns[0]?.canonical_text, "Review the ZCode adapter shape.");
+    assert.equal(
+      payload.turns.some((turn) =>
+        `${turn.canonical_text}\n${turn.raw_text}`.includes("TodoWrite tool hasn't been used recently"),
+      ),
+      false,
+    );
+    assert.equal(
+      payload.atoms.some((atom) =>
+        atom.origin_kind === "user_authored" &&
+        String(atom.payload.text ?? "").includes("TodoWrite tool hasn't been used recently"),
+      ),
+      false,
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("[zcode] lets empty SQLite stores fall back to raw evidence preservation", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-zcode-empty-"));
 
@@ -414,6 +452,158 @@ function createZcodeFixtureDb(dbPath: string): void {
       "zcode-test-model",
       "completed",
       1780000010000,
+    );
+  } finally {
+    db.close();
+  }
+}
+
+function createZcodeReminderFixtureDb(dbPath: string): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE session (
+        id text primary key,
+        project_id text not null,
+        workspace_id text,
+        parent_id text,
+        slug text not null,
+        directory text not null,
+        path text,
+        title text not null,
+        version text not null,
+        time_created integer not null,
+        time_updated integer not null,
+        time_archived integer,
+        task_type text not null default 'interactive',
+        trace_id text
+      );
+      CREATE TABLE message (
+        id text primary key,
+        session_id text not null,
+        time_created integer not null,
+        time_updated integer not null,
+        data text not null
+      );
+      CREATE TABLE part (
+        id text primary key,
+        message_id text not null,
+        session_id text not null,
+        time_created integer not null,
+        time_updated integer not null,
+        data text not null
+      );
+    `);
+
+    db.prepare(`
+      INSERT INTO session (
+        id, project_id, workspace_id, parent_id, slug, directory, path, title, version,
+        time_created, time_updated, time_archived, task_type, trace_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "sess_zcode_reminder",
+      "project-zcode",
+      null,
+      null,
+      "zcode-reminder",
+      "/Users/mock/workspace/zcode-fixture",
+      null,
+      "ZCode reminder fixture",
+      "3.0.0",
+      1780000100000,
+      1780000104000,
+      null,
+      "interactive",
+      "trace-zcode-reminder",
+    );
+
+    const insertMessage = db.prepare(`
+      INSERT INTO message (id, session_id, time_created, time_updated, data)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    insertMessage.run(
+      "msg_zcode_user",
+      "sess_zcode_reminder",
+      1780000101000,
+      1780000101000,
+      JSON.stringify({
+        role: "user",
+        time: { created: 1780000101000 },
+        path: { cwd: "/Users/mock/workspace/zcode-fixture" },
+      }),
+    );
+    insertMessage.run(
+      "msg_zcode_assistant",
+      "sess_zcode_reminder",
+      1780000102000,
+      1780000102000,
+      JSON.stringify({
+        role: "assistant",
+        parentID: "msg_zcode_user",
+        finish: "stop",
+      }),
+    );
+    insertMessage.run(
+      "msg_zcode_reminder",
+      "sess_zcode_reminder",
+      1780000103000,
+      1780000103000,
+      JSON.stringify({
+        role: "user",
+        time: { created: 1780000103000 },
+      }),
+    );
+    insertMessage.run(
+      "msg_zcode_assistant_after_reminder",
+      "sess_zcode_reminder",
+      1780000104000,
+      1780000104000,
+      JSON.stringify({
+        role: "assistant",
+        parentID: "msg_zcode_reminder",
+        finish: "stop",
+      }),
+    );
+
+    const insertPart = db.prepare(`
+      INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    insertPart.run(
+      "part_zcode_user_text",
+      "msg_zcode_user",
+      "sess_zcode_reminder",
+      1780000101000,
+      1780000101000,
+      JSON.stringify({ type: "text", text: "Review the ZCode adapter shape." }),
+    );
+    insertPart.run(
+      "part_zcode_assistant_text",
+      "msg_zcode_assistant",
+      "sess_zcode_reminder",
+      1780000102000,
+      1780000102000,
+      JSON.stringify({ type: "text", text: "The ZCode adapter can use SQLite rows." }),
+    );
+    insertPart.run(
+      "part_zcode_reminder_text",
+      "msg_zcode_reminder",
+      "sess_zcode_reminder",
+      1780000103000,
+      1780000103000,
+      JSON.stringify({
+        type: "text",
+        synthetic: true,
+        text: "<system-reminder>\nThe TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool.\n</system-reminder>",
+      }),
+    );
+    insertPart.run(
+      "part_zcode_assistant_after_reminder",
+      "msg_zcode_assistant_after_reminder",
+      "sess_zcode_reminder",
+      1780000104000,
+      1780000104000,
+      JSON.stringify({ type: "text", text: "Continuing after the injected reminder." }),
     );
   } finally {
     db.close();

@@ -143,6 +143,17 @@ export function parseGenericConversationRecord(
 
     const text = helpers.extractTextFromContentItem(item);
     if (text) {
+      if (item.synthetic === true) {
+        fragments.push(
+          helpers.createFragment(context, record, localSeq++, "text", timeKey, {
+            actor_kind: "system",
+            origin_kind: "source_instruction",
+            display_policy: "collapse",
+            text,
+          }),
+        );
+        continue;
+      }
       const appended = helpers.appendChunkedTextFragments(
         context,
         record,

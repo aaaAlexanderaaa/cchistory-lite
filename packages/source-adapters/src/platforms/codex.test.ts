@@ -59,6 +59,58 @@ test("[codex] delegated child rollouts preserve evidence without projecting repl
   ));
 });
 
+test("[codex] guardian auto-review subagents stay delegated instead of becoming history-dump sessions", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-codex-guardian-"));
+  try {
+    const codexDir = path.join(tempRoot, "codex-guardian");
+    await mkdir(codexDir, { recursive: true });
+    const fixtureRoot = path.join(getRepoMockDataRoot(), "fixtures", "source-shapes", "codex");
+    await writeFile(
+      path.join(codexDir, "rollout-2026-08-16T02-30-00-codex-guardian-parent.jsonl"),
+      await readFile(path.join(fixtureRoot, "guardian-auto-review-parent.jsonl")),
+      "utf8",
+    );
+    await writeFile(
+      path.join(codexDir, "rollout-2026-08-16T02-51-00-codex-guardian-child.jsonl"),
+      await readFile(path.join(fixtureRoot, "guardian-auto-review-child.jsonl")),
+      "utf8",
+    );
+
+    const source = createSourceDefinition("src-codex-guardian-fixture", "codex", codexDir);
+    const payload = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources[0];
+    assert.ok(payload);
+
+    const parent = payload.sessions.find((session) => session.source_session_id === "codex-guardian-parent");
+    const child = payload.sessions.find((session) => session.source_session_id === "codex-guardian-child");
+    assert.ok(parent && child);
+    assert.equal(parent.turn_count, 1);
+    assert.equal(payload.turns[0]?.canonical_text, "Review the fixture notes.");
+    assert.equal(child.title, "guardian");
+    assert.equal(child.turn_count, 0);
+    assert.equal(child.resume_command, undefined);
+    assert.equal(payload.turns.some((turn) => turn.session_id === child.id), false);
+    assert.equal(
+      payload.turns.some((turn) => turn.canonical_text.includes("Codex agent history")),
+      false,
+    );
+
+    const relation = payload.fragments.find((fragment) =>
+      fragment.session_ref === child.id && fragment.fragment_kind === "session_relation"
+    );
+    assert.ok(relation);
+    assert.equal(relation.payload.parent_uuid, "codex-guardian-parent");
+    assert.equal(relation.payload.child_session_id, "codex-guardian-child");
+    assert.equal(relation.payload.agent_id, "guardian");
+    assert.ok(payload.atoms.some((atom) =>
+      atom.session_ref === child.id &&
+      atom.origin_kind === "delegated_instruction" &&
+      String(atom.payload.text ?? "").includes("Codex agent history added since")
+    ));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("[codex] ordinary fork rollouts remain resumable top-level sessions", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-codex-ordinary-fork-"));
   try {

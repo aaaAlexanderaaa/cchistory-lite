@@ -259,7 +259,11 @@ function buildZcodeMessageRecord(
     if (partType === "text") {
       const text = helpers.asString(parsedPart.text);
       if (text?.trim()) {
-        content.push({ type: "text", text });
+        content.push(
+          parsedPart.synthetic === true
+            ? { type: "text", text, synthetic: true }
+            : { type: "text", text },
+        );
       }
       continue;
     }
