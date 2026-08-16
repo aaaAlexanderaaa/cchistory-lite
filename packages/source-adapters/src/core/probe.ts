@@ -2102,9 +2102,9 @@ async function processBlob(
 //
 // Only supports the incremental-JSONL branch of processBlob. Path-backed
 // SQLite (zcode db.sqlite, cursor/antigravity state.vscdb and store.db) is
-// routed separately: capture stays metadata-only, then processPathBackedSqliteBlob
-// opens the file by path. AMP root-JSON, Gemini, and other non-JSONL shapes
-// still take the oversized skip.
+// captured from file identity (metadata-only) and opened by path via
+// processPathBackedSqliteBlob instead of being hashed into memory.
+// AMP root-JSON, Gemini, and other non-JSONL shapes still take the oversized skip.
 async function processStreamingJsonlBlob(
   source: SourceDefinition,
   sourceFormatProfile: SourceFormatProfile,
