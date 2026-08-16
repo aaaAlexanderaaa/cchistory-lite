@@ -8,7 +8,7 @@ import type {
 } from "@cchistory/domain";
 import { minIso, maxIso } from "@cchistory/domain";
 import { extractAntigravityTrajectorySeeds, isAntigravityTrajectoryKey } from "../platforms/antigravity/runtime.js";
-import { buildCursorComposerSeed, buildCursorPromptHistorySeed } from "../platforms/cursor/runtime.js";
+import { buildCursorComposerSeed, buildCursorPromptHistorySeed, loadCursorWorkspaceIndex } from "../platforms/cursor/runtime.js";
 import type { ConversationSeedOptions, ExtractedSessionSeed } from "./conversation-seeds.js";
 
 interface GenericSessionMetadataLike {
@@ -69,6 +69,10 @@ export async function extractVscodeStateSeeds(
     const rows = selectVscodeKeyValueRows(db, source.platform, helpers);
     const rowMap = new Map(rows.map((row) => [row.storage_key, row.storage_value]));
     const seedsById = new Map<string, ExtractedSessionSeed>();
+    const workspacePathById =
+      source.platform === "cursor" ? loadCursorWorkspacePathsByStorageId(filePath, helpers) : new Map<string, string>();
+    const composerHeaders =
+      source.platform === "cursor" ? selectCursorComposerHeaders(db, helpers) : new Map<string, CursorComposerHeader>();
     const fallbackObservedAtBase = (await fs.stat(filePath)).mtime.toISOString();
     const antigravityTrajectoryRows = new Map<string, string>();
     const antigravityHistoryRows: string[] = [];
@@ -113,13 +117,14 @@ export async function extractVscodeStateSeeds(
         const seed = buildCursorComposerSeed(
           source.platform,
           row.storage_key,
-          parsed,
+          mergeCursorComposerWithHeaders(parsed, composerHeaders, helpers),
           rowMap,
           workspacePath,
           cursorRuntimeHelpers,
+          workspacePathById,
         );
         if (seed) {
-          upsertExtractedSeed(seedsById, seed);
+          upsertCursorComposerSeed(seedsById, seed);
         }
         continue;
       }
@@ -134,13 +139,14 @@ export async function extractVscodeStateSeeds(
             const seed = buildCursorComposerSeed(
               source.platform,
               row.storage_key,
-              composer,
+              mergeCursorComposerWithHeaders(composer, composerHeaders, helpers),
               rowMap,
               workspacePath,
               cursorRuntimeHelpers,
+              workspacePathById,
             );
             if (seed) {
-              upsertExtractedSeed(seedsById, seed);
+              upsertCursorComposerSeed(seedsById, seed);
             }
           }
         }
@@ -263,6 +269,118 @@ async function extractWorkspacePathFromWorkspaceState(
       ? helpers.asString(parsed.workspace.path) ?? helpers.asString(parsed.workspace.uri)
       : undefined);
   return workspaceCandidate ? helpers.normalizeWorkspacePath(workspaceCandidate) : undefined;
+}
+
+interface CursorComposerHeader {
+  workspaceId?: string;
+  value?: Record<string, unknown>;
+}
+
+function mergeCursorComposerWithHeaders(
+  composer: Record<string, unknown>,
+  headers: ReadonlyMap<string, CursorComposerHeader>,
+  helpers: Pick<VscodeStateHelpers, "asString" | "isObject">,
+): Record<string, unknown> {
+  const composerId = helpers.asString(composer.composerId) ?? helpers.asString(composer.id);
+  const header = composerId ? headers.get(composerId) : undefined;
+  if (!header) {
+    return composer;
+  }
+  const headerValue = header.value ?? {};
+  const identifier =
+    composer.workspaceIdentifier ??
+    headerValue.workspaceIdentifier ??
+    (header.workspaceId ? { id: header.workspaceId } : undefined);
+  return {
+    ...headerValue,
+    ...composer,
+    workspaceIdentifier: identifier,
+    workspaceId:
+      composer.workspaceId ??
+      header.workspaceId ??
+      (helpers.isObject(identifier) ? identifier.id : undefined),
+  };
+}
+
+function selectCursorComposerHeaders(
+  db: DatabaseSync,
+  helpers: Pick<VscodeStateHelpers, "asString" | "safeJsonParse" | "isObject">,
+): Map<string, CursorComposerHeader> {
+  const headers = new Map<string, CursorComposerHeader>();
+  try {
+    const rows = db.prepare("SELECT composerId, workspaceId, value FROM composerHeaders").all() as Array<{
+      composerId: unknown;
+      workspaceId: unknown;
+      value: unknown;
+    }>;
+    for (const row of rows) {
+      const composerId = helpers.asString(row.composerId);
+      if (!composerId) {
+        continue;
+      }
+      const parsed = helpers.safeJsonParse(helpers.asString(row.value) ?? coerceDbText(row.value));
+      headers.set(composerId, {
+        workspaceId: helpers.asString(row.workspaceId),
+        value: helpers.isObject(parsed) ? parsed : undefined,
+      });
+    }
+  } catch {
+    return headers;
+  }
+  return headers;
+}
+
+function inferCursorUserDirFromStatePath(filePath: string): string | undefined {
+  if (path.basename(filePath) !== "state.vscdb") {
+    return undefined;
+  }
+  const storageKind = path.basename(path.dirname(filePath));
+  if (storageKind === "globalStorage") {
+    return path.dirname(path.dirname(filePath));
+  }
+  if (path.basename(path.dirname(path.dirname(filePath))) === "workspaceStorage") {
+    return path.dirname(path.dirname(path.dirname(filePath)));
+  }
+  return undefined;
+}
+
+function loadCursorWorkspacePathsByStorageId(
+  stateFilePath: string,
+  helpers: Pick<VscodeStateHelpers, "safeJsonParse" | "isObject" | "asString" | "normalizeWorkspacePath">,
+): Map<string, string> {
+  const userDir = inferCursorUserDirFromStatePath(stateFilePath);
+  if (!userDir) {
+    return new Map();
+  }
+  return loadCursorWorkspaceIndex(userDir, helpers).byStorageId;
+}
+
+function upsertCursorComposerSeed(
+  target: Map<string, ExtractedSessionSeed>,
+  seed: ExtractedSessionSeed,
+): void {
+  const existing = target.get(seed.sessionId);
+  if (!existing) {
+    target.set(seed.sessionId, seed);
+    return;
+  }
+  const existingConversation = existing.records.filter((record) => record.pointer !== "meta");
+  const incomingConversation = seed.records.filter((record) => record.pointer !== "meta");
+  const richer = incomingConversation.length > existingConversation.length ? seed : existing;
+  const other = richer === seed ? existing : seed;
+  const metaRecord =
+    richer.records.find((record) => record.pointer === "meta") ??
+    other.records.find((record) => record.pointer === "meta");
+  const conversationRecords = richer.records.filter((record) => record.pointer !== "meta");
+  target.set(seed.sessionId, {
+    sessionId: seed.sessionId,
+    title: richer.title ?? other.title,
+    createdAt: minIso(existing.createdAt, seed.createdAt),
+    updatedAt: maxIso(existing.updatedAt, seed.updatedAt),
+    model: richer.model ?? other.model,
+    workingDirectory: richer.workingDirectory ?? other.workingDirectory,
+    records: metaRecord ? [metaRecord, ...conversationRecords] : conversationRecords,
+  });
 }
 
 function upsertExtractedSeed(

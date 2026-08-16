@@ -7,6 +7,10 @@ dist/
 .cache/
 coverage/
 
+# Isolated git worktrees
+.worktrees/
+.pnpm-store/
+
 # Local runtime data
 .cchistory/
 .cchistory-backups/

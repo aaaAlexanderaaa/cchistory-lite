@@ -176,6 +176,61 @@ Let me chronologically analyze the conversation...`;
     assert.equal(chunks[0]!.originKind, "user_authored");
   });
 
+  test("Cursor timestamp and user_query envelopes keep only the inner prompt as authored", () => {
+    const text = [
+      "<timestamp>label: Saturday, Aug 15, 2026, 6:32 PM (UTC+8)</timestamp>",
+      "<user_query>",
+      "Inspect the Cursor workspace path.",
+      "</user_query>",
+    ].join("\n");
+    const chunks = splitUserText(text, { platform: "cursor" });
+    assert.equal(
+      chunks.some((chunk) => chunk.originKind === "injected_user_shaped" && chunk.text.includes("<timestamp>")),
+      true,
+    );
+    const authored = chunks.filter((chunk) => chunk.originKind === "user_authored");
+    assert.equal(authored.length, 1);
+    assert.equal(authored[0]?.text, "Inspect the Cursor workspace path.");
+  });
+
+  test("Cursor manually_attached_skills envelopes are injected rather than the session prompt", () => {
+    const text = [
+      "<manually_attached_skills>review-agent</manually_attached_skills>",
+      "<user_query>Ship the Cursor parser fix.</user_query>",
+    ].join("\n");
+    const chunks = splitUserText(text, { platform: "cursor" });
+    assert.equal(
+      chunks.some((chunk) => chunk.originKind === "injected_user_shaped" && chunk.text.includes("manually_attached_skills")),
+      true,
+    );
+    assert.equal(chunks.at(-1)?.originKind, "user_authored");
+    assert.equal(chunks.at(-1)?.text, "Ship the Cursor parser fix.");
+  });
+
+  test("Cursor user_info envelopes around a user_query stay injected", () => {
+    const text = [
+      "<user_info>OS: darwin</user_info>",
+      "<user_query>Inspect the Cursor workspace path.</user_query>",
+    ].join("\n");
+    const chunks = splitUserText(text, { platform: "cursor" });
+    assert.equal(
+      chunks.some((chunk) => chunk.originKind === "injected_user_shaped" && chunk.text.includes("user_info")),
+      true,
+    );
+    const authored = chunks.filter((chunk) => chunk.originKind === "user_authored");
+    assert.equal(authored.length, 1);
+    assert.equal(authored[0]?.text, "Inspect the Cursor workspace path.");
+    assert.doesNotMatch(authored[0]?.text ?? "", /user_info|darwin/u);
+  });
+
+  test("closed Cursor user_query envelopes on other platforms stay authored", () => {
+    const text = "<user_query>\nShip the Cursor parser fix.\n</user_query>";
+    const chunks = splitUserText(text, { platform: "claude_code" });
+    assert.equal(chunks.length, 1);
+    assert.equal(chunks[0]!.originKind, "user_authored");
+    assert.equal(chunks[0]!.text, text);
+  });
+
   test("Codex scaffold sequence keeps only the actual request as user-authored", () => {
     const text = [
       "# AGENTS.md instructions for /workspace/app",

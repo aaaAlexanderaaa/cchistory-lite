@@ -67,7 +67,7 @@ referenced by its slot id.
 | `claude_code` | Claude Code | `~/.claude/projects` | stable |
 | `factory_droid` | Factory Droid | `~/.factory/sessions` | stable |
 | `amp` | AMP | `~/.local/share/amp/threads` | stable |
-| `cursor` | Cursor | `~/.cursor/projects`, platform Cursor `User` dir | stable |
+| `cursor` | Cursor | `~/.cursor/projects`, platform Cursor `User` dir, `~/.cursor/chats` | stable |
 | `antigravity` | Antigravity | platform Antigravity `User` dir, `~/.gemini/antigravity/brain` | stable |
 | `gemini` | Gemini CLI | `~/.gemini` | stable |
 | `openclaw` | OpenClaw | `~/.openclaw/agents` | stable |

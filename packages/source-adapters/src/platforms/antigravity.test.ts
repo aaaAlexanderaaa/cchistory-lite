@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile, realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile, realpath, stat } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { runSourceProbe } from "../index.js";
+import { runSourceProbe, streamSourceProbe } from "../index.js";
 import { 
   buildAntigravityLiveSessionSeed, 
   extractAntigravityLiveSeeds 
@@ -220,6 +221,65 @@ test("runSourceProbe does not backfill Antigravity repo_remote from current git 
     assert.equal(projectObservation.evidence.repo_remote, undefined);
     assert.equal(projectObservation.evidence.repo_fingerprint, undefined);
     assert.equal(projectObservation.evidence.debug_summary, "workspace signal with git-backed repository root");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe probes an oversized Antigravity state DB instead of skipping it", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-antigravity-oversized-"));
+
+  try {
+    const userDir = path.join(tempRoot, "Library", "Application Support", "Antigravity", "User");
+    const workspaceDir = path.join(userDir, "workspaceStorage", "antigravity-oversized");
+    await mkdir(workspaceDir, { recursive: true });
+    const dbPath = path.join(workspaceDir, "state.vscdb");
+    seedAntigravityTrajectoryStateDb(dbPath, {
+      trajectoryId: "antigravity-oversized-session",
+      title: "Antigravity oversized fixture",
+      workspacePath: "/workspace/antigravity-oversized",
+      createdAt: "2026-03-12T01:14:03.000Z",
+      updatedAt: "2026-03-12T01:16:13.000Z",
+    });
+    const padding = new DatabaseSync(dbPath);
+    try {
+      padding.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)").run("padding", "x".repeat(1024));
+    } finally {
+      padding.close();
+    }
+    await writeFile(
+      path.join(workspaceDir, "workspace.json"),
+      JSON.stringify({ folder: "/workspace/antigravity-oversized" }),
+      "utf8",
+    );
+    const dbSize = (await stat(dbPath)).size;
+    assert.ok(dbSize > 256, "fixture sqlite must exceed the test size cap");
+
+    const source = createSourceDefinition("src-antigravity-oversized", "antigravity", userDir);
+    const probeOptions = { source_ids: [source.id], max_file_bytes: 256 };
+    const [payload] = (await runSourceProbe(probeOptions, [source])).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.source.sync_status, "healthy");
+    assert.equal(payload.source.error_message, undefined);
+    assert.ok(payload.sessions.length > 0);
+
+    const fileEvents = [];
+    for await (const event of streamSourceProbe(probeOptions, [source])) {
+      if (event.kind === "file_error" || event.kind === "file_skip" || event.kind === "file_chunk") {
+        fileEvents.push(event);
+      }
+    }
+    assert.equal(fileEvents.filter((event) => event.kind === "file_error" || event.kind === "file_skip").length, 0);
+    const fileChunk = fileEvents.find((event) => event.kind === "file_chunk");
+    assert.ok(fileChunk);
+    assert.equal(fileChunk.kind, "file_chunk");
+    for (const bytes of fileChunk.chunk.trusted_bytes_by_blob_id.values()) {
+      assert.ok(
+        bytes.byteLength < dbSize,
+        `oversized sqlite must not be fully materialized (${bytes.byteLength} >= ${dbSize})`,
+      );
+    }
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

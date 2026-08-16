@@ -89,6 +89,12 @@ export function splitUserText(
     return commandEnvelope;
   }
 
+  const cursorEnvelope =
+    options.platform === "cursor" ? splitCursorPromptEnvelope(normalized) : undefined;
+  if (cursorEnvelope) {
+    return cursorEnvelope;
+  }
+
   const requestMarker = "[User Request]";
   const requestIndex = normalized.indexOf(requestMarker);
   if (requestIndex >= 0) {
@@ -249,6 +255,68 @@ export function isDelegatedInstructionUserText(
 
 export function isAutomationTriggerUserText(text: string): boolean {
   return text.startsWith("[cron:");
+}
+
+export function splitCursorPromptEnvelope(text: string): UserTextChunk[] | undefined {
+  const tagPattern =
+    /<(timestamp|manually_attached_skills|user_query|user_info|agent_transcripts|attached_files|open_and_recently_viewed_files|cursor_rules_context|always_applied_workspace_rules|system_reminder|system-reminder)>[\s\S]*?<\/\1>/gu;
+  const matches = [...text.matchAll(tagPattern)];
+  if (matches.length === 0) {
+    return undefined;
+  }
+
+  const chunks: UserTextChunk[] = [];
+  const authoredParts: string[] = [];
+  let cursor = 0;
+  for (const match of matches) {
+    const index = match.index ?? 0;
+    const before = text.slice(cursor, index).trim();
+    if (before) {
+      pushCursorEnvelopeResidual(chunks, authoredParts, before);
+    }
+    const tagName = match[1];
+    const envelope = match[0];
+    chunks.push({
+      originKind: "injected_user_shaped",
+      text: envelope,
+      displayPolicy: "collapse",
+    });
+    if (tagName === "user_query") {
+      const inner = envelope.replace(/^<user_query>/u, "").replace(/<\/user_query>$/u, "").trim();
+      if (inner) {
+        authoredParts.push(inner);
+      }
+    }
+    cursor = index + envelope.length;
+  }
+  const after = text.slice(cursor).trim();
+  if (after) {
+    pushCursorEnvelopeResidual(chunks, authoredParts, after);
+  }
+  const authored = authoredParts.join("\n\n").trim();
+  if (authored) {
+    chunks.push({
+      originKind: "user_authored",
+      text: authored,
+    });
+  }
+  return chunks.length > 0 ? chunks : undefined;
+}
+
+function pushCursorEnvelopeResidual(
+  chunks: UserTextChunk[],
+  authoredParts: string[],
+  residual: string,
+): void {
+  if (/^<[\w:-]+[\s>]/u.test(residual)) {
+    chunks.push({
+      originKind: "injected_user_shaped",
+      text: residual,
+      displayPolicy: "collapse",
+    });
+    return;
+  }
+  authoredParts.push(residual);
 }
 
 export function splitLocalCommandEnvelope(text: string): UserTextChunk[] | undefined {

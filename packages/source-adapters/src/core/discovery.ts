@@ -99,8 +99,8 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     id: "cursor:vscode-state-sqlite:v1",
     family: DEFAULT_SOURCE_FAMILY,
     platform: "cursor",
-    parser_version: "cursor-parser@2026-03-11.1",
-    description: "Cursor project transcripts plus VS Code state.vscdb fallbacks, with experimental chat-store metadata/readable-fragment recovery from .cursor/chats/**/store.db.",
+    parser_version: "cursor-parser@2026-08-15.2",
+    description: "Cursor project transcripts, VS Code state.vscdb composer/bubble rows (including composer-prefixed cursorDiskKV keys), and experimental chat-store recovery from .cursor/chats/**/store.db. Default discovery keeps scanning the official User dir and chat stores even when ~/.cursor/projects is selected.",
     capabilities: ["session_meta", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
   },
   antigravity: {

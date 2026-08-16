@@ -21,6 +21,7 @@ import {
 } from "../platforms/antigravity/runtime.js";
 import { parseClaudeRecord as parseClaudeRuntimeRecord } from "../platforms/claude-code/runtime.js";
 import { parseCodexRecord as parseCodexRuntimeRecord } from "../platforms/codex/runtime.js";
+import { resolveCursorTranscriptWorkspacePath } from "../platforms/cursor/runtime.js";
 import { parseFactoryRecord as parseFactoryRuntimeRecord } from "../platforms/factory-droid/runtime.js";
 import {
   extractGenericContentItems as extractGenericContentItemsRuntime,
@@ -394,7 +395,11 @@ export function parseRecord(
     context.source.platform === "lobechat" ||
     context.source.platform === "zcode"
   ) {
-    return parseGenericConversationRuntimeRecord(context, record, parsed, draft, {
+    const cursorParsed =
+      context.source.platform === "cursor"
+        ? applyCursorTranscriptWorkspace(context.filePath, parsed, draft)
+        : parsed;
+    return parseGenericConversationRuntimeRecord(context, record, cursorParsed, draft, {
       ...buildCommonParseRuntimeHelpers(),
       safeJsonParse,
     });
@@ -414,7 +419,7 @@ export async function extractMultiSessionSeeds(
 ): Promise<ExtractedSessionSeed[] | undefined> {
   if (source.platform === "cursor" && path.basename(filePath) === "state.vscdb") {
     const extractVscodeStateSeeds = await loadExtractVscodeStateSeeds();
-    return extractVscodeStateSeeds(source, filePath, {
+    return (await extractVscodeStateSeeds(source, filePath, {
       safeJsonParse,
       isObject,
       asArray,
@@ -434,7 +439,7 @@ export async function extractMultiSessionSeeds(
       extractRichTextText,
       collectConversationSeedsFromValue,
       firstDefinedNumber,
-    });
+    })) ?? [];
   }
   if (source.platform === "antigravity" && path.basename(filePath) === "state.vscdb") {
     const extractVscodeStateSeeds = await loadExtractVscodeStateSeeds();
@@ -616,6 +621,19 @@ export function isOrdinaryResumeEligibleSourceFile(
   return true;
 }
 
+export function fileIdentityFromStats(
+  before: { size: number; mtimeMs: number; ctimeMs: number },
+  after: { size: number; mtimeMs: number; ctimeMs: number },
+  capturedByteLength?: number,
+): boolean {
+  return (
+    before.size === after.size &&
+    before.mtimeMs === after.mtimeMs &&
+    before.ctimeMs === after.ctimeMs &&
+    (capturedByteLength === undefined || capturedByteLength === after.size)
+  );
+}
+
 export async function captureBlob(
   source: SourceDefinition,
   hostId: string,
@@ -625,11 +643,7 @@ export async function captureBlob(
   const beforeStats = await fs.stat(filePath);
   const fileBuffer = await fs.readFile(filePath);
   const afterStats = await fs.stat(filePath);
-  const fileIdentityStable =
-    beforeStats.size === afterStats.size &&
-    beforeStats.mtimeMs === afterStats.mtimeMs &&
-    beforeStats.ctimeMs === afterStats.ctimeMs &&
-    fileBuffer.byteLength === afterStats.size;
+  const fileIdentityStable = fileIdentityFromStats(beforeStats, afterStats, fileBuffer.byteLength);
   const checksum = sha1(fileBuffer);
   const content_max_timestamp = isIncrementalJsonlPlatform(source.platform)
     ? extractContentMaxTimestamp(fileBuffer)
@@ -708,11 +722,7 @@ export async function captureBlobStreaming(
   }
 
   const afterStats = await fs.stat(filePath);
-  const fileIdentityStable =
-    fileIdentityStableBefore.size === afterStats.size &&
-    fileIdentityStableBefore.mtimeMs === afterStats.mtimeMs &&
-    fileIdentityStableBefore.ctimeMs === afterStats.ctimeMs &&
-    totalBytes === afterStats.size;
+  const fileIdentityStable = fileIdentityFromStats(fileIdentityStableBefore, afterStats, totalBytes);
   const checksum = hasher.digest("hex");
   const content_max_timestamp = isIncrementalJsonlPlatform(source.platform)
     ? extractContentMaxTimestamp(tail)
@@ -1597,6 +1607,33 @@ export function extractRichTextText(value: string): string | undefined {
   visit(parsed);
   const text = parts.join("").trim();
   return text || undefined;
+}
+
+function applyCursorTranscriptWorkspace(
+  filePath: string,
+  parsed: Record<string, unknown>,
+  draft: SessionDraft,
+): Record<string, unknown> {
+  if (
+    draft.working_directory ||
+    parsed.cwd ||
+    parsed.workingDirectory ||
+    parsed.working_directory ||
+    parsed.workspacePath
+  ) {
+    return parsed;
+  }
+  const workspacePath = resolveCursorTranscriptWorkspacePath(filePath, {
+    safeJsonParse,
+    isObject,
+    asString,
+    normalizeWorkspacePath,
+  });
+  if (!workspacePath) {
+    return parsed;
+  }
+  draft.working_directory = workspacePath;
+  return { ...parsed, cwd: workspacePath };
 }
 
 async function loadExtractVscodeStateSeeds(): Promise<typeof import("./vscode-state.js").extractVscodeStateSeeds> {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { access, appendFile, mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -987,6 +988,120 @@ test("Lite opens upstream native SQLite fixture data read-only", async () => {
   }
 });
 
+test("Lite Cursor composer-plus-transcript merge satisfies the projection contract", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-cursor-overlap-"));
+  try {
+    const composerId = "composer-lite-overlap";
+    const projectsRoot = path.join(tempRoot, ".cursor", "projects");
+    const transcriptDir = path.join(projectsRoot, "Users-test-my-app", "agent-transcripts", composerId);
+    const userDir = path.join(tempRoot, "Library", "Application Support", "Cursor", "User");
+    await mkdir(transcriptDir, { recursive: true });
+    await mkdir(path.join(userDir, "globalStorage"), { recursive: true });
+    await mkdir(path.join(userDir, "workspaceStorage", "ws-overlap"), { recursive: true });
+    await writeFile(
+      path.join(transcriptDir, `${composerId}.jsonl`),
+      [
+        {
+          role: "user",
+          message: { content: [{ type: "text", text: "Inspect from transcript." }] },
+          createdAt: "2026-03-10T03:30:00.000Z",
+        },
+        {
+          role: "assistant",
+          message: { content: [{ type: "text", text: "Transcript reply." }] },
+          createdAt: "2026-03-10T03:30:01.000Z",
+        },
+        {
+          role: "user",
+          message: { content: [{ type: "text", text: "Follow up from transcript." }] },
+          createdAt: "2026-03-10T03:31:00.000Z",
+        },
+        {
+          role: "assistant",
+          message: { content: [{ type: "text", text: "Second transcript reply." }] },
+          createdAt: "2026-03-10T03:31:01.000Z",
+        },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(userDir, "workspaceStorage", "ws-overlap", "workspace.json"),
+      JSON.stringify({ folder: "file:///Users/test/my_app" }),
+      "utf8",
+    );
+    seedCursorComposerDb(path.join(userDir, "globalStorage", "state.vscdb"), composerId);
+
+    const probe = await runSourceProbe({}, [
+      {
+        id: "src-cursor-lite-overlap",
+        slot_id: "cursor",
+        family: "local_coding_agent",
+        platform: "cursor",
+        display_name: "Cursor",
+        base_dir: projectsRoot,
+      },
+    ]);
+    const lite = buildLiveSnapshot(probe);
+    assert.deepEqual(lite.projectionIssues, []);
+    assert.equal(lite.listResolvedSessions().length, 1);
+    assert.equal(lite.listResolvedTurns().length, 2);
+    assert.equal(lite.listResolvedSessions()[0]?.working_directory, "/Users/test/my_app");
+    assert.equal(
+      lite.listResolvedTurns().some((turn) => turn.canonical_text === "Follow up from transcript."),
+      true,
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Lite Cursor composer key-format and storage-root overlap satisfies the projection contract", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-cursor-composer-overlap-"));
+  try {
+    const composerId = "composer-lite-both-stores";
+    const userDir = path.join(tempRoot, "Cursor", "User");
+    const workspaceDir = path.join(userDir, "workspaceStorage", "ws-both-stores");
+    await mkdir(path.join(userDir, "globalStorage"), { recursive: true });
+    await mkdir(workspaceDir, { recursive: true });
+    seedCursorComposerDb(path.join(userDir, "globalStorage", "state.vscdb"), composerId, {
+      title: "Cursor global composer",
+      userText: "Inspect from global composer.",
+      includeAllComposers: true,
+    });
+    seedCursorComposerDb(path.join(workspaceDir, "state.vscdb"), composerId, {
+      title: "Cursor workspace composer",
+      userText: "Inspect from workspace composer.",
+      workspacePath: "/Users/test/workspace_app",
+    });
+    await writeFile(
+      path.join(workspaceDir, "workspace.json"),
+      JSON.stringify({ folder: "file:///Users/test/workspace_app" }),
+      "utf8",
+    );
+
+    const probe = await runSourceProbe({}, [
+      {
+        id: "src-cursor-lite-composer-overlap",
+        slot_id: "cursor",
+        family: "local_coding_agent",
+        platform: "cursor",
+        display_name: "Cursor",
+        base_dir: userDir,
+      },
+    ]);
+    const lite = buildLiveSnapshot(probe);
+    assert.deepEqual(lite.projectionIssues, []);
+    assert.equal(lite.listResolvedSessions().length, 1);
+    assert.equal(lite.listResolvedTurns().length, 1);
+    assert.equal(lite.listResolvedTurns()[0]?.canonical_text, "Inspect from workspace composer.");
+    assert.equal(lite.listResolvedSessions()[0]?.working_directory, "/Users/test/workspace_app");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Lite and Full agree on a synthetic Kimi source through the shared probe pipeline", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-kimi-parity-"));
   try {
@@ -1332,6 +1447,63 @@ function codexTurnJsonl(_sessionId: string, userText: string, minute: string): s
       },
     }),
   ].join("\n");
+}
+
+function seedCursorComposerDb(
+  dbPath: string,
+  composerId: string,
+  options: {
+    title?: string;
+    userText?: string;
+    workspacePath?: string;
+    includeAllComposers?: boolean;
+  } = {},
+): void {
+  const title = options.title ?? "Cursor shared composer";
+  const userText = options.userText ?? "Inspect from composer.";
+  const workspacePath = options.workspacePath ?? "/Users/test/my_app";
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec("CREATE TABLE cursorDiskKV (key TEXT PRIMARY KEY, value BLOB NOT NULL)");
+    const insert = db.prepare("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)");
+    const composer = {
+      composerId,
+      name: title,
+      modelConfig: { maxMode: false, modelName: "composer-2" },
+      workspaceIdentifier: {
+        id: "ws-overlap",
+        uri: { fsPath: workspacePath, path: workspacePath, scheme: "file" },
+      },
+      fullConversationHeadersOnly: [
+        { bubbleId: "bubble-user", type: 1 },
+        { bubbleId: "bubble-assistant", type: 2 },
+      ],
+    };
+    insert.run(`composerData:${composerId}`, JSON.stringify(composer));
+    if (options.includeAllComposers) {
+      insert.run("composer.composerData", JSON.stringify({ allComposers: [composer] }));
+    }
+    insert.run(
+      `bubbleId:${composerId}:bubble-user`,
+      JSON.stringify({
+        bubbleId: "bubble-user",
+        type: 1,
+        createdAt: "2026-03-10T03:30:00.000Z",
+        text: userText,
+      }),
+    );
+    insert.run(
+      `bubbleId:${composerId}:bubble-assistant`,
+      JSON.stringify({
+        bubbleId: "bubble-assistant",
+        type: 2,
+        createdAt: "2026-03-10T03:30:01.000Z",
+        text: "Composer reply.",
+      }),
+    );
+  } finally {
+    db.close();
+  }
 }
 
 function jsonNormalize<T>(value: T): T {

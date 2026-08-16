@@ -564,8 +564,10 @@ test("runSourceProbe preserves real mock_data coverage across all stable adapter
   assert.ok(cursorPayload.sessions.length >= 2);
   assert.ok(cursorPayload.turns.length >= 1);
   assert.ok(cursorPayload.contexts.length >= 1);
-  assert.ok(cursorPayload.records.length >= 30);
-  assert.ok(cursorPayload.loss_audits.length >= 20);
+  assert.ok(cursorPayload.records.length >= 8);
+  assert.equal(cursorPayload.sessions.some((session) => session.id === "sess:cursor:state"), false);
+  assert.equal(cursorPayload.sessions.some((session) => session.id === "sess:cursor:store"), false);
+  assert.ok(cursorPayload.sessions.some((session) => session.id.includes("chat-store")));
   assert.ok(cursorPayload.sessions.some((session) => typeof session.working_directory === "string" && session.working_directory.length > 0));
   assertParserMetadata(cursorPayload);
 

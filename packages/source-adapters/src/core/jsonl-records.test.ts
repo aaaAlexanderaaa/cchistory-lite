@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import type { RawRecord, SourceDefinition } from "@cchistory/domain";
-import { captureBlob, captureBlobStreaming } from "./parser.js";
+import { captureBlob, captureBlobStreaming, fileIdentityFromStats } from "./parser.js";
 import {
   collectJsonlRecordsStreaming,
   extractContentMaxTimestamp,
@@ -110,6 +110,16 @@ test("extractContentMaxTimestamp returns undefined when no qualifying records ex
     "utf8",
   );
   assert.equal(extractContentMaxTimestamp(buffer), undefined);
+});
+
+test("fileIdentityFromStats matches captureBlob's before/after rule", () => {
+  const stats = { size: 1024, mtimeMs: 100, ctimeMs: 90 };
+  assert.equal(fileIdentityFromStats(stats, stats), true);
+  assert.equal(fileIdentityFromStats(stats, stats, 1024), true);
+  assert.equal(fileIdentityFromStats(stats, stats, 512), false);
+  assert.equal(fileIdentityFromStats(stats, { ...stats, mtimeMs: 101 }), false);
+  assert.equal(fileIdentityFromStats(stats, { ...stats, ctimeMs: 91 }), false);
+  assert.equal(fileIdentityFromStats(stats, { ...stats, size: 2048 }), false);
 });
 
 test("extractContentMaxTimestamp ignores records older than the cut when reading only the tail", () => {

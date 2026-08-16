@@ -1,3 +1,4 @@
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { SourcePlatform } from "@cchistory/domain";
@@ -60,6 +61,7 @@ export function buildCursorComposerSeed(
   rowMap: Map<string, string>,
   defaultWorkingDirectory: string | undefined,
   helpers: CursorRuntimeHelpers,
+  workspacePathById: ReadonlyMap<string, string> = new Map(),
 ): ExtractedSessionSeed | undefined {
   const composerId =
     (helpers.asString(composer.composerId) ??
@@ -68,21 +70,24 @@ export function buildCursorComposerSeed(
     helpers.sha1(storageKey);
   const sessionId = `sess:${platform}:${composerId}`;
   const meta = helpers.extractGenericSessionMetadata(composer);
-  const workingDirectory = meta.workspacePath ?? defaultWorkingDirectory;
-  const bubbleRefs = extractBubbleRefsFromComposer(composer, helpers);
-  const messageRecords = bubbleRefs
-    .map((bubbleRef) => {
-      const rawBubble = rowMap.get(bubbleRef) ?? rowMap.get(`bubbleId:${bubbleRef}`);
-      if (!rawBubble) {
-        return undefined;
-      }
-      const parsedBubble = helpers.safeJsonParse(rawBubble);
-      if (!helpers.isObject(parsedBubble)) {
-        return undefined;
-      }
-      return normalizeCursorBubbleRecord(parsedBubble, workingDirectory, helpers);
-    })
-    .filter((record): record is { observedAt?: string; record: Record<string, unknown> } => record !== undefined);
+  const workingDirectory =
+    extractCursorWorkspacePath(composer, helpers, workspacePathById) ??
+    meta.workspacePath ??
+    defaultWorkingDirectory;
+  const composerModel = extractCursorModel(composer, helpers) ?? meta.model;
+  const explicitBubbleRefs = extractBubbleRefsFromComposer(composer, helpers);
+  const bubbleRefs =
+    explicitBubbleRefs.length > 0 ? explicitBubbleRefs : collectComposerPrefixedBubbleRefs(composerId, rowMap);
+  let messageRecords = resolveCursorBubbleRecords(bubbleRefs, composerId, rowMap, workingDirectory, helpers);
+  if (messageRecords.length === 0 && explicitBubbleRefs.length > 0) {
+    messageRecords = resolveCursorBubbleRecords(
+      collectComposerPrefixedBubbleRefs(composerId, rowMap),
+      composerId,
+      rowMap,
+      workingDirectory,
+      helpers,
+    );
+  }
 
   if (messageRecords.length === 0) {
     const fallback = helpers.collectConversationSeedsFromValue(platform, composer, storageKey, {
@@ -93,15 +98,20 @@ export function buildCursorComposerSeed(
     return fallback[0];
   }
 
+  const bubbleModel = messageRecords
+    .map((message) => helpers.asString(message.record.model))
+    .find((value): value is string => Boolean(value));
+  const model = composerModel ?? bubbleModel;
+
   const records: ExtractedSessionSeed["records"] = [];
-  if (meta.title || meta.model || workingDirectory) {
+  if (meta.title || model || workingDirectory) {
     records.push({
       pointer: "meta",
       observedAt: messageRecords[0]?.observedAt ?? helpers.nowIso(),
       rawJson: JSON.stringify({
         id: sessionId,
         title: meta.title,
-        model: meta.model,
+        model,
         cwd: workingDirectory,
       }),
     });
@@ -121,7 +131,7 @@ export function buildCursorComposerSeed(
     title: meta.title,
     createdAt: messageRecords[0]?.observedAt,
     updatedAt: messageRecords.at(-1)?.observedAt,
-    model: meta.model,
+    model,
     workingDirectory,
     records,
   };
@@ -471,6 +481,56 @@ function coerceBlobBuffer(value: unknown): Buffer | undefined {
 }
 
 
+function resolveCursorBubbleRecords(
+  bubbleRefs: readonly string[],
+  composerId: string,
+  rowMap: Map<string, string>,
+  workingDirectory: string | undefined,
+  helpers: CursorRuntimeHelpers,
+): Array<{ observedAt?: string; record: Record<string, unknown> }> {
+  return bubbleRefs
+    .map((bubbleRef) => {
+      const rawBubble = resolveCursorBubbleValue(bubbleRef, composerId, rowMap);
+      if (!rawBubble) {
+        return undefined;
+      }
+      const parsedBubble = helpers.safeJsonParse(rawBubble);
+      if (!helpers.isObject(parsedBubble)) {
+        return undefined;
+      }
+      return normalizeCursorBubbleRecord(parsedBubble, workingDirectory, helpers);
+    })
+    .filter((record): record is { observedAt?: string; record: Record<string, unknown> } => record !== undefined);
+}
+
+function resolveCursorBubbleValue(
+  bubbleRef: string,
+  composerId: string,
+  rowMap: Map<string, string>,
+): string | undefined {
+  const trimmed = bubbleRef.trim();
+  const withPrefix = trimmed.startsWith("bubbleId:") ? trimmed : `bubbleId:${trimmed}`;
+  const bareId = withPrefix.slice("bubbleId:".length);
+  return (
+    rowMap.get(trimmed) ??
+    rowMap.get(withPrefix) ??
+    rowMap.get(`bubbleId:${trimmed}`) ??
+    rowMap.get(`bubbleId:${composerId}:${bareId}`) ??
+    rowMap.get(`bubbleId:${composerId}:${trimmed}`)
+  );
+}
+
+function collectComposerPrefixedBubbleRefs(composerId: string, rowMap: Map<string, string>): string[] {
+  const prefix = `bubbleId:${composerId}:`;
+  const refs: string[] = [];
+  for (const key of rowMap.keys()) {
+    if (key.startsWith(prefix)) {
+      refs.push(key);
+    }
+  }
+  return refs;
+}
+
 function extractBubbleRefsFromComposer(value: unknown, helpers: CursorRuntimeHelpers): string[] {
   const refs = new Set<string>();
 
@@ -544,6 +604,7 @@ function normalizeCursorBubbleRecord(
       usage: helpers.extractTokenUsage(value),
       stopReason: helpers.normalizeStopReason(value.stopReason),
       cwd: defaultWorkingDirectory,
+      model: extractCursorBubbleModel(value, helpers),
     },
   };
 }
@@ -606,4 +667,195 @@ function extractCursorWorkspaceTitle(
     }))
     .filter((composer) => composer.title)
     .sort((left, right) => right.sortKey - left.sortKey)[0]?.title;
+}
+
+export function extractCursorWorkspacePath(
+  composer: Record<string, unknown>,
+  helpers: Pick<CursorRuntimeHelpers, "isObject" | "asString" | "asArray" | "normalizeWorkspacePath">,
+  workspacePathById: ReadonlyMap<string, string> = new Map(),
+): string | undefined {
+  const identifier = helpers.isObject(composer.workspaceIdentifier) ? composer.workspaceIdentifier : undefined;
+  const uri = identifier && helpers.isObject(identifier.uri) ? identifier.uri : undefined;
+  const fromUri =
+    (uri ? helpers.asString(uri.fsPath) : undefined) ??
+    (uri ? helpers.asString(uri.path) : undefined) ??
+    (uri ? helpers.asString(uri.external) : undefined) ??
+    (typeof identifier?.uri === "string" ? helpers.asString(identifier.uri) : undefined);
+  const normalizedFromUri = fromUri ? helpers.normalizeWorkspacePath(fromUri) : undefined;
+  if (normalizedFromUri) {
+    return normalizedFromUri;
+  }
+
+  const storageId =
+    (identifier ? helpers.asString(identifier.id) : undefined) ?? helpers.asString(composer.workspaceId);
+  const mapped = storageId ? workspacePathById.get(storageId) : undefined;
+  if (mapped) {
+    return mapped;
+  }
+
+  for (const repo of helpers.asArray(composer.trackedGitRepos)) {
+    if (!helpers.isObject(repo)) {
+      continue;
+    }
+    const repoPath = helpers.asString(repo.repoPath);
+    const normalizedRepoPath = repoPath ? helpers.normalizeWorkspacePath(repoPath) : undefined;
+    if (normalizedRepoPath) {
+      return normalizedRepoPath;
+    }
+  }
+  return undefined;
+}
+
+export function extractCursorModel(
+  composer: Record<string, unknown>,
+  helpers: Pick<CursorRuntimeHelpers, "isObject" | "asString">,
+): string | undefined {
+  const modelConfig = helpers.isObject(composer.modelConfig) ? composer.modelConfig : undefined;
+  return (
+    (modelConfig ? helpers.asString(modelConfig.modelName) ?? helpers.asString(modelConfig.model) : undefined) ??
+    helpers.asString(composer.modelName) ??
+    helpers.asString(composer.model)
+  );
+}
+
+function extractCursorBubbleModel(
+  value: Record<string, unknown>,
+  helpers: Pick<CursorRuntimeHelpers, "isObject" | "asString">,
+): string | undefined {
+  const modelInfo = helpers.isObject(value.modelInfo) ? value.modelInfo : undefined;
+  return (
+    (modelInfo ? helpers.asString(modelInfo.modelName) ?? helpers.asString(modelInfo.model) : undefined) ??
+    helpers.asString(value.modelName) ??
+    helpers.asString(value.model)
+  );
+}
+
+const CURSOR_WORKSPACE_INDEX_CACHE = new Map<string, {
+  byStorageId: Map<string, string>;
+  byEncodedName: Map<string, string>;
+}>();
+
+export function clearCursorWorkspaceIndexCache(): void {
+  CURSOR_WORKSPACE_INDEX_CACHE.clear();
+}
+
+export function encodeCursorProjectDirectoryName(workspacePath: string): string {
+  return workspacePath.replace(/[\\/._:]+/g, "-").replace(/^-+|-+$/gu, "");
+}
+
+export function loadCursorWorkspaceIndex(
+  userDir: string,
+  helpers: Pick<CursorRuntimeHelpers, "safeJsonParse" | "isObject" | "asString" | "normalizeWorkspacePath">,
+): { byStorageId: Map<string, string>; byEncodedName: Map<string, string> } {
+  const cached = CURSOR_WORKSPACE_INDEX_CACHE.get(userDir);
+  if (cached) {
+    return cached;
+  }
+  const byStorageId = new Map<string, string>();
+  const byEncodedName = new Map<string, string>();
+  const storageRoot = path.join(userDir, "workspaceStorage");
+  if (existsSync(storageRoot)) {
+    try {
+      for (const entry of readdirSync(storageRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+        const folder = readWorkspaceJsonFolderSync(
+          path.join(storageRoot, entry.name, "workspace.json"),
+          helpers,
+        );
+        if (!folder) {
+          continue;
+        }
+        byStorageId.set(entry.name, folder);
+        const encoded = encodeCursorProjectDirectoryName(folder);
+        if (!byEncodedName.has(encoded)) {
+          byEncodedName.set(encoded, folder);
+        }
+      }
+    } catch {
+      /* keep whatever we collected */
+    }
+  }
+  const index = { byStorageId, byEncodedName };
+  CURSOR_WORKSPACE_INDEX_CACHE.set(userDir, index);
+  return index;
+}
+
+export function resolveCursorTranscriptWorkspacePath(
+  filePath: string,
+  helpers: Pick<CursorRuntimeHelpers, "safeJsonParse" | "isObject" | "asString" | "normalizeWorkspacePath">,
+): string | undefined {
+  const layout = parseCursorAgentTranscriptLayout(filePath);
+  if (!layout) {
+    return undefined;
+  }
+  return loadCursorEncodedWorkspaceIndex(layout.homeDir, helpers).get(layout.encodedProject);
+}
+
+function parseCursorAgentTranscriptLayout(
+  filePath: string,
+): { homeDir: string; encodedProject: string } | undefined {
+  const normalized = filePath.replace(/\\/g, "/");
+  const marker = "/.cursor/projects/";
+  const index = normalized.indexOf(marker);
+  if (index < 0 || !normalized.includes("/agent-transcripts/")) {
+    return undefined;
+  }
+  const encodedProject = normalized.slice(index + marker.length).split("/")[0];
+  if (!encodedProject) {
+    return undefined;
+  }
+  return {
+    homeDir: normalized.slice(0, index),
+    encodedProject,
+  };
+}
+
+function loadCursorEncodedWorkspaceIndex(
+  homeDir: string,
+  helpers: Pick<CursorRuntimeHelpers, "safeJsonParse" | "isObject" | "asString" | "normalizeWorkspacePath">,
+): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const userDir of cursorUserDirs(homeDir)) {
+    for (const [encoded, folder] of loadCursorWorkspaceIndex(userDir, helpers).byEncodedName) {
+      if (!index.has(encoded)) {
+        index.set(encoded, folder);
+      }
+    }
+  }
+  return index;
+}
+
+function cursorUserDirs(homeDir: string): string[] {
+  return [
+    path.join(homeDir, "Library", "Application Support", "Cursor", "User"),
+    path.join(homeDir, "AppData", "Roaming", "Cursor", "User"),
+    path.join(homeDir, ".config", "Cursor", "User"),
+    path.join(homeDir, ".config", "cursor", "User"),
+  ];
+}
+
+function readWorkspaceJsonFolderSync(
+  workspaceJsonPath: string,
+  helpers: Pick<CursorRuntimeHelpers, "safeJsonParse" | "isObject" | "asString" | "normalizeWorkspacePath">,
+): string | undefined {
+  let raw: string;
+  try {
+    raw = readFileSync(workspaceJsonPath, "utf8");
+  } catch {
+    return undefined;
+  }
+  const parsed = helpers.safeJsonParse(raw);
+  if (!helpers.isObject(parsed)) {
+    return undefined;
+  }
+  const folder =
+    helpers.asString(parsed.folder) ??
+    helpers.asString(parsed.path) ??
+    helpers.asString(parsed.uri) ??
+    (helpers.isObject(parsed.workspace)
+      ? helpers.asString(parsed.workspace.path) ?? helpers.asString(parsed.workspace.uri)
+      : undefined);
+  return folder ? helpers.normalizeWorkspacePath(folder) : undefined;
 }
