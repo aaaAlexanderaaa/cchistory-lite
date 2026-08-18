@@ -1,0 +1,10 @@
+{"type":"system","content":"You are Grok fixture assistant.","timestamp":"2026-03-09T06:00:00.000Z"}
+{"type":"user","content":[{"type":"text","text":"Review the Grok adapter boundary."}],"timestamp":"2026-03-09T06:01:00.000Z"}
+{"type":"user","content":[{"type":"text","text":"Project instructions fixture."}],"synthetic_reason":"project_instructions","timestamp":"2026-03-09T06:01:30.000Z"}
+{"type":"reasoning","id":"r1","status":"completed","summary":[{"type":"summary_text","text":"Inspecting the source shape."}],"encrypted_content":"enc-fixture","timestamp":"2026-03-09T06:02:00.000Z"}
+{"type":"assistant","content":"I found the Grok session stream.","model_id":"grok-4.6","model_fingerprint":"fp-fixture","reasoning_effort":"high","tool_calls":[{"id":"call-1","name":"read_file","arguments":"{\"target_file\":\"README.md\"}"}],"timestamp":"2026-03-09T06:03:00.000Z"}
+{"type":"tool_result","tool_call_id":"call-1","content":"fixture readme","timestamp":"2026-03-09T06:03:10.000Z"}
+{"type":"backend_tool_call","kind":{"tool_type":"web_search","id":"call-2","status":"completed","action":{"query":"grok cli sessions"}},"timestamp":"2026-03-09T06:03:20.000Z"}
+{"type":"user","content":[{"type":"text","text":"Now add regression coverage."}],"timestamp":"2026-03-09T06:04:00.000Z"}
+{"type":"assistant","content":"Coverage added.","model_id":"grok-4.6","model_fingerprint":"fp-fixture","reasoning_effort":"high","timestamp":"2026-03-09T06:05:00.000Z"}
+

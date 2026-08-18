@@ -7,7 +7,9 @@ import { geminiAdapter } from "./gemini.js";
 import { claudeCodeAdapter } from "./claude-code.js";
 import { codexAdapter } from "./codex.js";
 import { cursorAdapter } from "./cursor.js";
+import { cursorAgentAdapter } from "./cursor-agent.js";
 import { factoryDroidAdapter } from "./factory-droid.js";
+import { grokAdapter } from "./grok.js";
 import { lobechatAdapter } from "./lobechat.js";
 import { kimiAdapter } from "./kimi.js";
 import { openclawAdapter } from "./openclaw.js";
@@ -22,6 +24,7 @@ const adapters = [
   factoryDroidAdapter,
   ampAdapter,
   cursorAdapter,
+  cursorAgentAdapter,
   antigravityAdapter,
   geminiAdapter,
   openclawAdapter,
@@ -31,6 +34,7 @@ const adapters = [
   accioAdapter,
   zcodeAdapter,
   kimiAdapter,
+  grokAdapter,
 ] as const satisfies readonly PlatformAdapter[];
 
 const adapterRegistry = Object.fromEntries(

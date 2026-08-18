@@ -18,6 +18,8 @@ export type SourcePlatform =
   | "accio"
   | "zcode"
   | "kimi"
+  | "cursor_agent"
+  | "grok"
   | "other";
 
 export type LinkState = "committed" | "candidate" | "unlinked";

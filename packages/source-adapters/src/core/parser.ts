@@ -22,6 +22,8 @@ import {
 import { parseClaudeRecord as parseClaudeRuntimeRecord } from "../platforms/claude-code/runtime.js";
 import { parseCodexRecord as parseCodexRuntimeRecord } from "../platforms/codex/runtime.js";
 import { resolveCursorTranscriptWorkspacePath } from "../platforms/cursor/runtime.js";
+import { applyGrokWorkspaceFromPath, resolveGrokSessionDir } from "../platforms/grok.js";
+import { parseGrokRecord as parseGrokRuntimeRecord } from "../platforms/grok/runtime.js";
 import { parseFactoryRecord as parseFactoryRuntimeRecord } from "../platforms/factory-droid/runtime.js";
 import {
   extractGenericContentItems as extractGenericContentItemsRuntime,
@@ -200,7 +202,10 @@ export async function extractRecords(
     return records;
   }
 
-  const fallbackObservedAt = context.source.platform === "factory_droid"
+  const fallbackObservedAt =
+    context.source.platform === "factory_droid" ||
+    context.source.platform === "grok" ||
+    context.source.platform === "cursor_agent"
     ? await fs.stat(context.filePath).then((stats) => stats.mtime.toISOString()).catch(() => nowIso())
     : nowIso();
   const collected = await collectJsonlRecords(
@@ -227,6 +232,13 @@ export async function extractRecords(
                   pointer: "state",
                 },
               ]
+          : context.source.platform === "grok"
+            ? [
+                {
+                  filePath: path.join(resolveGrokSessionDir(context.filePath) ?? path.dirname(context.filePath), "summary.json"),
+                  pointer: "summary",
+                },
+              ]
           : context.source.platform === "accio"
             ? [
                 {
@@ -247,9 +259,46 @@ export async function extractRecords(
       nowIso,
     },
   );
-  return context.source.platform === "factory_droid"
-    ? normalizeFactoryRecordObservedTimes(collected, fallbackObservedAt)
-    : collected;
+  if (context.source.platform === "factory_droid") {
+    return normalizeFactoryRecordObservedTimes(collected, fallbackObservedAt);
+  }
+  if (context.source.platform === "grok") {
+    return applyJsonlOrdinalObservedTimes(collected, fallbackObservedAt, ["summary"]);
+  }
+  if (context.source.platform === "cursor_agent") {
+    return applyJsonlOrdinalObservedTimes(collected, fallbackObservedAt);
+  }
+  return collected;
+}
+
+function applyJsonlOrdinalObservedTimes(
+  records: RawRecord[],
+  fallbackObservedAt: string,
+  skipPointers: readonly string[] = [],
+): RawRecord[] {
+  const baseMs = Date.parse(fallbackObservedAt);
+  return records.map((record, index) => {
+    if (skipPointers.includes(record.record_path_or_offset)) {
+      return record;
+    }
+    try {
+      const parsed = JSON.parse(record.raw_json) as unknown;
+      if (isObject(parsed)) {
+        const explicit =
+          coerceIso(parsed.timestamp) ??
+          epochMillisToIso(asNumber(parsed.timestamp));
+        if (explicit) {
+          return { ...record, observed_at: explicit };
+        }
+      }
+    } catch {
+      /* keep ordinal fallback */
+    }
+    if (!Number.isFinite(baseMs)) {
+      return record;
+    }
+    return { ...record, observed_at: new Date(baseMs + index).toISOString() };
+  });
 }
 
 function normalizeFactoryRecordObservedTimes(records: RawRecord[], fallbackObservedAt: string): RawRecord[] {
@@ -340,6 +389,10 @@ export function parseRecord(
   if (context.source.platform === "kimi") {
     return parseKimiRuntimeRecord(context, record, parsed, draft, buildCommonParseRuntimeHelpers());
   }
+  if (context.source.platform === "grok") {
+    applyGrokWorkspaceFromPath(context.filePath, draft, normalizeWorkspacePath);
+    return parseGrokRuntimeRecord(context, record, parsed, draft, buildCommonParseRuntimeHelpers());
+  }
   if (context.source.platform === "codebuddy") {
     const providerData = isObject(parsed.providerData) ? parsed.providerData : undefined;
     if (asBoolean(providerData?.skipRun) || asString(parsed.type) === "skip_run") {
@@ -389,14 +442,18 @@ export function parseRecord(
   }
   if (
     context.source.platform === "cursor" ||
+    context.source.platform === "cursor_agent" ||
     context.source.platform === "antigravity" ||
     context.source.platform === "gemini" ||
     context.source.platform === "opencode" ||
     context.source.platform === "lobechat" ||
     context.source.platform === "zcode"
   ) {
+    if ((context.source.platform === "cursor" || context.source.platform === "cursor_agent") && asString(parsed.type) === "turn_ended") {
+      return { fragments: [], lossAudits: [] };
+    }
     const cursorParsed =
-      context.source.platform === "cursor"
+      context.source.platform === "cursor" || context.source.platform === "cursor_agent"
         ? applyCursorTranscriptWorkspace(context.filePath, parsed, draft)
         : parsed;
     return parseGenericConversationRuntimeRecord(context, record, cursorParsed, draft, {

@@ -92,7 +92,9 @@ export function splitUserText(
   }
 
   const cursorEnvelope =
-    options.platform === "cursor" ? splitCursorPromptEnvelope(normalized) : undefined;
+    options.platform === "cursor" || options.platform === "cursor_agent"
+      ? splitCursorPromptEnvelope(normalized)
+      : undefined;
   if (cursorEnvelope) {
     return cursorEnvelope;
   }

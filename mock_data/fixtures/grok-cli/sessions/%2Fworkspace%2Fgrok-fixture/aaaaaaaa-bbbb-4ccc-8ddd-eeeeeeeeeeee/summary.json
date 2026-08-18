@@ -1,0 +1,16 @@
+{
+  "info": {
+    "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    "cwd": "/workspace/grok-fixture"
+  },
+  "generated_title": "Grok adapter fixture",
+  "session_summary": "Grok adapter fixture",
+  "parent_session_id": "ffffffff-eeee-4ddd-8ccc-bbbbbbbbbbbb",
+  "created_at": "2026-03-09T06:00:00.000Z",
+  "updated_at": "2026-03-09T06:10:00.000Z",
+  "current_model_id": "grok-4.6",
+  "num_messages": 8,
+  "num_chat_messages": 4,
+  "agent_name": "grok-build-plan",
+  "chat_format_version": 1
+}

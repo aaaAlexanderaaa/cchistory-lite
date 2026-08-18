@@ -20,6 +20,11 @@ ALLOWED_FILE_PATTERNS = [
     re.compile(r"fixtures/accio-multi-agent/agents/[^/]+/sessions/[^/]+\.(?:messages\.jsonl|meta\.jsonc)"),
     re.compile(r"fixtures/accio-multi-agent/conversations/dm/[^/]+\.jsonc"),
     re.compile(r"fixtures/accio-multi-agent/subagent-sessions/[^/]+\.(?:messages\.jsonl|meta\.jsonc)"),
+    re.compile(
+        r"fixtures/grok-cli/sessions/[^/]+/[0-9a-f-]+/"
+        r"(chat_history\.jsonl|summary\.json|signals\.json|updates\.jsonl|prompt_context\.json)"
+    ),
+    re.compile(r"fixtures/cursor-agent/[^/]+/agent-transcripts/[0-9a-f-]+/[0-9a-f-]+\.jsonl"),
     re.compile(r"fixtures/source-shapes/(?:claude|codex)/[^/]+\.jsonl"),
     re.compile(r"\.codex/history\.jsonl"),
     re.compile(r"\.codex/sessions/\d{4}/\d{2}/\d{2}/rollout-[^/]+\.jsonl"),

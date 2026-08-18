@@ -33,6 +33,8 @@ const fixtureRoots = {
   opencode: ".local/share/opencode/storage",
   codebuddy: ".codebuddy",
   accio: "fixtures/accio-multi-agent/agents",
+  cursor_agent: "fixtures/cursor-agent",
+  grok: "fixtures/grok-cli",
 } as const;
 
 test("Lite Node heap policy uses half host memory capped at 4 GiB", () => {
@@ -957,6 +959,8 @@ test("explicit roots replace one adapter without adding the missing adapter rost
   assert.equal(platforms.includes("lobechat"), false);
   assert.equal(platforms.includes("zcode"), false);
   assert.equal(platforms.includes("accio"), false);
+  assert.equal(platforms.includes("cursor_agent"), false);
+  assert.equal(platforms.includes("grok"), false);
   assert.equal(resolved.find((source) => source.platform === "codex")?.base_dir, codexRoot);
 });
 
@@ -1216,6 +1220,75 @@ test("Lite and Full agree on a synthetic Kimi source through the shared probe pi
       withoutGeneratedAt(liteFromProbe.getUsageOverview()),
       withoutGeneratedAt(lite.getUsageOverview()),
     );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Lite and Full agree on a synthetic Grok source through the shared probe pipeline", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-grok-parity-"));
+  try {
+    const grokRoot = path.join(tempRoot, ".grok");
+    const sessionId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee02";
+    const sessionDir = path.join(grokRoot, "sessions", "%2Fworkspace%2Fgrok-lite-parity", sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      path.join(sessionDir, "chat_history.jsonl"),
+      [
+        { type: "user", content: [{ type: "text", text: "Review the Grok parity boundary." }], timestamp: "2026-03-09T06:01:00.000Z" },
+        { type: "assistant", content: "The shared pipeline answered.", model_id: "grok-4.6", timestamp: "2026-03-09T06:02:00.000Z" },
+        { type: "user", content: [{ type: "text", text: "Now confirm the Lite parity coverage." }], timestamp: "2026-03-09T06:03:00.000Z" },
+        { type: "assistant", content: "Parity coverage confirmed.", model_id: "grok-4.6", timestamp: "2026-03-09T06:04:00.000Z" },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(sessionDir, "summary.json"),
+      JSON.stringify({
+        info: { id: sessionId, cwd: "/workspace/grok-lite-parity" },
+        generated_title: "Grok Lite parity",
+        created_at: "2026-03-09T06:00:00.000Z",
+        updated_at: "2026-03-09T06:10:00.000Z",
+        current_model_id: "grok-4.6",
+      }),
+      "utf8",
+    );
+
+    const lite = await scanLiteHistory({
+      homeDir: tempRoot,
+      hostname: "cchistory-lite-grok-parity-host",
+      sourceRefs: ["grok"],
+      sourceRoots: [{ sourceRef: "grok", baseDir: grokRoot }],
+      safeMode: true,
+    });
+    assert.deepEqual(lite.listSources().map((source) => source.platform), ["grok"]);
+    assert.equal(lite.listResolvedSessions().length, 1);
+    assert.equal(lite.listResolvedSessions()[0]?.source_session_id, sessionId);
+    assert.equal(lite.listResolvedTurns().length, 2);
+    await assert.rejects(access(path.join(tempRoot, ".cchistory")));
+
+    const sources = await resolveLiteSources({
+      homeDir: tempRoot,
+      hostname: "cchistory-lite-grok-parity-host",
+      sourceRefs: ["grok"],
+      sourceRoots: [{ sourceRef: "grok", baseDir: grokRoot }],
+    });
+    const probe = await runSourceProbe({ safe_mode: true }, sources);
+    const liteFromProbe = buildLiveSnapshot(probe);
+    assert.deepEqual(
+      jsonNormalize(liteFromProbe.listResolvedSessions()),
+      jsonNormalize(lite.listResolvedSessions()),
+    );
+    assert.deepEqual(
+      jsonNormalize(liteFromProbe.listResolvedTurns()),
+      jsonNormalize(lite.listResolvedTurns()),
+    );
+    const liteSearch = liteFromProbe.search({ query: "parity", limit: 100 });
+    assert.equal(liteSearch.total, 2);
+    assert.deepEqual(lite.projectionIssues, []);
+    assert.deepEqual(liteFromProbe.projectionIssues, []);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

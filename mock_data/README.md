@@ -29,6 +29,16 @@ Gemini CLI fixture coverage now captures both companion-backed and missing-compa
 - `.gemini/projects.json` plus `.project_root` sidecars still cover the project/workspace mapping case and must stay distinct from `.gemini/antigravity/*`.
 - Missing `.project_root` and `projects.json` companions are a supported Gemini case, not corruption.
 
+Cursor Agent CLI fixture coverage is a third family, kept distinct from the editor and chat-store surfaces:
+
+- `fixtures/cursor-agent/<encoded-project>/agent-transcripts/<session-id>/<session-id>.jsonl` is the Agent CLI transcript stream (`role` + `message.content`, plus `turn_ended` lifecycle rows).
+
+Grok CLI fixture coverage captures the official xAI Grok session tree:
+
+- `fixtures/grok-cli/sessions/<encoded-cwd>/<session-id>/chat_history.jsonl` is the transcript-bearing surface.
+- `summary.json` carries title, model, cwd, and timestamps.
+- `updates.jsonl`, `signals.json`, and `prompt_context.json` are companion evidence, not a second session.
+
 Cursor fixture coverage now spans two distinct local families that must not be conflated:
 
 - `Library/Application Support/Cursor/User/workspaceStorage/...` remains the editor/workspace-state surface.

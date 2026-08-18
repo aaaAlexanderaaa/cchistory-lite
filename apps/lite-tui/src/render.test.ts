@@ -33,6 +33,8 @@ const fixtureRoots = {
   opencode: ".local/share/opencode/storage",
   codebuddy: ".codebuddy",
   accio: "fixtures/accio-multi-agent/agents",
+  cursor_agent: "fixtures/cursor-agent",
+  grok: "fixtures/grok-cli",
 } as const;
 const FIXED_NOW = Date.UTC(2026, 6, 27, 12, 0, 0);
 

@@ -158,10 +158,18 @@ function deriveSourceNativeProjectRefFromOrigin(
   }
 
   const parts = relativePath.split("/").filter(Boolean);
-  if (platform === "cursor") {
+  if (platform === "cursor" || platform === "cursor_agent") {
     const transcriptIndex = parts.indexOf("agent-transcripts");
     if (transcriptIndex > 0) {
       return parts[transcriptIndex - 1];
+    }
+  }
+  if (platform === "grok") {
+    if (parts[0] === "sessions" && parts.length >= 4 && parts.at(-1) === "chat_history.jsonl") {
+      return parts[1];
+    }
+    if (parts.length >= 3 && parts.at(-1) === "chat_history.jsonl") {
+      return parts[parts.length - 3];
     }
   }
 

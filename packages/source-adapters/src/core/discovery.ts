@@ -176,6 +176,22 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     description: "Kimi Code main-agent wire JSONL under ~/.kimi-code/sessions, with state, index, user-history, and subagent wires retained as companion evidence.",
     capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
   },
+  cursor_agent: {
+    id: "cursor_agent:jsonl:v1",
+    family: "local_coding_agent",
+    platform: "cursor_agent",
+    parser_version: "cursor-agent-parser@2026-08-18.1",
+    description: "Cursor Agent CLI transcripts from ~/.cursor/projects/<slug>/agent-transcripts/*.jsonl, including turn_ended lifecycle rows kept as raw evidence.",
+    capabilities: ["session_meta", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
+  },
+  grok: {
+    id: "grok:chat-history-jsonl:v1",
+    family: "local_coding_agent",
+    platform: "grok",
+    parser_version: "grok-parser@2026-08-18.1",
+    description: "Grok CLI sessions under ~/.grok/sessions/<encoded-cwd>/<session-id>/chat_history.jsonl, with summary.json metadata and updates/signals companions retained as evidence.",
+    capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
+  },
 };
 
 const DEFAULT_SOURCE_SPECS: ReadonlyArray<
@@ -264,6 +280,18 @@ const DEFAULT_SOURCE_SPECS: ReadonlyArray<
     family: "local_coding_agent",
     platform: "kimi",
     display_name: "Kimi Code",
+  },
+  {
+    slot_id: "cursor_agent",
+    family: "local_coding_agent",
+    platform: "cursor_agent",
+    display_name: "Cursor Agent",
+  },
+  {
+    slot_id: "grok",
+    family: "local_coding_agent",
+    platform: "grok",
+    display_name: "Grok CLI",
   },
 ];
 
@@ -362,6 +390,11 @@ export function getDefaultSourcesForHost(
     const slotId = source.slot_id || deriveSourceSlotId(source.platform);
     const discovery = discoveries.find((entry) => entry.slot_id === slotId);
     const baseDir = discovery?.selected_path ?? resolveDefaultSourceBaseDir(source.platform, options);
+    // cursor already scans ~/.cursor/projects/**/agent-transcripts. Auto-enabling
+    // cursor_agent on the same root would emit every Agent CLI session twice.
+    if (source.platform === "cursor_agent" && !options.includeMissing) {
+      return [];
+    }
     if (!options.includeMissing && !discovery?.selected_exists) {
       return [];
     }

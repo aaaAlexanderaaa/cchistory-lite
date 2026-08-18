@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "working_directory": "/workspace/grok-fixture",
+  "prompt_mode": "agent"
+}

@@ -1,6 +1,6 @@
 # CC History Lite
 
-Read your local AI coding agents' native history **in place** — 14 source adapters, one
+Read your local AI coding agents' native history **in place** — 16 source adapters, one
 canonical pipeline — through a CLI and a terminal browser backed by an ephemeral in-memory
 snapshot that is never written to disk.
 
@@ -68,6 +68,7 @@ referenced by its slot id.
 | `factory_droid` | Factory Droid | `~/.factory/sessions` | stable |
 | `amp` | AMP | `~/.local/share/amp/threads` | stable |
 | `cursor` | Cursor | `~/.cursor/projects`, platform Cursor `User` dir, `~/.cursor/chats` | stable |
+| `cursor_agent` | Cursor Agent | `~/.cursor/projects` | experimental |
 | `antigravity` | Antigravity | platform Antigravity `User` dir, `~/.gemini/antigravity/brain` | stable |
 | `gemini` | Gemini CLI | `~/.gemini` | stable |
 | `openclaw` | OpenClaw | `~/.openclaw/agents` | stable |
@@ -77,6 +78,12 @@ referenced by its slot id.
 | `accio` | Accio Work | `~/.accio/accounts/<id>/agents` | experimental |
 | `zcode` | ZCode | `~/.zcode` | experimental |
 | `kimi` | Kimi Code | `~/.kimi-code` | experimental |
+| `grok` | Grok CLI | `~/.grok` | experimental |
+
+`cursor` still reads Agent CLI transcripts under `~/.cursor/projects/*/agent-transcripts`
+and merges them with composer/chat-store evidence when they share a session id.
+`cursor_agent` is opt-in (`--source cursor_agent`) so a default scan does not emit
+those transcripts twice.
 
 Point an adapter somewhere else with `--source-root <slot>=<path>`, e.g.
 `--source-root claude_code=/mnt/history/.claude/projects`.
@@ -237,7 +244,7 @@ apps/lite-tui ─┘             │                                        ├�
 | --- | --- |
 | `@cchistory/domain` | Canonical types and projections. No I/O |
 | `@cchistory/canonical` | Storage-neutral semantics: project linking, read order, search, related work, usage |
-| `@cchistory/source-adapters` | The 14 adapters. Stops at the parse boundary |
+| `@cchistory/source-adapters` | The 16 adapters. Stops at the parse boundary |
 | `@cchistory/live-runtime` | Materializes a probe into an in-memory `LiveHistorySnapshot` |
 | `@cchistory/lite-cli` | The `cchistory-lite` binary |
 | `@cchistory/lite-tui` | The `cchistory-lite-tui` binary |

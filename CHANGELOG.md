@@ -7,6 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Experimental `cursor_agent` adapter reads Cursor Agent CLI transcripts from
+  `~/.cursor/projects/<slug>/agent-transcripts/*.jsonl`. It is opt-in via
+  `--source cursor_agent` so a default scan does not duplicate the same
+  transcripts already merged by stable `cursor`.
+- Experimental `grok` adapter reads official Grok CLI sessions from
+  `~/.grok/sessions/<encoded-cwd>/<session-id>/chat_history.jsonl`, using
+  `summary.json` for title/model/cwd and keeping updates, signals, and
+  subagent meta as companion evidence. Synthetic user rows
+  (`project_instructions`, `system_reminder`, …) stay out of UserTurns.
+
 ## [0.4.0] - 2026-08-11
 
 ### Added

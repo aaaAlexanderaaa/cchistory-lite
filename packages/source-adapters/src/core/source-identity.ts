@@ -49,6 +49,17 @@ export function extractSourceSessionId(platform: SourcePlatform, filePath: strin
     }
   }
 
+  if (platform === "grok") {
+    const normalized = filePath.replace(/\\/gu, "/");
+    const match = normalized.match(/\/sessions\/[^/]+\/([^/]+)\/chat_history\.jsonl$/u);
+    if (match?.[1]) {
+      return match[1];
+    }
+    if (path.basename(filePath) === "chat_history.jsonl") {
+      return path.basename(path.dirname(filePath));
+    }
+  }
+
   if (platform === "gemini") {
     try {
       const parsed = JSON.parse(fileBuffer.toString("utf8")) as Record<string, unknown>;
@@ -109,7 +120,11 @@ export function buildSourceResumeCommand(input: {
       ? `codex resume ${quoteShellArg(input.sourceSessionId)}`
       : input.platform === "claude_code"
         ? `claude --resume ${quoteShellArg(input.sourceSessionId)}`
-        : undefined;
+        : input.platform === "grok"
+          ? `grok -r ${quoteShellArg(input.sourceSessionId)}`
+          : input.platform === "cursor_agent"
+            ? `cursor-agent --resume ${quoteShellArg(input.sourceSessionId)}`
+            : undefined;
   if (!nativeCommand) {
     return undefined;
   }

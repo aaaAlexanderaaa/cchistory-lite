@@ -23,7 +23,9 @@ export type SupportedSourcePlatform =
   | "codebuddy"
   | "accio"
   | "zcode"
-  | "kimi";
+  | "kimi"
+  | "cursor_agent"
+  | "grok";
 
 export interface DefaultSourceResolutionOptions {
   homeDir?: string;
@@ -69,6 +71,8 @@ export function isSupportedSourcePlatform(platform: SourcePlatform): platform is
     platform === "codebuddy" ||
     platform === "accio" ||
     platform === "zcode" ||
-    platform === "kimi"
+    platform === "kimi" ||
+    platform === "cursor_agent" ||
+    platform === "grok"
   );
 }

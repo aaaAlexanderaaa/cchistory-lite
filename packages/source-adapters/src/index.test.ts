@@ -26,3 +26,5 @@ import "./platforms/codebuddy.test.js";
 import "./platforms/accio.test.js";
 import "./platforms/zcode.test.js";
 import "./platforms/kimi.test.js";
+import "./platforms/cursor-agent.test.js";
+import "./platforms/grok.test.js";

@@ -176,6 +176,19 @@ Let me chronologically analyze the conversation...`;
     assert.equal(chunks[0]!.originKind, "user_authored");
   });
 
+  test("Cursor Agent timestamp and user_query envelopes keep only the inner prompt as authored", () => {
+    const text = [
+      "<timestamp>label: Saturday, Aug 15, 2026, 6:32 PM (UTC+8)</timestamp>",
+      "<user_query>",
+      "Inspect the Cursor Agent workspace path.",
+      "</user_query>",
+    ].join("\n");
+    const chunks = splitUserText(text, { platform: "cursor_agent" });
+    const authored = chunks.filter((chunk) => chunk.originKind === "user_authored");
+    assert.equal(authored.length, 1);
+    assert.equal(authored[0]?.text, "Inspect the Cursor Agent workspace path.");
+  });
+
   test("Cursor timestamp and user_query envelopes keep only the inner prompt as authored", () => {
     const text = [
       "<timestamp>label: Saturday, Aug 15, 2026, 6:32 PM (UTC+8)</timestamp>",

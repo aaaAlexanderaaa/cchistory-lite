@@ -230,7 +230,7 @@ export function deriveSourceNativeProjectRef(source: SourceDefinition, filePath:
   }
 
   const parts = relativePath.split("/").filter(Boolean);
-  if (source.platform === "cursor") {
+  if (source.platform === "cursor" || source.platform === "cursor_agent") {
     const chatStoreMatch = normalizedFilePath.match(/\/\.cursor\/chats\/([^/]+)\/[^/]+\/store\.db$/u);
     if (chatStoreMatch) {
       return chatStoreMatch[1];
@@ -238,6 +238,15 @@ export function deriveSourceNativeProjectRef(source: SourceDefinition, filePath:
     const transcriptIndex = parts.indexOf("agent-transcripts");
     if (transcriptIndex > 0) {
       return parts[transcriptIndex - 1];
+    }
+  }
+  if (source.platform === "grok") {
+    const sessionIndex = parts.findIndex((part, index) => part === "chat_history.jsonl" && index >= 2);
+    if (sessionIndex >= 2) {
+      return parts[sessionIndex - 2];
+    }
+    if (parts[0] === "sessions" && parts.length >= 4 && parts.at(-1) === "chat_history.jsonl") {
+      return parts[1];
     }
   }
 

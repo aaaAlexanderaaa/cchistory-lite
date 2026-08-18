@@ -35,7 +35,7 @@ This layer decides *what history means*. It must never learn where history is st
 
 ### `@cchistory/source-adapters`
 
-The 14 adapters, plus the probe that drives them. Each adapter knows one tool's on-disk layout
+The 16 adapters, plus the probe that drives them. Each adapter knows one tool's on-disk layout
 and normalizes it into atoms, blobs, sessions, and candidates. The layer **stops at the parse
 boundary**: it produces a probe payload and hands it off. It never materializes a snapshot and
 never reaches forward into the runtime.
