@@ -24,6 +24,9 @@ ALLOWED_FILE_PATTERNS = [
         r"fixtures/grok-cli/sessions/[^/]+/[0-9a-f-]+/"
         r"(chat_history\.jsonl|summary\.json|signals\.json|updates\.jsonl|prompt_context\.json)"
     ),
+    re.compile(
+        r"fixtures/grok-cli/sessions/[^/]+/[0-9a-f-]+/subagents/[0-9a-f-]+/meta\.json"
+    ),
     re.compile(r"fixtures/cursor-agent/[^/]+/agent-transcripts/[0-9a-f-]+/[0-9a-f-]+\.jsonl"),
     re.compile(r"fixtures/source-shapes/(?:claude|codex)/[^/]+\.jsonl"),
     re.compile(r"\.codex/history\.jsonl"),

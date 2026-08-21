@@ -447,8 +447,37 @@ test("session detail resolves the project from the selected turn", async () => {
 test("the full adapter matrix preserves identity through every browser scope", async () => {
   const model = await buildFixtureMatrixModel();
   const snapshotTurnIds = new Set(model.snapshot.listResolvedTurns().map((turn) => turn.id));
+  const topLevelSessionIds = new Set(model.sessions.map((entry) => entry.session.id));
+  const delegatedChildIds = new Set(
+    model.snapshot.listResolvedSessions().flatMap((session) =>
+      model.snapshot.listSessionRelatedWork(session.id).flatMap((entry) => {
+        const parentSessionRef = entry.parent_session_ref;
+        return (
+          entry.relation_kind === "delegated_session" &&
+          entry.direction === "inbound" &&
+          entry.child_session_ref === entry.query_session_ref &&
+          parentSessionRef !== undefined &&
+          topLevelSessionIds.has(parentSessionRef)
+        ) ? [entry.query_session_ref] : [];
+      })
+    ),
+  );
   const sessionTurnIds = new Set<string>();
   const projectTurnIds = new Set<string>();
+  const delegatedChildTurnIds = new Set(
+    model.snapshot.listResolvedTurns()
+      .filter((turn) => delegatedChildIds.has(turn.session_id))
+      .map((turn) => turn.id),
+  );
+
+  assert.deepEqual(
+    model.sessions.map((entry) => entry.session.id),
+    model.snapshot.listTopLevelSessions().map((session) => session.id),
+  );
+  for (const childId of delegatedChildIds) {
+    assert.equal(topLevelSessionIds.has(childId), false, `delegated child ${childId} leaked into the session pane`);
+    assert.ok(model.snapshot.getSession(childId), `delegated child ${childId} must stay addressable`);
+  }
 
   for (const entry of model.sessions) {
     assert.equal(entry.turns.length, entry.session.turn_count, `session count drift for ${entry.session.id}`);
@@ -458,7 +487,14 @@ test("the full adapter matrix preserves identity through every browser scope", a
       sessionTurnIds.add(turn.turn.id);
     }
   }
-  assert.deepEqual(sessionTurnIds, snapshotTurnIds, "every resolved turn must belong to exactly one session row");
+  assert.deepEqual(
+    new Set([...sessionTurnIds, ...delegatedChildTurnIds]),
+    snapshotTurnIds,
+    "every resolved turn belongs to a top-level session row or a nested delegated child",
+  );
+  for (const turnId of delegatedChildTurnIds) {
+    assert.equal(sessionTurnIds.has(turnId), false, `delegated child turn ${turnId} must not appear as a top-level session row`);
+  }
 
   for (const entry of model.projects) {
     assert.equal(entry.turnCount, entry.turns.length, `project turn count drift for ${entry.key}`);

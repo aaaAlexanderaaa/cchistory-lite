@@ -248,8 +248,11 @@ built-in masks, fallback project observations, project linking, read ordering,
 search matching/ranking, and usage aggregation all live in `packages/canonical`
 and `packages/source-adapters`. Related-work projection is derived there too:
 delegated-session and automation-run rows are built before Lite releases
-`session_relation` fragments. Lite never simplifies a parser or turn builder to
-obtain speed — the surfaces render what this shared pipeline derives.
+`session_relation` fragments. A resolved delegated child stays addressable and
+is listed under its parent as related work, but it is not a top-level session
+in `ls`, `tree`, or the TUI session pane. Lite never simplifies a parser or
+turn builder to obtain speed — the surfaces render what this shared pipeline
+derives.
 
 The fixture matrix in `packages/live-runtime` exercises that pipeline across
 every registered adapter and verifies sources, projects, sessions, turns,

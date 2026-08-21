@@ -22,7 +22,7 @@ import {
 import { parseClaudeRecord as parseClaudeRuntimeRecord } from "../platforms/claude-code/runtime.js";
 import { parseCodexRecord as parseCodexRuntimeRecord } from "../platforms/codex/runtime.js";
 import { resolveCursorTranscriptWorkspacePath } from "../platforms/cursor/runtime.js";
-import { applyGrokWorkspaceFromPath, resolveGrokSessionDir } from "../platforms/grok.js";
+import { applyGrokWorkspaceFromPath, listGrokRecordSidecarPaths } from "../platforms/grok.js";
 import { parseGrokRecord as parseGrokRuntimeRecord } from "../platforms/grok/runtime.js";
 import { parseFactoryRecord as parseFactoryRuntimeRecord } from "../platforms/factory-droid/runtime.js";
 import {
@@ -205,9 +205,13 @@ export async function extractRecords(
   const fallbackObservedAt =
     context.source.platform === "factory_droid" ||
     context.source.platform === "grok" ||
+    context.source.platform === "cursor" ||
     context.source.platform === "cursor_agent"
     ? await fs.stat(context.filePath).then((stats) => stats.mtime.toISOString()).catch(() => nowIso())
     : nowIso();
+  const grokSidecars = context.source.platform === "grok"
+    ? await listGrokRecordSidecarPaths(context.filePath)
+    : undefined;
   const collected = await collectJsonlRecords(
     text,
     {
@@ -233,12 +237,7 @@ export async function extractRecords(
                 },
               ]
           : context.source.platform === "grok"
-            ? [
-                {
-                  filePath: path.join(resolveGrokSessionDir(context.filePath) ?? path.dirname(context.filePath), "summary.json"),
-                  pointer: "summary",
-                },
-              ]
+            ? grokSidecars
           : context.source.platform === "accio"
             ? [
                 {
@@ -263,9 +262,15 @@ export async function extractRecords(
     return normalizeFactoryRecordObservedTimes(collected, fallbackObservedAt);
   }
   if (context.source.platform === "grok") {
-    return applyJsonlOrdinalObservedTimes(collected, fallbackObservedAt, ["summary"]);
+    return applyJsonlOrdinalObservedTimes(
+      collected,
+      fallbackObservedAt,
+      collected
+        .map((record) => record.record_path_or_offset)
+        .filter((pointer) => pointer === "summary" || pointer.startsWith("subagent_meta")),
+    );
   }
-  if (context.source.platform === "cursor_agent") {
+  if (context.source.platform === "cursor" || context.source.platform === "cursor_agent") {
     return applyJsonlOrdinalObservedTimes(collected, fallbackObservedAt);
   }
   return collected;
@@ -286,7 +291,10 @@ function applyJsonlOrdinalObservedTimes(
       if (isObject(parsed)) {
         const explicit =
           coerceIso(parsed.timestamp) ??
-          epochMillisToIso(asNumber(parsed.timestamp));
+          coerceIso(parsed.createdAt) ??
+          coerceIso(parsed.updatedAt) ??
+          epochMillisToIso(asNumber(parsed.timestamp)) ??
+          epochMillisToIso(asNumber(parsed.createdAt));
         if (explicit) {
           return { ...record, observed_at: explicit };
         }

@@ -252,8 +252,8 @@
     "apps": [
       "Cursor"
     ],
-    "visible_cue": "Cursor also keeps per-agent chat stores under `.cursor/chats/<workspace-hash>/<agent-id>/store.db`, where one hex-encoded `meta.value` points at opaque blob rows containing prompt, reasoning, and assistant payload fragments.",
-    "tricky": "A parser that treats this as the already-supported Cursor editor-state path will misclassify the source; a parser that samples only ASCII strings can recover text hints while still missing the structure needed for faithful session reconstruction.",
+    "visible_cue": "Cursor also keeps per-agent chat stores under `.cursor/chats/<workspace-hash>/<agent-id>/store.db`. The blob graph stays opaque; JSON `user_query` messages (or protobuf-style prompt fragments when JSON is absent) are the recoverable user text.",
+    "tricky": "A parser that treats this as the already-supported Cursor editor-state path will misclassify the source; a parser that samples only ASCII strings from the blob graph can invent a garbage user turn instead of the authored query.",
     "visible_roots": [
       "/Users/mock_user/.cursor/chats/7ff8eb6283576301c3822ea828f4a8f4"
     ],
@@ -685,6 +685,22 @@
     "paths": [
       "fixtures/accio-multi-agent/agents/DID-MOCK01-A1B2C3/sessions/DID-MOCK01-A1B2C3_CID-MOCK-CONV-001.messages.jsonl",
       "fixtures/accio-multi-agent/subagent-sessions/agent_agent_DID-MOCK01-A1B2C3_main_cid_CID-MOCK-CONV-001_sub_explore_aabb1122.messages.jsonl"
+    ]
+  },
+  {
+    "id": "grok-delegated-child-session",
+    "apps": [
+      "Grok"
+    ],
+    "visible_cue": "A Grok parent session lists a sibling child directory under subagents/<id>/, and the child has its own chat_history.jsonl with session_kind subagent.",
+    "tricky": "Treating the child as an independent top-level session duplicates the same work; ignoring the spawn meta loses the parent link. A bare parent_session_id on an ordinary session is not enough to hide it.",
+    "visible_roots": [
+      "/workspace/grok-fixture"
+    ],
+    "paths": [
+      "fixtures/grok-cli/sessions/%2Fworkspace%2Fgrok-fixture/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/chat_history.jsonl",
+      "fixtures/grok-cli/sessions/%2Fworkspace%2Fgrok-fixture/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/subagents/bbbbbbbb-cccc-4ddd-8eee-ffffffffffff/meta.json",
+      "fixtures/grok-cli/sessions/%2Fworkspace%2Fgrok-fixture/bbbbbbbb-cccc-4ddd-8eee-ffffffffffff/chat_history.jsonl"
     ]
   }
 ]

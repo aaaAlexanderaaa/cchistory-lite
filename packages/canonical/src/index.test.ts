@@ -564,14 +564,27 @@ test("shared canonical related-work projection preserves an outbound edge with a
   );
 });
 
-test("top-level session collections exclude only resolved delegated children", () => {
+test("top-level session collections exclude resolved delegated children on every platform", () => {
   const source = createSource();
   const parent = { ...createSession(source), id: "session-parent", source_session_id: "parent-native" };
   const child = { ...createSession(source), id: "session-child", source_session_id: "child-native" };
   const ordinary = { ...createSession(source), id: "session-ordinary", source_session_id: "ordinary-native" };
-  const nonCodexChild = {
+  const grokParent = {
     ...createSession(source),
-    id: "session-non-codex-child",
+    id: "sess:grok:parent-native",
+    source_session_id: "parent-native",
+    source_platform: "grok" as const,
+  };
+  const grokChild = {
+    ...createSession(source),
+    id: "sess:grok:child-native",
+    source_session_id: "child-native",
+    source_platform: "grok" as const,
+  };
+  const claudeSession = {
+    ...createSession(source),
+    id: "sess:claude_code:claude-native",
+    source_session_id: "claude-native",
     source_platform: "claude_code" as const,
   };
   const relation: SourceFragment = {
@@ -590,25 +603,89 @@ test("top-level session collections exclude only resolved delegated children", (
     raw_refs: [],
     source_format_profile_id: "codex:test:v1",
   };
-  const relatedWork = [...buildSessionRelatedWorkIndex([parent, child, ordinary], [relation]).values()].flat();
-  const nonCodexRelatedWork = [{
-    ...relatedWork.find((entry) => entry.query_session_ref === child.id && entry.direction === "inbound")!,
-    id: "related-work-non-codex-child",
-    query_session_ref: nonCodexChild.id,
-    child_session_ref: nonCodexChild.id,
-    source_platform: "claude_code" as const,
-  }];
+  const grokRelation: SourceFragment = {
+    id: "fragment-grok-delegated-child",
+    source_id: source.id,
+    session_ref: grokChild.id,
+    record_id: "record-grok-delegated-child",
+    seq_no: 0,
+    fragment_kind: "session_relation",
+    time_key: "2026-01-01T00:00:02.000Z",
+    payload: {
+      parent_uuid: grokParent.source_session_id,
+      child_session_id: grokChild.source_session_id,
+      is_sidechain: true,
+    },
+    raw_refs: [],
+    source_format_profile_id: "grok:test:v1",
+  };
+  const claudeMessageAncestry: SourceFragment = {
+    id: "fragment-claude-parent-uuid",
+    source_id: source.id,
+    session_ref: claudeSession.id,
+    record_id: "record-claude-parent-uuid",
+    seq_no: 0,
+    fragment_kind: "session_relation",
+    time_key: "2026-01-01T00:00:03.000Z",
+    payload: {
+      parent_uuid: "message-uuid-not-a-session",
+      is_sidechain: false,
+    },
+    raw_refs: [],
+    source_format_profile_id: "claude:test:v1",
+  };
+  const sessions = [parent, child, ordinary, grokParent, grokChild, claudeSession];
+  const relatedWork = [
+    ...buildSessionRelatedWorkIndex(sessions, [relation, grokRelation, claudeMessageAncestry]).values(),
+  ].flat();
 
   assert.deepEqual(
-    filterTopLevelSessions(
-      [parent, child, ordinary, nonCodexChild],
-      [...relatedWork, ...nonCodexRelatedWork],
-    ).map((session) => session.id),
-    [parent.id, ordinary.id, nonCodexChild.id],
+    filterTopLevelSessions(sessions, relatedWork).map((session) => session.id),
+    [parent.id, ordinary.id, grokParent.id, claudeSession.id],
   );
   assert.equal(relatedWork.some((entry) =>
     entry.query_session_ref === parent.id && entry.direction === "outbound"
   ), true);
+  assert.equal(relatedWork.some((entry) =>
+    entry.query_session_ref === grokParent.id &&
+    entry.direction === "outbound" &&
+    entry.child_session_ref === grokChild.id
+  ), true);
+  assert.deepEqual(
+    filterTopLevelSessions([grokChild], relatedWork.filter((entry) => entry.query_session_ref === grokChild.id))
+      .map((session) => session.id),
+    [grokChild.id],
+  );
+
+  const grokProject = {
+    ...createProject("grok", { committedTurns: 2, sessions: 1 }),
+    project_id: "project-grok",
+  };
+  const grokParentTurn = {
+    ...createTurn(source, grokParent),
+    id: "turn-grok-parent",
+    turn_id: "turn-grok-parent",
+    project_id: grokProject.project_id,
+    link_state: "committed" as const,
+  };
+  const grokChildTurn = {
+    ...createTurn(source, grokChild),
+    id: "turn-grok-child",
+    turn_id: "turn-grok-child",
+    project_id: grokProject.project_id,
+    link_state: "committed" as const,
+  };
+  const tree = buildDirectoryScopedProjectTreeProjection({
+    projects: [grokProject],
+    sessions: [grokParent, grokChild],
+    turns: [grokParentTurn, grokChildTurn],
+    relatedWork,
+  });
+  assert.deepEqual(tree.projects[0]?.sessions.map((session) => session.id), [grokParent.id]);
+  assert.deepEqual(
+    new Set(tree.projects[0]?.turns.map((turn) => turn.id)),
+    new Set([grokParentTurn.id, grokChildTurn.id]),
+  );
 });
 
 test("shared search materialization matches the bounded Full candidate surface", () => {

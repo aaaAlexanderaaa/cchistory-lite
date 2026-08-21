@@ -99,8 +99,8 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     id: "cursor:vscode-state-sqlite:v1",
     family: DEFAULT_SOURCE_FAMILY,
     platform: "cursor",
-    parser_version: "cursor-parser@2026-08-15.2",
-    description: "Cursor project transcripts, VS Code state.vscdb composer/bubble rows (including composer-prefixed cursorDiskKV keys), and experimental chat-store recovery from .cursor/chats/**/store.db. Default discovery keeps scanning the official User dir and chat stores even when ~/.cursor/projects is selected.",
+    parser_version: "cursor-parser@2026-08-19.1",
+    description: "Cursor project transcripts, VS Code state.vscdb composer/bubble rows (including composer-prefixed cursorDiskKV keys), and chat-store recovery from .cursor/chats/**/store.db. Agent chat stores share the native agent id with matching transcripts so binary blob-graph nodes do not mint a second session. Default discovery keeps scanning the official User dir and chat stores even when ~/.cursor/projects is selected.",
     capabilities: ["session_meta", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
   },
   antigravity: {
@@ -188,8 +188,8 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     id: "grok:chat-history-jsonl:v1",
     family: "local_coding_agent",
     platform: "grok",
-    parser_version: "grok-parser@2026-08-18.1",
-    description: "Grok CLI sessions under ~/.grok/sessions/<encoded-cwd>/<session-id>/chat_history.jsonl, with summary.json metadata and updates/signals companions retained as evidence.",
+    parser_version: "grok-parser@2026-08-19.1",
+    description: "Grok CLI sessions under ~/.grok/sessions/<encoded-cwd>/<session-id>/chat_history.jsonl, with summary.json metadata and updates/signals companions retained as evidence. Subagent sibling sessions are linked through parent/subagents/*/meta.json and summary session_kind.",
     capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
   },
 };

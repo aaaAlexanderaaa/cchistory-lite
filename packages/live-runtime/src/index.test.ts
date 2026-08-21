@@ -327,12 +327,59 @@ test("Lite keeps Codex delegated children addressable but out of top-level proje
 
   const targetedChild = await scanLiteHistory({ ...common, sessionRefs: [childId] });
   assert.deepEqual(targetedChild.listResolvedSessions().map((session) => session.id), [childId]);
-  assert.deepEqual(targetedChild.listTopLevelSessions(), []);
+  assert.deepEqual(targetedChild.listTopLevelSessions().map((session) => session.id), [childId]);
   assert.equal(targetedChild.getSession(childId)?.title, "Atlas");
   assert.ok(targetedChild.listSessionRelatedWork(childId).some((entry) =>
     entry.direction === "inbound" && entry.parent_session_ref === parentId
   ));
   assert.deepEqual(targetedChild.projectionIssues, []);
+});
+
+test("Lite keeps Grok delegated children addressable but out of top-level projections", async () => {
+  const common = {
+    homeDir: path.join(mockDataRoot, "empty-home"),
+    hostname: "cchistory-lite-grok-delegation-host",
+    sourceRefs: ["grok"],
+    sourceRoots: [{ sourceRef: "grok", baseDir: path.join(mockDataRoot, fixtureRoots.grok) }],
+    safeMode: true,
+    contextMode: "full" as const,
+  };
+  const parentId = "sess:grok:aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const childId = "sess:grok:bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  const full = await scanLiteHistory(common);
+  const child = full.getSession(childId);
+
+  assert.ok(full.getSession(parentId));
+  assert.ok(child);
+  assert.equal(child.title, "Grok adapter child review");
+  assert.equal(child.resume_command, undefined);
+  assert.equal(full.listResolvedSessions().some((session) => session.id === childId), true);
+  assert.equal(full.listTopLevelSessions().some((session) => session.id === childId), false);
+  const tree = full.getProjectsTreeProjection();
+  const treeSessionIds = tree.projects
+    .flatMap((node) => node.sessions)
+    .concat(tree.unlinkedSessions)
+    .map((session) => session.id);
+  assert.equal(treeSessionIds.includes(childId), false);
+  assert.ok(
+    tree.projects.some((node) => node.turns.some((turn) => turn.session_id === childId)),
+    "delegated child turns stay visible in the parent project bucket",
+  );
+  assert.equal(full.search({ query: "delegated child" }).total, 1);
+  assert.deepEqual(full.projectionIssues, []);
+
+  const parentRelated = full.listSessionRelatedWork(parentId);
+  assert.ok(parentRelated.some((entry) =>
+    entry.relation_kind === "delegated_session" &&
+    entry.direction === "outbound" &&
+    entry.child_session_ref === childId
+  ));
+  const childInbound = full.listSessionRelatedWork(childId).filter((entry) =>
+    entry.relation_kind === "delegated_session" &&
+    entry.direction === "inbound"
+  );
+  assert.equal(childInbound.length, 1);
+  assert.equal(childInbound[0]?.parent_session_ref, parentId);
 });
 
 test("Lite scans explicit roots without creating or reading a Full store", async () => {

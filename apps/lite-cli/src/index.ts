@@ -553,11 +553,10 @@ function buildProjectNode(snapshot: LiveHistorySnapshot, project: ProjectIdentit
   sessions: ReturnType<typeof buildSessionNode>[];
   turns: UserTurnProjection[];
 } {
-  const turns = snapshot.listProjectTurns(project.project_id, { directoryScope });
-  const sessionIds = new Set(turns.map((turn) => turn.session_id));
-  const sessions = snapshot.listResolvedSessions({ directoryScope })
-    .filter((session) => sessionIds.has(session.id))
-    .map((session) => buildSessionNode(snapshot, session, project.project_id));
+  const tree = snapshot.getProjectsTreeProjection({ directoryScope });
+  const node = tree.projects.find((entry) => entry.project.project_id === project.project_id);
+  const turns = node?.turns ?? snapshot.listProjectTurns(project.project_id, { directoryScope });
+  const sessions = (node?.sessions ?? []).map((session) => buildSessionNode(snapshot, session, project.project_id));
   return { project, sessions, turns };
 }
 

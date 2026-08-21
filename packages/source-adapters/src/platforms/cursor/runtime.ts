@@ -3,6 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { SourcePlatform } from "@cchistory/domain";
 import type { ExtractedSessionSeed } from "../../core/conversation-seeds.js";
+import { splitUserText } from "../../core/user-text.js";
 
 interface GenericSessionMetadataLike {
   workspacePath?: string;
@@ -226,22 +227,42 @@ export function extractCursorChatStoreSeed(
       data: unknown;
     }>;
 
-    const createdAt = meta?.createdAt ?? fallbackObservedAtBase;
+    const sidecar = readCursorChatStoreSidecar(filePath, helpers);
+    const nativeSessionId = meta?.agentId ?? path.basename(path.dirname(filePath));
+    const createdAt = meta?.createdAt ?? sidecar?.createdAt ?? fallbackObservedAtBase;
     const baseTime = Date.parse(createdAt);
+    const blobIds = new Set(
+      blobRows
+        .map((row) => helpers.asString(row.id))
+        .filter((blobId): blobId is string => Boolean(blobId)),
+    );
     const decodedRows = blobRows
-      .map((row, index) => decodeCursorChatStoreBlobRow(row, baseTime, index, helpers))
+      .map((row, index) => decodeCursorChatStoreBlobRow(row, baseTime, index, blobIds, helpers))
       .filter((row): row is CursorChatStoreBlobRow => row !== undefined);
 
-    const sessionId = `sess:${platform}:chat-store:${meta?.agentId ?? path.basename(path.dirname(filePath))}`;
-    const promptRow = decodedRows.find((row) => row.kind === "text");
+    const sessionId = `sess:${platform}:${nativeSessionId}`;
     const structuredRows = decodedRows.filter(
       (row): row is Extract<CursorChatStoreBlobRow, { kind: "structured" }> => row.kind === "structured",
     );
+    const authoredUserRows = structuredRows.filter((row) => isAuthoredCursorChatStoreUserRecord(row.record, helpers));
+    const visibleAssistantRows = structuredRows.filter((row) => isVisibleCursorChatStoreAssistantRecord(row.record, helpers));
+    const readableTextRows = decodedRows.filter(
+      (row): row is Extract<CursorChatStoreBlobRow, { kind: "text" }> =>
+        row.kind === "text" && isReadableCursorChatStoreText(row.text),
+    );
+    const promptRow = authoredUserRows.length > 0 ? undefined : readableTextRows[0];
     const structuredAssistant =
-      (meta?.latestRootBlobId
-        ? structuredRows.find((row) => row.blobId === meta.latestRootBlobId)
-        : undefined) ?? structuredRows.at(-1);
-    const fallbackAssistant = structuredAssistant ? undefined : decodedRows.filter((row) => row.kind === "text").at(1);
+      authoredUserRows.length > 0
+        ? (meta?.latestRootBlobId
+            ? visibleAssistantRows.find((row) => row.blobId === meta.latestRootBlobId)
+            : undefined) ?? visibleAssistantRows.at(-1)
+        : (meta?.latestRootBlobId
+            ? structuredRows.find((row) => row.blobId === meta.latestRootBlobId)
+            : undefined) ?? structuredRows.at(-1);
+    const fallbackAssistant =
+      structuredAssistant || authoredUserRows.length > 0 ? undefined : readableTextRows.at(1);
+    const workingDirectory = sidecar?.cwd;
+    const title = preferCursorChatStoreTitle(meta?.name, sidecar?.title) ?? `Cursor chat store ${nativeSessionId}`;
 
     const records: ExtractedSessionSeed["records"] = [
       {
@@ -249,8 +270,9 @@ export function extractCursorChatStoreSeed(
         observedAt: createdAt,
         rawJson: JSON.stringify({
           id: sessionId,
-          title: meta?.name ?? `Cursor chat store ${meta?.agentId ?? path.basename(path.dirname(filePath))}`,
+          title,
           model: meta?.lastUsedModel,
+          cwd: workingDirectory,
           cursor_chat_store: {
             agentId: meta?.agentId,
             latestRootBlobId: meta?.latestRootBlobId,
@@ -260,7 +282,23 @@ export function extractCursorChatStoreSeed(
       },
     ];
 
-    if (promptRow?.kind === "text") {
+    if (authoredUserRows.length > 0) {
+      const authoredUserIds = new Set(authoredUserRows.map((row) => row.blobId));
+      const visibleAssistantIds = new Set(visibleAssistantRows.map((row) => row.blobId));
+      for (const row of decodedRows) {
+        if (row.kind !== "structured") {
+          continue;
+        }
+        if (!authoredUserIds.has(row.blobId) && !visibleAssistantIds.has(row.blobId)) {
+          continue;
+        }
+        records.push({
+          pointer: `blob:${row.blobId}`,
+          observedAt: row.observedAt,
+          rawJson: JSON.stringify(row.record),
+        });
+      }
+    } else if (promptRow?.kind === "text") {
       records.push({
         pointer: `blob:${promptRow.blobId}`,
         observedAt: promptRow.observedAt,
@@ -270,24 +308,23 @@ export function extractCursorChatStoreSeed(
           content: [{ type: "input_text", text: promptRow.text }],
         }),
       });
-    }
-
-    if (structuredAssistant?.kind === "structured") {
-      records.push({
-        pointer: `blob:${structuredAssistant.blobId}`,
-        observedAt: structuredAssistant.observedAt,
-        rawJson: JSON.stringify(structuredAssistant.record),
-      });
-    } else if (fallbackAssistant?.kind === "text") {
-      records.push({
-        pointer: `blob:${fallbackAssistant.blobId}`,
-        observedAt: fallbackAssistant.observedAt,
-        rawJson: JSON.stringify({
-          id: `assistant:${fallbackAssistant.blobId}`,
-          role: "assistant",
-          content: [{ type: "output_text", text: fallbackAssistant.text }],
-        }),
-      });
+      if (structuredAssistant?.kind === "structured") {
+        records.push({
+          pointer: `blob:${structuredAssistant.blobId}`,
+          observedAt: structuredAssistant.observedAt,
+          rawJson: JSON.stringify(structuredAssistant.record),
+        });
+      } else if (fallbackAssistant?.kind === "text") {
+        records.push({
+          pointer: `blob:${fallbackAssistant.blobId}`,
+          observedAt: fallbackAssistant.observedAt,
+          rawJson: JSON.stringify({
+            id: `assistant:${fallbackAssistant.blobId}`,
+            role: "assistant",
+            content: [{ type: "output_text", text: fallbackAssistant.text }],
+          }),
+        });
+      }
     }
 
     if (records.length <= 1) {
@@ -297,17 +334,18 @@ export function extractCursorChatStoreSeed(
     return {
       seed: {
         sessionId,
-        title: meta?.name,
+        title,
         createdAt,
-        updatedAt: records.at(-1)?.observedAt ?? createdAt,
+        updatedAt: sidecar?.updatedAt ?? records.at(-1)?.observedAt ?? createdAt,
         model: meta?.lastUsedModel,
+        workingDirectory,
         records,
       },
       diagnostics: [
         {
           code: "cursor_chat_store_blob_graph_opaque",
           detail:
-            "Cursor chat-store blob graph remains opaque; projected only the first directly readable prompt fragment plus latestRootBlobId or fallback assistant evidence.",
+            "Cursor chat-store blob graph remains opaque; projected JSON user_query or protobuf-style prompt fragments plus assistant evidence instead of walking the DAG.",
           severity: "info",
         },
       ],
@@ -375,6 +413,7 @@ function decodeCursorChatStoreBlobRow(
   row: { rowid: unknown; id: unknown; data: unknown },
   baseTime: number,
   index: number,
+  siblingBlobIds: ReadonlySet<string>,
   helpers: Pick<
     CursorRuntimeHelpers,
     | "asString"
@@ -395,21 +434,34 @@ function decodeCursorChatStoreBlobRow(
   if (!blobId || !dataBuffer) {
     return undefined;
   }
-
   const observedAt = helpers.epochMillisToIso(baseTime + index * 1000) ?? new Date(baseTime + index * 1000).toISOString();
   const decodedText = extractReadableCursorBlobText(dataBuffer);
-  if (!decodedText) {
-    return undefined;
+  if (decodedText) {
+    const structuredRecord = decodeStructuredCursorBlobRecord(blobId, decodedText, helpers);
+    if (structuredRecord) {
+      return {
+        kind: "structured",
+        blobId,
+        observedAt,
+        record: structuredRecord,
+      };
+    }
   }
 
-  const structuredRecord = decodeStructuredCursorBlobRecord(blobId, decodedText, helpers);
-  if (structuredRecord) {
+  const protobufText = extractCursorChatStoreProtobufText(dataBuffer, siblingBlobIds);
+  if (protobufText) {
     return {
-      kind: "structured",
+      kind: "text",
       blobId,
       observedAt,
-      record: structuredRecord,
+      text: protobufText,
     };
+  }
+  if (cursorChatStoreBlobLooksLikeGraph(dataBuffer, siblingBlobIds, blobId)) {
+    return undefined;
+  }
+  if (!decodedText) {
+    return undefined;
   }
 
   return {
@@ -465,6 +517,191 @@ function extractReadableCursorBlobText(value: Buffer): string | undefined {
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "")
     .trim();
   return cleaned.length > 0 ? cleaned : undefined;
+}
+
+function cursorChatStoreBlobLooksLikeGraph(
+  data: Buffer,
+  siblingBlobIds: ReadonlySet<string>,
+  selfBlobId: string,
+): boolean {
+  let embeddedSiblingHashes = 0;
+  for (const blobId of siblingBlobIds) {
+    if (blobId === selfBlobId || blobId.length !== 64 || !/^[0-9a-f]+$/iu.test(blobId)) {
+      continue;
+    }
+    const rawId = Buffer.from(blobId, "hex");
+    if (rawId.length === 32 && data.includes(rawId)) {
+      embeddedSiblingHashes += 1;
+    }
+  }
+  if (embeddedSiblingHashes === 0) {
+    return false;
+  }
+  const readable = extractReadableCursorBlobText(data);
+  if (readable && isReadableCursorChatStoreText(readable)) {
+    return false;
+  }
+  return true;
+}
+
+function readProtobufVarint(value: Buffer, offset: number): { value: number; size: number } | undefined {
+  let result = 0;
+  let shift = 0;
+  let size = 0;
+  while (offset + size < value.length && size < 5) {
+    const byte = value[offset + size]!;
+    size += 1;
+    result |= (byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) {
+      return { value: result >>> 0, size };
+    }
+    shift += 7;
+  }
+  return undefined;
+}
+
+function extractCursorChatStoreProtobufText(
+  value: Buffer,
+  siblingBlobIds: ReadonlySet<string> = new Set(),
+): string | undefined {
+  if (value.length < 10 || value[0] !== 0x0a) {
+    return undefined;
+  }
+  const decodedLength = readProtobufVarint(value, 1);
+  if (!decodedLength) {
+    return undefined;
+  }
+  const start = 1 + decodedLength.size;
+  if (decodedLength.value < 8 || start + decodedLength.value > value.length) {
+    return undefined;
+  }
+  const candidate = value.subarray(start, start + decodedLength.value).toString("utf8").trim();
+  if (!isReadableCursorChatStoreText(candidate) || cursorChatStoreTextLooksLikeJsonMessage(candidate)) {
+    return undefined;
+  }
+  const remainder = value.subarray(start + decodedLength.value);
+  if (!cursorChatStoreProtobufRemainderLooksValid(remainder, siblingBlobIds)) {
+    return undefined;
+  }
+  return candidate;
+}
+
+function cursorChatStoreTextLooksLikeJsonMessage(text: string): boolean {
+  const jsonStart = text.indexOf("{");
+  const jsonEnd = text.lastIndexOf("}");
+  if (jsonStart === -1 || jsonEnd <= jsonStart) {
+    return /[{[]/.test(text) && /"role"\s*:/u.test(text);
+  }
+  try {
+    const parsed = JSON.parse(text.slice(jsonStart, jsonEnd + 1)) as unknown;
+    return Boolean(parsed && typeof parsed === "object" && "role" in parsed);
+  } catch {
+    return /"role"\s*:/u.test(text);
+  }
+}
+
+function cursorChatStoreProtobufRemainderLooksValid(
+  remainder: Buffer,
+  siblingBlobIds: ReadonlySet<string>,
+): boolean {
+  if (remainder.length === 0) {
+    return true;
+  }
+  if (remainder[0] === 0x7b) {
+    return false;
+  }
+  for (const blobId of siblingBlobIds) {
+    if (blobId.length !== 64 || !/^[0-9a-f]+$/iu.test(blobId)) {
+      continue;
+    }
+    const rawId = Buffer.from(blobId, "hex");
+    if (rawId.length === 32 && remainder.subarray(0, 32).equals(rawId)) {
+      return true;
+    }
+  }
+  const wireType = (remainder[0] ?? 0) & 0x07;
+  return wireType <= 5;
+}
+
+function isReadableCursorChatStoreText(text: string): boolean {
+  const readable = text.replace(/[^\p{L}\p{N}\p{P}\p{Z}]/gu, "");
+  return readable.trim().length >= 8 && readable.length / text.length >= 0.75;
+}
+
+function collectCursorChatStoreRecordText(
+  record: Record<string, unknown>,
+  helpers: Pick<CursorRuntimeHelpers, "extractGenericContentItems" | "asString">,
+): string {
+  return helpers
+    .extractGenericContentItems(record)
+    .map((item) => helpers.asString(item.text) ?? helpers.asString(item.input_text) ?? helpers.asString(item.output_text) ?? "")
+    .filter(Boolean)
+    .join("\n");
+}
+
+function isAuthoredCursorChatStoreUserRecord(
+  record: Record<string, unknown>,
+  helpers: Pick<CursorRuntimeHelpers, "extractGenericRole" | "extractGenericContentItems" | "asString">,
+): boolean {
+  if (helpers.extractGenericRole(record) !== "user") {
+    return false;
+  }
+  return splitUserText(collectCursorChatStoreRecordText(record, helpers), { platform: "cursor" }).some(
+    (chunk) => chunk.originKind === "user_authored",
+  );
+}
+
+function isVisibleCursorChatStoreAssistantRecord(
+  record: Record<string, unknown>,
+  helpers: Pick<CursorRuntimeHelpers, "extractGenericRole" | "extractGenericContentItems" | "asString">,
+): boolean {
+  if (helpers.extractGenericRole(record) !== "assistant") {
+    return false;
+  }
+  return helpers.extractGenericContentItems(record).some((item) => {
+    const itemType = helpers.asString(item.type)?.trim().toLowerCase();
+    if (itemType === "reasoning") {
+      return false;
+    }
+    const text = helpers.asString(item.text) ?? helpers.asString(item.output_text);
+    return Boolean(text?.trim());
+  });
+}
+
+function preferCursorChatStoreTitle(...candidates: Array<string | undefined>): string | undefined {
+  for (const candidate of candidates) {
+    const trimmed = candidate?.trim();
+    if (trimmed && trimmed.toLowerCase() !== "new agent") {
+      return trimmed;
+    }
+  }
+  return candidates.find((candidate) => candidate?.trim())?.trim();
+}
+
+function readCursorChatStoreSidecar(
+  storePath: string,
+  helpers: Pick<
+    CursorRuntimeHelpers,
+    "safeJsonParse" | "isObject" | "asString" | "asNumber" | "coerceIso" | "epochMillisToIso" | "normalizeWorkspacePath"
+  >,
+): { cwd?: string; title?: string; createdAt?: string; updatedAt?: string } | undefined {
+  let raw: string;
+  try {
+    raw = readFileSync(path.join(path.dirname(storePath), "meta.json"), "utf8");
+  } catch {
+    return undefined;
+  }
+  const parsed = helpers.safeJsonParse(raw);
+  if (!helpers.isObject(parsed)) {
+    return undefined;
+  }
+  const cwd = helpers.asString(parsed.cwd);
+  return {
+    cwd: cwd ? helpers.normalizeWorkspacePath(cwd) ?? cwd : undefined,
+    title: helpers.asString(parsed.title),
+    createdAt: helpers.epochMillisToIso(helpers.asNumber(parsed.createdAtMs)) ?? helpers.coerceIso(parsed.createdAt),
+    updatedAt: helpers.epochMillisToIso(helpers.asNumber(parsed.updatedAtMs)) ?? helpers.coerceIso(parsed.updatedAt),
+  };
 }
 
 function coerceBlobBuffer(value: unknown): Buffer | undefined {

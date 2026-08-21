@@ -5,7 +5,7 @@ import type {
   ParseRuntimeResult,
   SessionDraftLike,
 } from "../runtime-types.js";
-import { decodeGrokEncodedCwd } from "../grok.js";
+import { decodeGrokEncodedCwd, GROK_DELEGATED_SESSION_KINDS } from "../grok.js";
 
 const SYNTHETIC_USER_REASONS = new Set([
   "system_reminder",
@@ -24,6 +24,12 @@ export function parseGrokRecord(
 ): ParseRuntimeResult {
   if (record.record_path_or_offset === "summary") {
     return parseGrokSummaryRecord(context, record, parsed, draft, helpers);
+  }
+  if (
+    record.record_path_or_offset.startsWith("subagent_meta") ||
+    isGrokSubagentMetaPayload(parsed, helpers)
+  ) {
+    return parseGrokSubagentMetaRecord(context, record, parsed, draft, helpers);
   }
 
   const recordType = helpers.asString(parsed.type) ?? "unknown";
@@ -112,13 +118,27 @@ function parseGrokSummaryRecord(
   if (sourceSessionId) {
     draft.source_session_id = sourceSessionId;
   }
+  const sessionKind = helpers.asString(parsed.session_kind);
+  const isDelegated = sessionKind !== undefined && GROK_DELEGATED_SESSION_KINDS.has(sessionKind);
   const parentSessionId =
     helpers.asString(parsed.parent_session_id) ??
     helpers.asString(info?.parent_session_id);
-  if (parentSessionId) {
-    fragments.push(helpers.createFragment(context, record, fragments.length, "session_relation", timeKey, {
-      parent_uuid: parentSessionId,
-    }));
+  const childSessionId = sourceSessionId ?? draft.source_session_id;
+  if (isDelegated) {
+    draft.delegated_parent_session_id = parentSessionId ?? draft.delegated_parent_session_id;
+    draft.delegated_agent_key =
+      helpers.asString(parsed.agent_name) ??
+      draft.delegated_agent_key ??
+      sessionKind;
+    if (parentSessionId && childSessionId) {
+      fragments.push(helpers.createFragment(context, record, fragments.length, "session_relation", timeKey, {
+        parent_uuid: parentSessionId,
+        child_session_id: childSessionId,
+        is_sidechain: true,
+        agent_id: helpers.asString(parsed.agent_name),
+        session_kind: sessionKind,
+      }));
+    }
   }
 
   fragments.push(helpers.createFragment(context, record, fragments.length, "session_meta", timeKey, parsed));
@@ -138,6 +158,59 @@ function parseGrokSummaryRecord(
     }));
   }
   return { fragments, lossAudits: [] };
+}
+
+function isGrokSubagentMetaPayload(
+  parsed: Record<string, unknown>,
+  helpers: CommonParseRuntimeHelpers,
+): boolean {
+  return Boolean(
+    helpers.asString(parsed.parent_session_id) &&
+    helpers.asString(parsed.child_session_id) &&
+    helpers.asString(parsed.subagent_type) &&
+    helpers.asString(parsed.type) === undefined,
+  );
+}
+
+function parseGrokSubagentMetaRecord(
+  context: FragmentBuildContextLike,
+  record: RawRecord,
+  parsed: Record<string, unknown>,
+  draft: SessionDraftLike,
+  helpers: CommonParseRuntimeHelpers,
+): ParseRuntimeResult {
+  const parentSessionId = helpers.asString(parsed.parent_session_id);
+  const childSessionId = helpers.asString(parsed.child_session_id);
+  const agentKey = helpers.asString(parsed.subagent_type);
+  const timeKey =
+    helpers.coerceIso(parsed.started_at) ??
+    helpers.coerceIso(parsed.completed_at) ??
+    record.observed_at ??
+    helpers.nowIso();
+  if (childSessionId && draft.source_session_id === childSessionId) {
+    draft.delegated_parent_session_id = parentSessionId ?? draft.delegated_parent_session_id;
+    draft.delegated_agent_key = agentKey ?? draft.delegated_agent_key;
+    const description = helpers.asString(parsed.description);
+    if (description && !draft.title) {
+      draft.title = description;
+    }
+  }
+  if (!parentSessionId || !childSessionId) {
+    return { fragments: [], lossAudits: [] };
+  }
+  return {
+    fragments: [
+      helpers.createFragment(context, record, 0, "session_relation", timeKey, {
+        parent_uuid: parentSessionId,
+        child_session_id: childSessionId,
+        is_sidechain: true,
+        agent_id: agentKey,
+        status: helpers.asString(parsed.status),
+        description: helpers.asString(parsed.description),
+      }),
+    ],
+    lossAudits: [],
+  };
 }
 
 function parseGrokAssistantRecord(

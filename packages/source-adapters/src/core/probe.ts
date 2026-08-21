@@ -67,6 +67,7 @@ import {
 } from "./parser.js";
 import { collectJsonlRecordsStreaming, isIncrementalJsonlPlatform } from "./jsonl-records.js";
 import { atomizeFragments, hydrateDraftFromAtoms } from "./atomizer.js";
+import { splitUserText } from "./user-text.js";
 import {
   buildProjectObservationCandidates,
   buildSubmissionGroups,
@@ -1147,22 +1148,38 @@ function suppressOverlappingCursorConversation(session: SessionBuildInput): void
     return;
   }
   collapseOverlappingCursorComposerConversations(session);
-  if (!sessionInputHasCursorComposer(session) || !sessionInputHasCursorTranscript(session)) {
-    return;
-  }
   const transcriptBlobIds = new Set(
     session.blobs.filter((blob) => isCursorAgentTranscriptPath(blob.origin_path)).map((blob) => blob.id),
   );
   const composerBlobIds = new Set(
     session.blobs.filter((blob) => path.basename(blob.origin_path) === "state.vscdb").map((blob) => blob.id),
   );
-  if (transcriptBlobIds.size === 0 || composerBlobIds.size === 0) {
-    return;
+  const storeBlobIds = new Set(
+    session.blobs
+      .filter((blob) => {
+        const normalized = blob.origin_path.replace(/\\/g, "/");
+        return path.basename(blob.origin_path) === "store.db" && normalized.includes("/chats/");
+      })
+      .map((blob) => blob.id),
+  );
+  if (transcriptBlobIds.size > 0 && composerBlobIds.size > 0) {
+    const transcriptCount = cursorUserRecordCount(session, transcriptBlobIds);
+    const composerCount = cursorUserRecordCount(session, composerBlobIds);
+    const dropBlobIds = composerCount >= transcriptCount ? transcriptBlobIds : composerBlobIds;
+    dropCursorConversationRecords(session, dropBlobIds, { keepMeta: dropBlobIds === composerBlobIds });
   }
-  const transcriptCount = cursorUserRecordCount(session, transcriptBlobIds);
-  const composerCount = cursorUserRecordCount(session, composerBlobIds);
-  const dropBlobIds = composerCount >= transcriptCount ? transcriptBlobIds : composerBlobIds;
-  dropCursorConversationRecords(session, dropBlobIds, { keepMeta: dropBlobIds === composerBlobIds });
+  if (storeBlobIds.size > 0) {
+    const nonStoreBlobIds = new Set(
+      session.blobs.filter((blob) => !storeBlobIds.has(blob.id)).map((blob) => blob.id),
+    );
+    const storeCount = cursorAuthoredUserRecordCount(session, storeBlobIds);
+    const otherCount = cursorAuthoredUserRecordCount(session, nonStoreBlobIds);
+    if (otherCount > 0 && otherCount >= storeCount) {
+      dropCursorConversationRecords(session, storeBlobIds, { keepMeta: true });
+    } else if (storeCount > otherCount && otherCount > 0) {
+      dropCursorConversationRecords(session, nonStoreBlobIds, { keepMeta: true });
+    }
+  }
 }
 
 function collapseOverlappingCursorComposerConversations(session: SessionBuildInput): void {
@@ -1215,6 +1232,24 @@ function cursorUserRecordCount(session: SessionBuildInput, blobIds: ReadonlySet<
     }
     const parsed = safeJsonParse(record.raw_json);
     return isObject(parsed) && extractGenericRole(parsed) === "user";
+  }).length;
+}
+
+function cursorAuthoredUserRecordCount(session: SessionBuildInput, blobIds: ReadonlySet<string>): number {
+  return session.records.filter((record) => {
+    if (!blobIds.has(record.blob_id) || record.record_path_or_offset === "meta") {
+      return false;
+    }
+    const parsed = safeJsonParse(record.raw_json);
+    if (!isObject(parsed) || extractGenericRole(parsed) !== "user") {
+      return false;
+    }
+    const message = isObject(parsed.message) ? parsed.message : parsed;
+    const text = extractGenericContentItems(message)
+      .map((item) => asString(item.text) ?? asString(item.input_text) ?? asString(item.output_text) ?? "")
+      .filter(Boolean)
+      .join("\n");
+    return splitUserText(text, { platform: "cursor" }).some((chunk) => chunk.originKind === "user_authored");
   }).length;
 }
 

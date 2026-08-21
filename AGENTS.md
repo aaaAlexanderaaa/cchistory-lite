@@ -79,9 +79,14 @@ or a CLI/TUI view must preserve the canonical projection contract. The contract 
   submission recency order;
 - a turn cannot point at a project while claiming to be unlinked;
 - structured turn token totals agree with their legacy context-summary total when both are present;
-- every usage surface resolves option-B totals through the canonical usage projection; and
-- every resolved turn remains reachable from exactly one session bucket and one project/unlinked
-  bucket in the browser model.
+- every usage surface resolves option-B totals through the canonical usage projection;
+- every resolved turn remains reachable from exactly one resolved session and one
+  project/unlinked bucket;
+- a session that is the child endpoint of a `delegated_session` relation whose parent resolves
+  to a different session in the same snapshot is addressable and appears under that parent as
+  related work, but is omitted from top-level session collections and project-browser trees.
+  Its turns stay on the child session and remain visible in the parent project bucket.
+  Message-level ancestry (for example Claude `parentUuid`) and orphan children stay visible.
 
 The live-runtime fixture matrix must assert zero projection issues for every registered source.
 Surface tests must also include adversarial shapes that ordinary history rarely produces but that

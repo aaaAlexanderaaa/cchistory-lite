@@ -8,6 +8,7 @@ import { createSourceDefinition } from "../test-helpers.js";
 import { decodeGrokEncodedCwd, parseGrokSessionLayout, previewSourceFileWorkingDirectory } from "./grok.js";
 
 const SESSION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const CHILD_SESSION_ID = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
 
 test("previewSourceFileWorkingDirectory reads Grok cwd from the encoded path without opening files", () => {
   const filePath = path.join(
@@ -21,6 +22,102 @@ test("previewSourceFileWorkingDirectory reads Grok cwd from the encoded path wit
     workingDirectory: "/workspace/grok-fixture",
   });
   assert.deepEqual(previewSourceFileWorkingDirectory("codex", filePath), { state: "absent" });
+});
+
+test("[grok] sibling subagent sessions link through spawn meta without a parent-less summary relation", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-grok-child-"));
+
+  try {
+    const grokRoot = path.join(tempRoot, ".grok");
+    const cwdDir = path.join(grokRoot, "sessions", "%2Fworkspace%2Fgrok-fixture");
+    const parentDir = path.join(cwdDir, SESSION_ID);
+    const childDir = path.join(cwdDir, CHILD_SESSION_ID);
+    const subagentDir = path.join(parentDir, "subagents", CHILD_SESSION_ID);
+    await mkdir(subagentDir, { recursive: true });
+    await mkdir(childDir, { recursive: true });
+
+    const parentChat = path.join(parentDir, "chat_history.jsonl");
+    const childChat = path.join(childDir, "chat_history.jsonl");
+    await writeFile(
+      parentChat,
+      `${JSON.stringify({
+        type: "user",
+        content: [{ type: "text", text: "Review the Grok adapter boundary." }],
+        timestamp: "2026-03-09T06:01:00.000Z",
+      })}\n`,
+      "utf8",
+    );
+    await writeFile(
+      childChat,
+      `${JSON.stringify({
+        type: "user",
+        content: [{ type: "text", text: "Review the Grok adapter boundary as a delegated child." }],
+        timestamp: "2026-03-09T06:03:00.000Z",
+      })}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(parentDir, "summary.json"),
+      JSON.stringify({
+        info: { id: SESSION_ID, cwd: "/workspace/grok-fixture" },
+        generated_title: "Grok adapter fixture",
+        parent_session_id: "ffffffff-eeee-4ddd-8ccc-bbbbbbbbbbbb",
+        created_at: "2026-03-09T06:00:00.000Z",
+        current_model_id: "grok-4.6",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(childDir, "summary.json"),
+      JSON.stringify({
+        info: { id: CHILD_SESSION_ID, cwd: "/workspace/grok-fixture" },
+        generated_title: "Grok adapter child review",
+        session_kind: "subagent",
+        agent_name: "general-purpose",
+        created_at: "2026-03-09T06:03:00.000Z",
+        current_model_id: "grok-4.6",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(subagentDir, "meta.json"),
+      JSON.stringify({
+        parent_session_id: SESSION_ID,
+        child_session_id: CHILD_SESSION_ID,
+        subagent_type: "explore",
+        status: "completed",
+      }),
+      "utf8",
+    );
+
+    const source = createSourceDefinition("src-grok-child", "grok", grokRoot);
+    const [payload] = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources;
+    assert.ok(payload);
+    assert.equal(payload.sessions.length, 2);
+    const childSession = payload.sessions.find((session) => session.source_session_id === CHILD_SESSION_ID);
+    assert.ok(childSession);
+    const relations = payload.fragments.filter((fragment) => fragment.fragment_kind === "session_relation");
+    assert.ok(relations.length > 0);
+    assert.equal(relations.some((fragment) => fragment.payload.parent_uuid === undefined), false);
+    assert.equal(
+      relations.some((fragment) => fragment.payload.parent_uuid === "ffffffff-eeee-4ddd-8ccc-bbbbbbbbbbbb"),
+      false,
+    );
+    assert.ok(relations.every((fragment) =>
+      fragment.payload.parent_uuid === SESSION_ID &&
+      fragment.payload.child_session_id === CHILD_SESSION_ID
+    ));
+    assert.equal(
+      payload.fragments.some((fragment) =>
+        fragment.session_ref === childSession.id &&
+        fragment.fragment_kind === "session_meta" &&
+        fragment.payload.session_kind === "subagent"
+      ),
+      true,
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("parseGrokSessionLayout recovers the native session id and decoded cwd", () => {
@@ -178,8 +275,17 @@ test("[grok] chat_history sessions produce user turns and keep synthetic rows as
     assert.ok(payload.fragments.some((fragment) => fragment.fragment_kind === "tool_result"));
     assert.ok(payload.atoms.some((atom) => atom.actor_kind === "assistant" && String(atom.payload.text ?? "").includes("I found the Grok session stream.")));
     assert.ok(payload.sessions[0]?.resume_command?.includes(`grok -r ${SESSION_ID}`));
+    assert.equal(
+      payload.fragments.some((fragment) =>
+        fragment.fragment_kind === "session_relation" &&
+        fragment.payload.parent_uuid === "ffffffff-eeee-4ddd-8ccc-bbbbbbbbbbbb"
+      ),
+      false,
+    );
     const relation = payload.fragments.find((fragment) => fragment.fragment_kind === "session_relation");
-    assert.equal(relation?.payload.parent_uuid, "ffffffff-eeee-4ddd-8ccc-bbbbbbbbbbbb");
+    assert.equal(relation?.payload.parent_uuid, SESSION_ID);
+    assert.equal(relation?.payload.child_session_id, "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff");
+    assert.equal(relation?.payload.is_sidechain, true);
 
     const blobPaths = new Set(payload.blobs.map((blob) => blob.origin_path));
     assert.ok(blobPaths.has(chatPath));
@@ -204,6 +310,165 @@ test("[grok] chat_history sessions produce user turns and keep synthetic rows as
       ),
       /requested session/,
     );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("[grok] sibling subagent sessions nest under the parent instead of becoming top-level", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-grok-subagent-"));
+  const parentId = SESSION_ID;
+  const childId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  const resumeId = "cccccccc-dddd-4eee-8fff-000000000000";
+
+  try {
+    const grokRoot = path.join(tempRoot, ".grok");
+    const cwdDir = path.join(grokRoot, "sessions", "%2Fworkspace%2Fgrok-fixture");
+    const parentDir = path.join(cwdDir, parentId);
+    const childDir = path.join(cwdDir, childId);
+    const resumeDir = path.join(cwdDir, resumeId);
+    const childMetaDir = path.join(parentDir, "subagents", childId);
+    const resumeMetaDir = path.join(parentDir, "subagents", resumeId);
+    await mkdir(childMetaDir, { recursive: true });
+    await mkdir(resumeMetaDir, { recursive: true });
+    await mkdir(childDir, { recursive: true });
+    await mkdir(resumeDir, { recursive: true });
+
+    await writeFile(
+      path.join(parentDir, "chat_history.jsonl"),
+      [
+        { type: "user", content: [{ type: "text", text: "Review the parent adapter." }], timestamp: "2026-03-09T06:01:00.000Z" },
+        { type: "assistant", content: "Spawning a reviewer.", model_id: "grok-4.6", timestamp: "2026-03-09T06:02:00.000Z" },
+      ].map((line) => JSON.stringify(line)).join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(parentDir, "summary.json"),
+      JSON.stringify({
+        info: { id: parentId, cwd: "/workspace/grok-fixture" },
+        generated_title: "Grok parent fixture",
+        created_at: "2026-03-09T06:00:00.000Z",
+        updated_at: "2026-03-09T06:10:00.000Z",
+        current_model_id: "grok-4.6",
+        agent_name: "grok-build-plan",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(childDir, "chat_history.jsonl"),
+      [
+        { type: "user", content: [{ type: "text", text: "Review the child adapter independently." }], timestamp: "2026-03-09T06:03:00.000Z" },
+        { type: "assistant", content: "Child review complete.", model_id: "grok-4.6", timestamp: "2026-03-09T06:04:00.000Z" },
+      ].map((line) => JSON.stringify(line)).join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(childDir, "summary.json"),
+      JSON.stringify({
+        info: { id: childId, cwd: "/workspace/grok-fixture" },
+        generated_title: "Grok child review",
+        created_at: "2026-03-09T06:03:00.000Z",
+        updated_at: "2026-03-09T06:05:00.000Z",
+        current_model_id: "grok-4.6",
+        session_kind: "subagent",
+        agent_name: "general-purpose",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(childMetaDir, "meta.json"),
+      JSON.stringify({
+        subagent_id: childId,
+        parent_session_id: parentId,
+        child_session_id: childId,
+        subagent_type: "general-purpose",
+        description: "Review the child adapter independently.",
+        status: "completed",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(resumeDir, "chat_history.jsonl"),
+      [
+        { type: "user", content: [{ type: "text", text: "Continue the child review." }], timestamp: "2026-03-09T06:06:00.000Z" },
+        { type: "assistant", content: "Resume review complete.", model_id: "grok-4.6", timestamp: "2026-03-09T06:07:00.000Z" },
+      ].map((line) => JSON.stringify(line)).join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(resumeDir, "summary.json"),
+      JSON.stringify({
+        info: { id: resumeId, cwd: "/workspace/grok-fixture" },
+        generated_title: "Grok child resume",
+        created_at: "2026-03-09T06:06:00.000Z",
+        updated_at: "2026-03-09T06:08:00.000Z",
+        current_model_id: "grok-4.6",
+        session_kind: "subagent_resume",
+        agent_name: "general-purpose",
+        parent_session_id: childId,
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(resumeMetaDir, "meta.json"),
+      JSON.stringify({
+        subagent_id: resumeId,
+        parent_session_id: parentId,
+        child_session_id: resumeId,
+        subagent_type: "general-purpose",
+        description: "Continue the child review.",
+        status: "completed",
+      }),
+      "utf8",
+    );
+
+    const source = createSourceDefinition("src-grok-subagent", "grok", grokRoot);
+    const [payload] = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources;
+    assert.ok(payload);
+    const parent = payload.sessions.find((session) => session.source_session_id === parentId);
+    const child = payload.sessions.find((session) => session.source_session_id === childId);
+    const resume = payload.sessions.find((session) => session.source_session_id === resumeId);
+    assert.ok(parent && child && resume);
+    assert.equal(parent.resume_command?.includes(`grok -r ${parentId}`), true);
+    assert.equal(child.resume_command, undefined);
+    assert.equal(resume.resume_command, undefined);
+
+    const childRelation = payload.fragments.find((fragment) =>
+      fragment.session_ref === child.id &&
+      fragment.fragment_kind === "session_relation" &&
+      fragment.payload.parent_uuid === parentId &&
+      fragment.payload.child_session_id === childId &&
+      fragment.payload.is_sidechain === true
+    );
+    assert.ok(childRelation);
+    const resumeFromParent = payload.fragments.find((fragment) =>
+      fragment.fragment_kind === "session_relation" &&
+      fragment.payload.parent_uuid === parentId &&
+      fragment.payload.child_session_id === resumeId &&
+      fragment.payload.is_sidechain === true
+    );
+    assert.ok(resumeFromParent);
+    const resumeFromPriorChild = payload.fragments.find((fragment) =>
+      fragment.session_ref === resume.id &&
+      fragment.fragment_kind === "session_relation" &&
+      fragment.payload.parent_uuid === childId &&
+      fragment.payload.is_sidechain === true
+    );
+    assert.ok(resumeFromPriorChild);
+
+    const [targetedChild] = (
+      await runSourceProbe(
+        { source_ids: [source.id], target_session_refs: [childId] },
+        [source],
+      )
+    ).sources;
+    assert.ok(targetedChild);
+    assert.deepEqual(targetedChild.sessions.map((session) => session.source_session_id), [childId]);
+    assert.ok(targetedChild.fragments.some((fragment) =>
+      fragment.fragment_kind === "session_relation" &&
+      fragment.payload.parent_uuid === parentId &&
+      fragment.payload.child_session_id === childId
+    ));
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

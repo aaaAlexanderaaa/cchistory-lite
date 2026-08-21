@@ -134,15 +134,20 @@ export function buildDirectoryScopedProjectTreeProjection(params: {
   const topLevelSessions = filterTopLevelSessions(sessions, relatedWork);
   const scopedSessions = filterSessionsByDirectoryScope(topLevelSessions, directoryScope);
   const scopedSessionIds = new Set(scopedSessions.map((session) => session.id));
-  const scopedTurns = turns.filter((turn) => scopedSessionIds.has(turn.session_id));
+  const scopedTurns = filterTurnsByDirectoryScope(turns, sessions, directoryScope);
   const projectNodes = projects.flatMap((project) => {
     const projectTurns = scopedTurns.filter((turn) => turn.project_id === project.project_id);
-    const projectSessionIds = new Set(projectTurns.map((turn) => turn.session_id));
+    const projectSessionIds = new Set<string>();
+    for (const turn of projectTurns) {
+      if (scopedSessionIds.has(turn.session_id)) {
+        projectSessionIds.add(turn.session_id);
+      }
+    }
     for (const session of scopedSessions) {
       if (session.primary_project_id === project.project_id) projectSessionIds.add(session.id);
     }
     const projectSessions = scopedSessions.filter((session) => projectSessionIds.has(session.id));
-    if (directoryScope && projectSessions.length === 0) return [];
+    if (directoryScope && projectSessions.length === 0 && projectTurns.length === 0) return [];
     return [{ project, sessions: projectSessions, turns: projectTurns }];
   });
   const linkedSessionIds = new Set(projectNodes.flatMap((node) => node.sessions.map((session) => session.id)));

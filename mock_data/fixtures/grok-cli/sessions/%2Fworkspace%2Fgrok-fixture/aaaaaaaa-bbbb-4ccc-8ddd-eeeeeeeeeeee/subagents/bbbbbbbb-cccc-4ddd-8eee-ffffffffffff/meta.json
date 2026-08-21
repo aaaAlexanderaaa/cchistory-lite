@@ -1,0 +1,10 @@
+{
+  "subagent_id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+  "parent_session_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  "child_session_id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+  "subagent_type": "general-purpose",
+  "description": "Review the Grok adapter boundary.",
+  "status": "completed",
+  "started_at": "2026-03-09T06:03:00.000Z",
+  "completed_at": "2026-03-09T06:05:00.000Z"
+}

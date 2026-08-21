@@ -81,7 +81,9 @@ referenced by its slot id.
 | `grok` | Grok CLI | `~/.grok` | experimental |
 
 `cursor` still reads Agent CLI transcripts under `~/.cursor/projects/*/agent-transcripts`
-and merges them with composer/chat-store evidence when they share a session id.
+and merges them with composer/chat-store evidence when they share a native agent id.
+Chat-store blob graphs stay opaque; the adapter projects JSON `user_query` messages or
+protobuf-style prompt fragments, not binary DAG nodes.
 `cursor_agent` is opt-in (`--source cursor_agent`) so a default scan does not emit
 those transcripts twice.
 

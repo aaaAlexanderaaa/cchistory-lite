@@ -16,6 +16,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `query` operations `latest` and `list` batch recency and collection reads
   into the same scan as search, session, and replies.
 - `--no-dir` opts out of the JSON/query/shell current-directory default.
+- Experimental `cursor_agent` adapter reads Cursor Agent CLI transcripts from
+  `~/.cursor/projects/<slug>/agent-transcripts/*.jsonl`. It is opt-in via
+  `--source cursor_agent` so a default scan does not duplicate the same
+  transcripts already merged by stable `cursor`.
+- Experimental `grok` adapter reads official Grok CLI sessions from
+  `~/.grok/sessions/<encoded-cwd>/<session-id>/chat_history.jsonl`, using
+  `summary.json` for title/model/cwd and keeping updates, signals, and
+  subagent meta as companion evidence. Sibling subagent sessions are
+  linked through `parent/subagents/*/meta.json` (and a `session_kind` of
+  `subagent` / `subagent_resume` / `subagent_fork` only when that summary
+  also names the parent). Synthetic user rows
+  (`project_instructions`, `system_reminder`, …) stay out of UserTurns.
 
 ### Changed
 
@@ -35,15 +47,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `FORCE_COLOR=0` no longer forces TUI color. Only a non-zero `FORCE_COLOR`
   value forces ANSI.
-- Experimental `cursor_agent` adapter reads Cursor Agent CLI transcripts from
-  `~/.cursor/projects/<slug>/agent-transcripts/*.jsonl`. It is opt-in via
-  `--source cursor_agent` so a default scan does not duplicate the same
-  transcripts already merged by stable `cursor`.
-- Experimental `grok` adapter reads official Grok CLI sessions from
-  `~/.grok/sessions/<encoded-cwd>/<session-id>/chat_history.jsonl`, using
-  `summary.json` for title/model/cwd and keeping updates, signals, and
-  subagent meta as companion evidence. Synthetic user rows
-  (`project_instructions`, `system_reminder`, …) stay out of UserTurns.
+- Cursor Agent `store.db` recovery no longer treats binary blob-graph nodes as
+  the user turn. Readable JSON `user_query` messages (or protobuf-style prompt
+  fragments when JSON is absent) are projected instead, sibling `meta.json`
+  supplies cwd, and the native agent id is shared with matching
+  `agent-transcripts` so a default scan does not emit a duplicate garbage
+  session. Transcript recency now follows file mtime instead of scan time.
+- Delegated child sessions are no longer a Codex-only collection rule. Any
+  resolved inbound `delegated_session` whose parent is present in the snapshot
+  is kept addressable under that parent and omitted from top-level lists and
+  project-browser session rows. Child turns stay on the child and remain
+  visible in the parent project bucket. A bare `parent_session_id` on an
+  ordinary Grok session is not treated as lineage.
 
 ## [0.4.0] - 2026-08-11
 

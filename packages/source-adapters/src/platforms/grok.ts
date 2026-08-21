@@ -12,6 +12,12 @@ const SESSION_COMPANION_FILES = [
   "plan.json",
 ] as const;
 
+export const GROK_DELEGATED_SESSION_KINDS = new Set([
+  "subagent",
+  "subagent_resume",
+  "subagent_fork",
+]);
+
 export interface GrokSessionLayout {
   sessionId: string;
   sessionDir: string;
@@ -128,18 +134,88 @@ export async function listGrokCompanionEvidencePaths(_baseDir: string, filePath:
     SESSION_COMPANION_FILES.map((name) => path.join(sessionDir, name)),
   );
 
+  for (const sidecar of await listGrokRecordSidecarPaths(filePath)) {
+    companions.add(sidecar.filePath);
+  }
+
   const subagentsDir = path.join(sessionDir, "subagents");
   try {
     for (const entry of await fs.readdir(subagentsDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) {
         continue;
       }
-      companions.add(path.join(subagentsDir, entry.name, "meta.json"));
       companions.add(path.join(subagentsDir, entry.name, "output.json"));
     }
   } catch {}
 
   return [...companions];
+}
+
+export async function listGrokRecordSidecarPaths(
+  filePath: string,
+): Promise<Array<{ filePath: string; pointer: string }>> {
+  const sessionDir = resolveGrokSessionDir(filePath);
+  if (!sessionDir) {
+    return [];
+  }
+
+  const sidecars: Array<{ filePath: string; pointer: string }> = [
+    { filePath: path.join(sessionDir, "summary.json"), pointer: "summary" },
+  ];
+  const sessionId = path.basename(sessionDir);
+  const seen = new Set<string>([sidecars[0]!.filePath]);
+
+  const subagentsDir = path.join(sessionDir, "subagents");
+  try {
+    for (const entry of await fs.readdir(subagentsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const metaPath = path.join(subagentsDir, entry.name, "meta.json");
+      sidecars.push({ filePath: metaPath, pointer: `subagent_meta:${entry.name}` });
+      seen.add(metaPath);
+    }
+  } catch {}
+
+  if (await grokSessionMayBeDelegatedChild(sessionDir)) {
+    const cwdDir = path.dirname(sessionDir);
+    try {
+      for (const entry of await fs.readdir(cwdDir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.name === sessionId) {
+          continue;
+        }
+        const parentMetaPath = path.join(cwdDir, entry.name, "subagents", sessionId, "meta.json");
+        if (seen.has(parentMetaPath)) {
+          continue;
+        }
+        try {
+          await fs.access(parentMetaPath);
+        } catch {
+          continue;
+        }
+        sidecars.push({ filePath: parentMetaPath, pointer: `subagent_meta:${sessionId}` });
+        seen.add(parentMetaPath);
+      }
+    } catch {}
+  }
+
+  return sidecars;
+}
+
+async function grokSessionMayBeDelegatedChild(sessionDir: string): Promise<boolean> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(path.join(sessionDir, "summary.json"), "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return true;
+    }
+    const sessionKind = (parsed as { session_kind?: unknown }).session_kind;
+    if (typeof sessionKind !== "string") {
+      return false;
+    }
+    return GROK_DELEGATED_SESSION_KINDS.has(sessionKind);
+  } catch {
+    return true;
+  }
 }
 
 export const grokAdapter: PlatformAdapter = {

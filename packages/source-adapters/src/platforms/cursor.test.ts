@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
@@ -174,8 +175,380 @@ test("runSourceProbe ingests Cursor chat-store metadata and minimal readable fra
     ),
   );
   assert.ok(
+    payload.contexts.some((context) =>
+      context.assistant_replies.some((reply) =>
+        reply.content.includes("Use one setup screen with optional advanced fields."),
+      ),
+    ),
+  );
+  assert.ok(
     payload.loss_audits.some((audit) => audit.diagnostic_code === "cursor_chat_store_blob_graph_opaque"),
   );
+});
+
+test("runSourceProbe prefers Cursor chat-store JSON user_query blobs over binary graph nodes", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cursor-agent-store-"));
+
+  try {
+    const agentId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee21";
+    const chatsRoot = path.join(tempRoot, ".cursor", "chats");
+    const storeDir = path.join(chatsRoot, "workspace-hash", agentId);
+    await mkdir(storeDir, { recursive: true });
+    seedCursorAgentStyleChatStore(path.join(storeDir, "store.db"), {
+      agentId,
+      title: "Inspect workspace path",
+      userQuery: "Inspect the Cursor workspace path from the JSON user_query blob.",
+      assistantText: "Workspace path is /workspace/cursor-agent-store.",
+    });
+    await writeFile(
+      path.join(storeDir, "meta.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        createdAtMs: Date.parse("2026-03-10T08:00:00.000Z"),
+        updatedAtMs: Date.parse("2026-03-10T08:00:08.000Z"),
+        hasConversation: true,
+        cwd: "/workspace/cursor-agent-store",
+        title: "Inspect workspace path",
+      }),
+      "utf8",
+    );
+
+    const [payload] = (
+      await runSourceProbe({}, [createSourceDefinition("src-cursor-agent-store", "cursor", chatsRoot)])
+    ).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.source.sync_status, "healthy");
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.sessions[0]?.id, `sess:cursor:${agentId}`);
+    assert.equal(payload.sessions[0]?.working_directory, "/workspace/cursor-agent-store");
+    assert.equal(payload.turns.length, 1);
+    assert.equal(
+      payload.turns[0]?.canonical_text,
+      "Inspect the Cursor workspace path from the JSON user_query blob.",
+    );
+    assert.doesNotMatch(payload.turns[0]?.canonical_text ?? "", /Asia\/Shanghai/u);
+    assert.doesNotMatch(payload.turns[0]?.canonical_text ?? "", /user_info|OS Version/u);
+    assert.ok(
+      payload.contexts.some((context) =>
+        context.assistant_replies.some((reply) => reply.content.includes("Workspace path is /workspace/cursor-agent-store.")),
+      ),
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe keeps interleaved chat-store JSON turns in blob order", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cursor-store-interleaved-"));
+
+  try {
+    const agentId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee26";
+    const chatsRoot = path.join(tempRoot, ".cursor", "chats");
+    const storeDir = path.join(chatsRoot, "workspace-hash", agentId);
+    await mkdir(storeDir, { recursive: true });
+    seedCursorAgentStyleChatStore(path.join(storeDir, "store.db"), {
+      agentId,
+      title: "Interleaved store session",
+      userQuery: "First store ask.",
+      assistantText: "First store reply.",
+      followUp: { userQuery: "Second store ask.", assistantText: "Second store reply." },
+    });
+
+    const [payload] = (
+      await runSourceProbe({}, [createSourceDefinition("src-cursor-store-interleaved", "cursor", chatsRoot)])
+    ).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.turns.length, 2);
+    assert.equal(payload.turns[0]?.canonical_text, "First store ask.");
+    assert.equal(payload.turns[1]?.canonical_text, "Second store ask.");
+    assert.ok(
+      payload.contexts.some((context) =>
+        context.assistant_replies.some((reply) => reply.content.includes("First store reply.")),
+      ),
+    );
+    assert.ok(
+      payload.contexts.some((context) =>
+        context.assistant_replies.some((reply) => reply.content.includes("Second store reply.")),
+      ),
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe keeps a protobuf chat-store ask when JSON user_query is absent", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cursor-store-protobuf-"));
+
+  try {
+    const agentId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee22";
+    const chatsRoot = path.join(tempRoot, ".cursor", "chats");
+    const storeDir = path.join(chatsRoot, "workspace-hash", agentId);
+    await mkdir(storeDir, { recursive: true });
+    seedCursorAgentStyleChatStore(path.join(storeDir, "store.db"), {
+      agentId,
+      title: "Incomplete agent",
+      userQuery: "Inspect the incomplete Cursor chat store.",
+      includeJsonUserQuery: false,
+    });
+    await writeFile(
+      path.join(storeDir, "meta.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cwd: "/workspace/cursor-incomplete-store",
+        hasConversation: false,
+      }),
+      "utf8",
+    );
+
+    const [payload] = (
+      await runSourceProbe({}, [createSourceDefinition("src-cursor-store-protobuf", "cursor", chatsRoot)])
+    ).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.sessions[0]?.working_directory, "/workspace/cursor-incomplete-store");
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.turns[0]?.canonical_text, "Inspect the incomplete Cursor chat store.");
+    assert.doesNotMatch(payload.turns[0]?.canonical_text ?? "", /Asia\/Shanghai/u);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe keeps a protobuf chat-store ask longer than 127 bytes", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cursor-store-protobuf-long-"));
+  const userQuery = `Inspect the incomplete Cursor chat store with a long protobuf prompt ${"x".repeat(80)}.`;
+
+  try {
+    const agentId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee27";
+    const chatsRoot = path.join(tempRoot, ".cursor", "chats");
+    const storeDir = path.join(chatsRoot, "workspace-hash", agentId);
+    await mkdir(storeDir, { recursive: true });
+    seedCursorAgentStyleChatStore(path.join(storeDir, "store.db"), {
+      agentId,
+      title: "Long protobuf agent",
+      userQuery,
+      includeJsonUserQuery: false,
+    });
+    await writeFile(
+      path.join(storeDir, "meta.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cwd: "/workspace/cursor-long-protobuf-store",
+        hasConversation: false,
+      }),
+      "utf8",
+    );
+
+    const [payload] = (
+      await runSourceProbe({}, [createSourceDefinition("src-cursor-store-protobuf-long", "cursor", chatsRoot)])
+    ).sources;
+
+    assert.ok(payload);
+    assert.ok(Buffer.byteLength(userQuery, "utf8") > 127);
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.turns[0]?.canonical_text, userQuery);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe merges a Cursor transcript with the matching chat store instead of duplicating it", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cursor-store-merge-"));
+
+  try {
+    const agentId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee23";
+    const projectsRoot = path.join(tempRoot, ".cursor", "projects");
+    const transcriptDir = path.join(projectsRoot, "workspace-cursor-merge", "agent-transcripts", agentId);
+    const storeDir = path.join(tempRoot, ".cursor", "chats", "workspace-hash", agentId);
+    await mkdir(transcriptDir, { recursive: true });
+    await mkdir(storeDir, { recursive: true });
+    await writeFile(
+      path.join(transcriptDir, `${agentId}.jsonl`),
+      [
+        {
+          role: "user",
+          message: {
+            content: [{
+              type: "text",
+              text: "<timestamp>Tuesday, Mar 10, 2026, 8:00 AM (UTC)</timestamp>\n<user_query>\nInspect the merged Cursor transcript.\n</user_query>",
+            }],
+          },
+        },
+        {
+          role: "assistant",
+          message: { content: [{ type: "text", text: "Merged transcript reply." }] },
+        },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n"),
+      "utf8",
+    );
+    seedCursorAgentStyleChatStore(path.join(storeDir, "store.db"), {
+      agentId,
+      title: "Merged Cursor session",
+      userQuery: "Inspect the merged Cursor transcript.",
+      assistantText: "Merged store reply.",
+    });
+    await writeFile(
+      path.join(storeDir, "meta.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cwd: "/workspace/cursor-merged",
+        hasConversation: true,
+        title: "Merged Cursor session",
+      }),
+      "utf8",
+    );
+
+    const [payload] = (
+      await runSourceProbe({}, [createSourceDefinition("src-cursor-store-merge", "cursor", projectsRoot)])
+    ).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.source.sync_status, "healthy");
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.sessions[0]?.id, `sess:cursor:${agentId}`);
+    assert.equal(payload.sessions.some((session) => session.id.includes("chat-store")), false);
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.turns[0]?.canonical_text, "Inspect the merged Cursor transcript.");
+    assert.equal(payload.sessions[0]?.working_directory, "/workspace/cursor-merged");
+    assert.doesNotMatch(payload.turns[0]?.canonical_text ?? "", /Asia\/Shanghai/u);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe keeps one Cursor turn when composer and chat store share an id without a transcript", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cursor-composer-store-"));
+
+  try {
+    const agentId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee24";
+    const projectsRoot = path.join(tempRoot, ".cursor", "projects");
+    const storeDir = path.join(tempRoot, ".cursor", "chats", "workspace-hash", agentId);
+    const userDir = path.join(tempRoot, "Library", "Application Support", "Cursor", "User");
+    await mkdir(projectsRoot, { recursive: true });
+    await mkdir(storeDir, { recursive: true });
+    await mkdir(path.join(userDir, "globalStorage"), { recursive: true });
+    seedCursorComposerUsableMetadataDb(path.join(userDir, "globalStorage", "state.vscdb"), {
+      composerId: agentId,
+      title: "Cursor composer session",
+      workspacePath: "/Users/test/my_app",
+      modelName: "composer-2",
+      userText: "Inspect from composer.",
+      assistantText: "Composer reply.",
+    });
+    seedCursorAgentStyleChatStore(path.join(storeDir, "store.db"), {
+      agentId,
+      title: "Cursor store session",
+      userQuery: "Inspect from chat store.",
+      assistantText: "Store reply.",
+    });
+
+    const [payload] = (
+      await runSourceProbe({}, [createSourceDefinition("src-cursor-composer-store", "cursor", projectsRoot)])
+    ).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.source.sync_status, "healthy");
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.sessions[0]?.id, `sess:cursor:${agentId}`);
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.turns[0]?.canonical_text, "Inspect from composer.");
+    assert.equal(payload.turns.some((turn) => turn.canonical_text.includes("Inspect from chat store.")), false);
+    assert.equal(payload.sessions[0]?.working_directory, "/Users/test/my_app");
+    assert.equal(payload.sessions[0]?.model, "composer-2");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe keeps extra chat-store user asks when they outnumber composer bubbles", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cursor-richer-store-"));
+
+  try {
+    const agentId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee25";
+    const projectsRoot = path.join(tempRoot, ".cursor", "projects");
+    const storeDir = path.join(tempRoot, ".cursor", "chats", "workspace-hash", agentId);
+    const userDir = path.join(tempRoot, "Library", "Application Support", "Cursor", "User");
+    await mkdir(projectsRoot, { recursive: true });
+    await mkdir(storeDir, { recursive: true });
+    await mkdir(path.join(userDir, "globalStorage"), { recursive: true });
+    seedCursorComposerUsableMetadataDb(path.join(userDir, "globalStorage", "state.vscdb"), {
+      composerId: agentId,
+      title: "Cursor composer session",
+      workspacePath: "/Users/test/my_app",
+      modelName: "composer-2",
+      userText: "Inspect from composer.",
+      assistantText: "Composer reply.",
+    });
+    seedCursorAgentStyleChatStore(path.join(storeDir, "store.db"), {
+      agentId,
+      title: "Richer store session",
+      userQuery: "Inspect from chat store.",
+      extraUserQueries: ["Follow up from chat store."],
+      assistantText: "Store reply.",
+    });
+
+    const [payload] = (
+      await runSourceProbe({}, [createSourceDefinition("src-cursor-richer-store", "cursor", projectsRoot)])
+    ).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.turns.length, 1);
+    assert.match(payload.turns[0]?.canonical_text ?? "", /Inspect from chat store\./u);
+    assert.match(payload.turns[0]?.canonical_text ?? "", /Follow up from chat store\./u);
+    assert.doesNotMatch(payload.turns[0]?.canonical_text ?? "", /Inspect from composer\./u);
+    assert.equal(payload.sessions[0]?.working_directory, "/Users/test/my_app");
+    assert.equal(payload.sessions[0]?.model, "composer-2");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("cursor agent-transcript file mtimes drive session recency instead of scan time", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cursor-transcript-mtime-"));
+
+  try {
+    const projectsRoot = path.join(tempRoot, ".cursor", "projects");
+    const olderId = "cursor-transcript-older";
+    const newerId = "cursor-transcript-newer";
+    const olderPath = path.join(projectsRoot, "workspace-a", "agent-transcripts", olderId, `${olderId}.jsonl`);
+    const newerPath = path.join(projectsRoot, "workspace-a", "agent-transcripts", newerId, `${newerId}.jsonl`);
+    await mkdir(path.dirname(olderPath), { recursive: true });
+    await mkdir(path.dirname(newerPath), { recursive: true });
+    await writeFile(
+      olderPath,
+      `${JSON.stringify({ role: "user", message: { content: [{ type: "text", text: "Older Cursor transcript ask." }] } })}\n`,
+      "utf8",
+    );
+    await writeFile(
+      newerPath,
+      `${JSON.stringify({ role: "user", message: { content: [{ type: "text", text: "Newer Cursor transcript ask." }] } })}\n`,
+      "utf8",
+    );
+    const olderAt = new Date("2026-03-09T06:00:00.000Z");
+    const newerAt = new Date("2026-03-10T06:00:00.000Z");
+    await utimes(olderPath, olderAt, olderAt);
+    await utimes(newerPath, newerAt, newerAt);
+
+    const [payload] = (
+      await runSourceProbe({}, [createSourceDefinition("src-cursor-transcript-mtime", "cursor", projectsRoot)])
+    ).sources;
+    assert.ok(payload);
+    const older = payload.sessions.find((session) => session.source_session_id === olderId);
+    const newer = payload.sessions.find((session) => session.source_session_id === newerId);
+    assert.ok(older);
+    assert.ok(newer);
+    assert.equal(older.updated_at?.startsWith("2026-03-09T06:00:00"), true);
+    assert.equal(newer.updated_at?.startsWith("2026-03-10T06:00:00"), true);
+    assert.ok((newer.updated_at ?? "") > (older.updated_at ?? ""));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("runSourceProbe falls back to Cursor prompt history with workspace-linked synthetic sessions", async () => {
@@ -1284,6 +1657,171 @@ function seedOpaqueCursorChatStore(dbPath: string): void {
       "0",
       Buffer.from(JSON.stringify({ agentId: "opaque-agent", name: "Opaque store" }), "utf8").toString("hex"),
     );
+  } finally {
+    db.close();
+  }
+}
+
+function encodeProtobufVarint(value: number): Buffer {
+  const bytes: number[] = [];
+  let remaining = value >>> 0;
+  while (remaining > 0x7f) {
+    bytes.push((remaining & 0x7f) | 0x80);
+    remaining >>>= 7;
+  }
+  bytes.push(remaining);
+  return Buffer.from(bytes);
+}
+
+function encodeProtobufLengthDelimitedString(text: string, trailer?: Buffer): Buffer {
+  const payload = Buffer.from(text, "utf8");
+  return Buffer.concat([
+    Buffer.from([0x0a]),
+    encodeProtobufVarint(payload.length),
+    payload,
+    trailer ?? Buffer.alloc(0),
+  ]);
+}
+
+function seedCursorAgentStyleChatStore(
+  dbPath: string,
+  options: {
+    agentId: string;
+    title: string;
+    userQuery: string;
+    extraUserQueries?: readonly string[];
+    followUp?: { userQuery: string; assistantText?: string };
+    assistantText?: string;
+    includeJsonUserQuery?: boolean;
+  },
+): void {
+  const systemBlob = Buffer.from(
+    JSON.stringify({
+      role: "system",
+      content: "You are an AI coding assistant used only as fixture system text.",
+    }),
+    "utf8",
+  );
+  const userInfoBlob = Buffer.from(
+    JSON.stringify({
+      role: "user",
+      content: "<user_info>\nOS Version: linux\nWorkspace Path: /workspace/cursor-agent-store\n</user_info>",
+    }),
+    "utf8",
+  );
+  const systemId = createHash("sha256").update(systemBlob).digest("hex");
+  const userInfoId = createHash("sha256").update(userInfoBlob).digest("hex");
+  const graphBlob = Buffer.concat([
+    Buffer.from([0x0a, 0x20]),
+    Buffer.from(systemId, "hex"),
+    Buffer.from([0x0a, 0x20]),
+    Buffer.from(userInfoId, "hex"),
+    Buffer.from("Asia/Shanghai", "utf8"),
+  ]);
+  const protobufPrefix =
+    options.includeJsonUserQuery === false
+      ? encodeProtobufLengthDelimitedString(options.userQuery, Buffer.from(systemId, "hex"))
+      : Buffer.concat([Buffer.from([0x0a, 0x03]), Buffer.from(options.userQuery, "utf8")]);
+  const protobufAsk = protobufPrefix;
+  const jsonUserQuery =
+    options.includeJsonUserQuery === false
+      ? undefined
+      : Buffer.from(
+          JSON.stringify({
+            role: "user",
+            content: [{
+              type: "text",
+              text: `<timestamp>Tuesday, Mar 10, 2026, 8:00 AM (UTC)</timestamp>\n<user_query>\n${options.userQuery}\n</user_query>`,
+            }],
+          }),
+          "utf8",
+        );
+  const assistantBlob = options.assistantText
+    ? Buffer.from(
+        JSON.stringify({
+          role: "assistant",
+          content: [
+            { type: "reasoning", text: "" },
+            { type: "text", text: options.assistantText },
+          ],
+        }),
+        "utf8",
+      )
+    : undefined;
+
+  const blobs: Array<{ id: string; data: Buffer }> = [
+    { id: systemId, data: systemBlob },
+    { id: userInfoId, data: userInfoBlob },
+    { id: createHash("sha256").update(graphBlob).digest("hex"), data: graphBlob },
+    { id: createHash("sha256").update(protobufAsk).digest("hex"), data: protobufAsk },
+  ];
+  if (jsonUserQuery) {
+    blobs.push({ id: createHash("sha256").update(jsonUserQuery).digest("hex"), data: jsonUserQuery });
+  }
+  for (const extraQuery of options.extraUserQueries ?? []) {
+    const extraBlob = Buffer.from(
+      JSON.stringify({
+        role: "user",
+        content: [{
+          type: "text",
+          text: `<timestamp>Tuesday, Mar 10, 2026, 8:01 AM (UTC)</timestamp>\n<user_query>\n${extraQuery}\n</user_query>`,
+        }],
+      }),
+      "utf8",
+    );
+    blobs.push({ id: createHash("sha256").update(extraBlob).digest("hex"), data: extraBlob });
+  }
+  if (assistantBlob) {
+    blobs.push({ id: createHash("sha256").update(assistantBlob).digest("hex"), data: assistantBlob });
+  }
+  if (options.followUp) {
+    const followUpUser = Buffer.from(
+      JSON.stringify({
+        role: "user",
+        content: [{
+          type: "text",
+          text: `<timestamp>Tuesday, Mar 10, 2026, 8:02 AM (UTC)</timestamp>\n<user_query>\n${options.followUp.userQuery}\n</user_query>`,
+        }],
+      }),
+      "utf8",
+    );
+    blobs.push({ id: createHash("sha256").update(followUpUser).digest("hex"), data: followUpUser });
+    if (options.followUp.assistantText) {
+      const followUpAssistant = Buffer.from(
+        JSON.stringify({
+          role: "assistant",
+          content: [
+            { type: "reasoning", text: "" },
+            { type: "text", text: options.followUp.assistantText },
+          ],
+        }),
+        "utf8",
+      );
+      blobs.push({ id: createHash("sha256").update(followUpAssistant).digest("hex"), data: followUpAssistant });
+    }
+  }
+
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)");
+    db.exec("CREATE TABLE blobs (id TEXT, data BLOB)");
+    db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)").run(
+      "0",
+      Buffer.from(
+        JSON.stringify({
+          agentId: options.agentId,
+          latestRootBlobId: blobs.at(-1)?.id,
+          name: options.title,
+          mode: "default",
+          createdAt: Date.parse("2026-03-10T08:00:00.000Z"),
+        }),
+        "utf8",
+      ).toString("hex"),
+    );
+    const insert = db.prepare("INSERT INTO blobs (id, data) VALUES (?, ?)");
+    for (const blob of blobs) {
+      insert.run(blob.id, blob.data);
+    }
   } finally {
     db.close();
   }
