@@ -92,7 +92,7 @@ export function splitUserText(
   }
 
   const cursorEnvelope =
-    options.platform === "cursor" || options.platform === "cursor_agent"
+    options.platform === "cursor" || options.platform === "cursor_agent" || options.platform === "grok"
       ? splitCursorPromptEnvelope(normalized)
       : undefined;
   if (cursorEnvelope) {
@@ -263,7 +263,7 @@ export function isAutomationTriggerUserText(text: string): boolean {
 
 export function splitCursorPromptEnvelope(text: string): UserTextChunk[] | undefined {
   const tagPattern =
-    /<(timestamp|manually_attached_skills|user_query|user_info|agent_transcripts|attached_files|open_and_recently_viewed_files|cursor_rules_context|always_applied_workspace_rules|system_reminder|system-reminder)>[\s\S]*?<\/\1>/gu;
+    /<(timestamp|manually_attached_skills|user_query|user_info|skill_information|agent_transcripts|attached_files|open_and_recently_viewed_files|cursor_rules_context|always_applied_workspace_rules|system_reminder|system-reminder)>[\s\S]*?<\/\1>/gu;
   const matches = [...text.matchAll(tagPattern)];
   if (matches.length === 0) {
     return undefined;

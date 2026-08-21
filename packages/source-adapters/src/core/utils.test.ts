@@ -236,6 +236,23 @@ Let me chronologically analyze the conversation...`;
     assert.doesNotMatch(authored[0]?.text ?? "", /user_info|darwin/u);
   });
 
+  test("Grok user_info and skill_information envelopes keep only the inner query as authored", () => {
+    const text = [
+      "<user_info>OS Version: linux Shell: /bin/fish Workspace Path: /workspace</user_info>",
+      "<skill_information><skill name=\"review\" /></skill_information>",
+      "<user_query>Nest Grok subagent sessions under parent</user_query>",
+    ].join("\n");
+    const chunks = splitUserText(text, { platform: "grok" });
+    const authored = chunks.filter((chunk) => chunk.originKind === "user_authored");
+    assert.equal(authored.length, 1);
+    assert.equal(authored[0]?.text, "Nest Grok subagent sessions under parent");
+    assert.equal(
+      chunks.some((chunk) => chunk.originKind === "injected_user_shaped" && chunk.text.includes("user_info")),
+      true,
+    );
+    assert.doesNotMatch(authored[0]?.text ?? "", /user_info|skill_information|linux/u);
+  });
+
   test("closed Cursor user_query envelopes on other platforms stay authored", () => {
     const text = "<user_query>\nShip the Cursor parser fix.\n</user_query>";
     const chunks = splitUserText(text, { platform: "claude_code" });

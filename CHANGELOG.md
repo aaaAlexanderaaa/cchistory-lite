@@ -9,6 +9,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `cchistory-lite shell` holds one directory-scoped snapshot in memory. TTY
+  sessions use human subcommands; `--json` or a non-TTY stdin uses JSON-lines
+  (`search` / `latest` / `list` / `session` / `replies`, plus `refresh` and
+  `exit`). Refresh is explicit.
+- `query` operations `latest` and `list` batch recency and collection reads
+  into the same scan as search, session, and replies.
+- `--no-dir` opts out of the JSON/query/shell current-directory default.
+
+### Changed
+
+- CLI / `--json` / `query` search now returns one row per top-level session
+  (title, `resume_command`, best matching turn). `total`, `shown`, `limit`,
+  and `offset` count sessions. The TUI still lists matching turns.
+- `--json`, `query`, and `shell` default to `--dir=$PWD`. Human-readable CLI
+  without `--json` still scans every selected source. `sources`, `show`,
+  `export`, and `tui` do not take that default.
+- Grok `--dir` skips sessions whose encoded cwd is known not to match before
+  parsing chat history. Uncertain paths still take the full read-only probe.
+- Grok `<user_info>` / `<skill_information>` / `<user_query>` envelopes keep
+  only the inner query as user-authored text. Session titles participate in
+  search matching. Query requests/results are `cchistory-lite-query/v2`.
+
+### Fixed
+
+- `FORCE_COLOR=0` no longer forces TUI color. Only a non-zero `FORCE_COLOR`
+  value forces ANSI.
 - Experimental `cursor_agent` adapter reads Cursor Agent CLI transcripts from
   `~/.cursor/projects/<slug>/agent-transcripts/*.jsonl`. It is opt-in via
   `--source cursor_agent` so a default scan does not duplicate the same

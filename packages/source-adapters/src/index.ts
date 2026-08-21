@@ -17,6 +17,7 @@ export {
 export { buildStageRuns } from "./core/projections.js";
 export { selectTailBlob } from "@cchistory/domain";
 export { listPlatformAdapters, listPlatformAdaptersBySupportTier, listStablePlatformAdapters } from "./platforms/registry.js";
+export { parseGrokSessionLayout, previewSourceFileWorkingDirectory } from "./platforms/grok.js";
 export type { HostDiscoveryCandidate, HostDiscoveryEntry } from "./core/legacy.js";
 export type { SourceFileInventory } from "./core/legacy.js";
 export type { SourceFileLogicalSessionMetadata } from "./core/legacy.js";

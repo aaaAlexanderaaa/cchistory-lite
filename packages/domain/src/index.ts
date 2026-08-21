@@ -886,12 +886,24 @@ export interface SearchHighlight {
   end: number;
 }
 
+export type SearchMatchField = "title" | "text" | "path";
+
 export interface TurnSearchResult {
   turn: UserTurnProjection;
   session?: SessionProjection;
   project?: ProjectIdentity;
   highlights: SearchHighlight[];
   relevance_score: number;
+  match_field?: SearchMatchField;
+}
+
+export interface SessionSearchResult {
+  session: SessionProjection;
+  project?: ProjectIdentity;
+  best_turn?: UserTurnProjection;
+  highlights: SearchHighlight[];
+  relevance_score: number;
+  match_field: SearchMatchField;
 }
 
 export interface DriftTimelinePoint {

@@ -33,6 +33,7 @@ import {
   resolveTurnUsage,
   SEARCH_CANONICAL_TEXT_SCAN_BYTES,
   SEARCH_TRUNCATION_MARKER,
+  searchSessionsInMemory,
   searchTurnsInMemory,
   sessionMatchesDirectoryScope,
   stripSearchTruncationMarker,
@@ -256,6 +257,138 @@ test("in-memory search preserves exact totals and ranking while retaining only t
     limit: 0,
     now_ms: nowMs,
   }), { results: [], total: turns.length });
+});
+
+test("session search folds matching turns, ranks titles first, and hides delegated children", () => {
+  const source = createSource();
+  const parent = {
+    ...createSession(source),
+    id: "session-parent",
+    title: "Nest Grok subagent sessions under parent",
+    updated_at: "2026-01-02T00:00:00.000Z",
+  };
+  const child = {
+    ...createSession(source),
+    id: "session-child",
+    title: "Explore helper",
+    updated_at: "2026-01-02T00:01:00.000Z",
+  };
+  const sibling = {
+    ...createSession(source),
+    id: "session-sibling",
+    title: "Unrelated parser work",
+    updated_at: "2026-01-01T00:00:00.000Z",
+  };
+  const parentTurn = {
+    ...createTurn(source, parent),
+    id: "turn-parent",
+    turn_id: "turn-parent",
+    canonical_text: "Wire delegated_session into Grok subagent directories.",
+    submission_started_at: "2026-01-02T00:00:00.000Z",
+  };
+  const childTurn = {
+    ...createTurn(source, child),
+    id: "turn-child",
+    turn_id: "turn-child",
+    canonical_text: "Wire delegated_session into Grok subagent directories.",
+    submission_started_at: "2026-01-02T00:01:00.000Z",
+  };
+  const siblingTurn = {
+    ...createTurn(source, sibling),
+    id: "turn-sibling",
+    turn_id: "turn-sibling",
+    canonical_text: "Review parser behavior",
+    submission_started_at: "2026-01-01T00:00:00.000Z",
+  };
+  const relatedWork = [{
+    id: "related-child",
+    query_session_ref: child.id,
+    source_id: source.id,
+    source_platform: "codex" as const,
+    source_session_ref: child.id,
+    relation_kind: "delegated_session" as const,
+    target_kind: "session" as const,
+    direction: "inbound" as const,
+    child_session_ref: child.id,
+    parent_session_ref: parent.id,
+    transcript_primary: true,
+    created_at: "2026-01-02T00:01:00.000Z",
+    updated_at: "2026-01-02T00:01:00.000Z",
+    evidence_confidence: 0.9,
+    fragment_refs: [],
+    raw_detail: {},
+  }];
+
+  const titleHits = searchSessionsInMemory({
+    turns: [parentTurn, childTurn, siblingTurn],
+    sessions: [parent, child, sibling],
+    projects: [],
+    related_work: relatedWork,
+    query: "Nest Grok",
+    limit: 10,
+  });
+  assert.equal(titleHits.total, 1);
+  assert.deepEqual(titleHits.results.map((entry) => entry.session.id), [parent.id]);
+  assert.equal(titleHits.results[0]?.match_field, "title");
+
+  const textHits = searchSessionsInMemory({
+    turns: [parentTurn, childTurn, siblingTurn],
+    sessions: [parent, child, sibling],
+    projects: [],
+    related_work: relatedWork,
+    query: "delegated_session",
+    limit: 10,
+  });
+  assert.equal(textHits.total, 1);
+  assert.equal(textHits.results[0]?.session.id, parent.id);
+  assert.equal(textHits.results[0]?.best_turn?.id, parentTurn.id);
+  assert.equal(textHits.results[0]?.match_field, "text");
+
+  const turnHits = searchTurnsInMemory({
+    turns: [parentTurn, siblingTurn, {
+      ...siblingTurn,
+      id: "turn-sibling-2",
+      turn_id: "turn-sibling-2",
+      canonical_text: "Later parser notes",
+      submission_started_at: "2026-01-01T00:02:00.000Z",
+    }],
+    sessions: [parent, sibling],
+    projects: [],
+    query: "Unrelated parser work",
+    limit: 10,
+  });
+  assert.equal(turnHits.total, 1);
+  assert.equal(turnHits.results[0]?.turn.id, "turn-sibling-2");
+  assert.equal(turnHits.results[0]?.match_field, "title");
+
+  const titledOnly = {
+    ...createSession(source),
+    id: "session-title-only",
+    title: "Parser work",
+    updated_at: "2026-01-03T00:00:00.000Z",
+  };
+  const titledWithBody = {
+    ...createSession(source),
+    id: "session-title-and-body",
+    title: "Parser work",
+    updated_at: "2026-01-01T00:00:00.000Z",
+  };
+  const bodyTurn = {
+    ...createTurn(source, titledWithBody),
+    id: "turn-title-and-body",
+    turn_id: "turn-title-and-body",
+    canonical_text: "Parser work on the retry path",
+    submission_started_at: "2026-01-01T00:00:00.000Z",
+  };
+  const ranked = searchSessionsInMemory({
+    turns: [bodyTurn],
+    sessions: [titledOnly, titledWithBody],
+    projects: [],
+    query: "Parser work",
+    limit: 10,
+    now_ms: Date.parse("2026-02-01T00:00:00.000Z"),
+  });
+  assert.deepEqual(ranked.results.map((entry) => entry.session.id), [titledWithBody.id, titledOnly.id]);
 });
 
 test("shared read ordering uses stable IDs to break timestamp ties", () => {

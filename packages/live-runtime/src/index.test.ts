@@ -1287,8 +1287,59 @@ test("Lite and Full agree on a synthetic Grok source through the shared probe pi
     );
     const liteSearch = liteFromProbe.search({ query: "parity", limit: 100 });
     assert.equal(liteSearch.total, 2);
+    const sessionSearch = lite.searchSessions({ query: "Grok Lite parity", limit: 10 });
+    assert.equal(sessionSearch.total, 1);
+    assert.equal(sessionSearch.results[0]?.session.source_session_id, sessionId);
+    assert.equal(sessionSearch.results[0]?.match_field, "title");
     assert.deepEqual(lite.projectionIssues, []);
     assert.deepEqual(liteFromProbe.projectionIssues, []);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Lite directory scope skips Grok sessions whose encoded cwd is known not to match", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-grok-dir-"));
+  try {
+    const grokRoot = path.join(tempRoot, ".grok");
+    const keepId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee10";
+    const skipId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee11";
+    const keepDir = path.join(grokRoot, "sessions", "%2Fworkspace%2Fkeep", keepId);
+    const skipDir = path.join(grokRoot, "sessions", "%2Fworkspace%2Fskip", skipId);
+    await mkdir(keepDir, { recursive: true });
+    await mkdir(skipDir, { recursive: true });
+    for (const [sessionDir, sessionId, cwd, prompt] of [
+      [keepDir, keepId, "/workspace/keep", "Keep this Grok session visible."],
+      [skipDir, skipId, "/workspace/skip", "Skip this Grok session entirely."],
+    ] as const) {
+      await writeFile(
+        path.join(sessionDir, "chat_history.jsonl"),
+        `${JSON.stringify({ type: "user", content: [{ type: "text", text: prompt }], timestamp: "2026-03-09T06:01:00.000Z" })}\n`,
+        "utf8",
+      );
+      await writeFile(
+        path.join(sessionDir, "summary.json"),
+        JSON.stringify({
+          info: { id: sessionId, cwd },
+          generated_title: prompt,
+          created_at: "2026-03-09T06:00:00.000Z",
+          updated_at: "2026-03-09T06:10:00.000Z",
+        }),
+        "utf8",
+      );
+    }
+
+    const scoped = await scanLiteHistory({
+      homeDir: tempRoot,
+      hostname: "cchistory-lite-grok-dir-host",
+      sourceRefs: ["grok"],
+      sourceRoots: [{ sourceRef: "grok", baseDir: grokRoot }],
+      directoryScope: "/workspace/keep",
+      safeMode: true,
+    });
+    assert.deepEqual(scoped.listResolvedSessions().map((session) => session.source_session_id), [keepId]);
+    assert.equal(scoped.search({ query: "Skip this Grok" }).total, 0);
+    assert.equal(scoped.searchSessions({ query: "Keep this Grok" }).total, 1);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -4,25 +4,35 @@ import type {
   LinkState,
   ProjectIdentity,
   SearchHighlight,
+  SearchMatchField,
   SessionProjection,
+  SessionRelatedWorkProjection,
+  SessionSearchResult,
   TurnSearchResult,
   UserTurnProjection,
   ValueAxis,
 } from "@cchistory/domain";
+import { filterTopLevelSessions } from "./session-collections.js";
 import { asOptionalString } from "./utils.js";
 
 export const SEARCH_CANONICAL_TEXT_SCAN_BYTES = 16 * 1024;
 export const SEARCH_TRUNCATION_MARKER = "...[truncated]";
+const TITLE_SCORE = 1000;
+const TEXT_SCORE = 100;
+const PATH_SCORE = 10;
 
 export interface SearchCandidateFields {
   canonical_text?: string;
   path_text?: string;
+  title_text?: string;
 }
 
 export interface SearchCandidateSessionFields {
   working_directory?: string;
   resume_working_directory?: string;
   source_native_project_ref?: string;
+  title?: string;
+  canonical_title?: string;
 }
 
 export type SearchProjectObservationCandidate = Pick<
@@ -61,6 +71,10 @@ export interface SearchTurnsInMemoryInput {
   now_ms?: number;
 }
 
+export interface SearchSessionsInMemoryInput extends SearchTurnsInMemoryInput {
+  related_work?: readonly SessionRelatedWorkProjection[];
+}
+
 export function searchTurnsInMemory(input: SearchTurnsInMemoryInput): {
   results: TurnSearchResult[];
   total: number;
@@ -68,97 +82,185 @@ export function searchTurnsInMemory(input: SearchTurnsInMemoryInput): {
   const query = input.query?.trim() ?? "";
   const limit = Math.max(0, input.limit ?? 50);
   const offset = Math.max(0, input.offset ?? 0);
-  const sourceIds = input.source_ids && input.source_ids.length > 0 ? new Set(input.source_ids) : undefined;
-  const linkStates = input.link_states && input.link_states.length > 0 ? new Set(input.link_states) : undefined;
-  const valueAxes = input.value_axes && input.value_axes.length > 0 ? new Set(input.value_axes) : undefined;
   const nowMs = input.now_ms ?? Date.now();
-  const sessionsById = new Map(input.sessions.map((session) => [session.id, session]));
-  const projectsById = new Map(input.projects.map((project) => [project.project_id, project]));
-  const projectObservationCandidatesBySessionId = new Map<string, DerivedCandidate[]>();
-  for (const candidate of input.candidates ?? []) {
-    if (candidate.candidate_kind !== "project_observation") {
-      continue;
-    }
-    const existing = projectObservationCandidatesBySessionId.get(candidate.session_ref);
-    if (existing) {
-      existing.push(candidate);
-    } else {
-      projectObservationCandidatesBySessionId.set(candidate.session_ref, [candidate]);
-    }
-  }
-
-  const retainedLimit = limit === 0 ? 0 : offset + limit;
-  const retained: TurnSearchResult[] = [];
-  let total = 0;
+  const plan = buildSearchPlan(query);
+  const indexes = buildSearchIndexes(input);
+  const matched: TurnSearchResult[] = [];
 
   for (const turn of input.turns) {
+    if (!turnPassesFilters(turn, input, indexes.sourceIds, indexes.linkStates, indexes.valueAxes)) continue;
+    const session = indexes.sessionsById.get(turn.session_id);
     const candidate = materializeSearchCandidate({
       turn,
-      session: sessionsById.get(turn.session_id),
-      project_observation_candidates: projectObservationCandidatesBySessionId.get(turn.session_id),
+      session,
+      project_observation_candidates: indexes.projectObservationCandidatesBySessionId.get(turn.session_id),
     });
-    if (!matchesSearchCandidateQuery(candidate, query)) continue;
-    if (input.project_id && turn.project_id !== input.project_id) continue;
-    if (sourceIds && !sourceIds.has(turn.source_id)) continue;
-    if (linkStates && !linkStates.has(turn.link_state)) continue;
-    if (valueAxes && !valueAxes.has(turn.value_axis)) continue;
-
-    total += 1;
-    if (retainedLimit === 0) continue;
-    const highlights = query.length > 0 ? findHighlights(candidate.canonical_text ?? "", query) : [];
-    retainBestSearchResult(retained, {
+    const matchField = classifySearchMatch(candidate, plan);
+    if (!matchField) continue;
+    const highlightSource = matchField === "title"
+      ? candidate.title_text ?? ""
+      : matchField === "path"
+        ? candidate.path_text ?? ""
+        : candidate.canonical_text ?? "";
+    const highlights = query.length > 0 ? findHighlights(highlightSource, query) : [];
+    matched.push({
       turn,
-      session: sessionsById.get(turn.session_id),
-      project: turn.project_id ? projectsById.get(turn.project_id) : undefined,
-      highlights,
-      relevance_score: computeRelevanceScore(turn, highlights, nowMs),
-    }, retainedLimit);
+      session,
+      project: turn.project_id ? indexes.projectsById.get(turn.project_id) : undefined,
+      highlights: matchField === "text" ? highlights : query.length > 0 ? findHighlights(candidate.canonical_text ?? "", query) : [],
+      relevance_score: computeRelevanceScore(turn, highlights, nowMs, matchField),
+      match_field: matchField,
+    });
   }
 
-  retained.sort(compareTurnSearchResults);
-
+  const collapsed = collapseTitleOnlyTurnMatches(matched);
+  collapsed.sort(compareTurnSearchResults);
   return {
-    results: retained.slice(offset),
-    total,
+    results: limit === 0 ? [] : collapsed.slice(offset, offset + limit),
+    total: collapsed.length,
   };
 }
 
-/** Keep a max-heap whose root is the worst currently retained result. */
-function retainBestSearchResult(heap: TurnSearchResult[], result: TurnSearchResult, limit: number): void {
-  if (heap.length < limit) {
-    heap.push(result);
-    siftWorstSearchResultUp(heap, heap.length - 1);
-    return;
+export function searchSessionsInMemory(input: SearchSessionsInMemoryInput): {
+  results: SessionSearchResult[];
+  total: number;
+} {
+  const query = input.query?.trim() ?? "";
+  const limit = Math.max(0, input.limit ?? 50);
+  const offset = Math.max(0, input.offset ?? 0);
+  const nowMs = input.now_ms ?? Date.now();
+  const plan = buildSearchPlan(query);
+  const indexes = buildSearchIndexes(input);
+  const topLevel = new Set(
+    filterTopLevelSessions(input.sessions, input.related_work ?? []).map((session) => session.id),
+  );
+  const turnsBySessionId = new Map<string, UserTurnProjection[]>();
+  for (const turn of input.turns) {
+    const bucket = turnsBySessionId.get(turn.session_id);
+    if (bucket) bucket.push(turn);
+    else turnsBySessionId.set(turn.session_id, [turn]);
   }
-  if (compareTurnSearchResults(result, heap[0]!) >= 0) return;
-  heap[0] = result;
-  siftWorstSearchResultDown(heap, 0);
+
+  const matched: SessionSearchResult[] = [];
+  for (const session of input.sessions) {
+    if (!topLevel.has(session.id)) continue;
+    if (indexes.sourceIds && !indexes.sourceIds.has(session.source_id)) continue;
+    if (input.project_id && session.primary_project_id !== input.project_id) continue;
+
+    const titleText = sessionTitleText(session);
+    const titleHit = matchesSearchPlan(titleText, plan);
+    const turnMatches: TurnSearchResult[] = [];
+    for (const turn of turnsBySessionId.get(session.id) ?? []) {
+      if (!turnPassesFilters(turn, input, indexes.sourceIds, indexes.linkStates, indexes.valueAxes)) continue;
+      const candidate = materializeSearchCandidate({
+        turn,
+        session,
+        project_observation_candidates: indexes.projectObservationCandidatesBySessionId.get(session.id),
+      });
+      const matchField = classifySearchMatch(candidate, plan);
+      if (!matchField || matchField === "title") continue;
+      const highlightSource = matchField === "path" ? candidate.path_text ?? "" : candidate.canonical_text ?? "";
+      const highlights = query.length > 0 ? findHighlights(highlightSource, query) : [];
+      turnMatches.push({
+        turn,
+        session,
+        project: turn.project_id ? indexes.projectsById.get(turn.project_id) : undefined,
+        highlights,
+        relevance_score: computeRelevanceScore(turn, highlights, nowMs, matchField),
+        match_field: matchField,
+      });
+    }
+
+    if (!titleHit && turnMatches.length === 0) continue;
+    turnMatches.sort(compareTurnSearchResults);
+    const bestTurn = turnMatches[0];
+    const matchField: SearchMatchField = titleHit ? "title" : bestTurn?.match_field ?? "title";
+    const highlightSource = titleHit ? titleText : bestTurn?.match_field === "path"
+      ? materializeSearchCandidate({
+          turn: bestTurn.turn,
+          session,
+          project_observation_candidates: indexes.projectObservationCandidatesBySessionId.get(session.id),
+        }).path_text ?? ""
+      : bestTurn?.turn.canonical_text ?? "";
+    const recencyTurn = bestTurn?.turn ?? {
+      submission_started_at: session.updated_at,
+    };
+    const highlights = query.length > 0 ? findHighlights(highlightSource, query) : [];
+    matched.push({
+      session,
+      project: session.primary_project_id
+        ? indexes.projectsById.get(session.primary_project_id)
+        : bestTurn?.project,
+      best_turn: bestTurn?.turn,
+      highlights,
+      relevance_score: (titleHit ? TITLE_SCORE : 0) + (bestTurn
+        ? bestTurn.relevance_score
+        : computeSearchRecencyScore(recencyTurn, nowMs)),
+      match_field: matchField,
+    });
+  }
+
+  matched.sort(compareSessionSearchResults);
+  return {
+    results: limit === 0 ? [] : matched.slice(offset, offset + limit),
+    total: matched.length,
+  };
 }
 
-function siftWorstSearchResultUp(heap: TurnSearchResult[], startIndex: number): void {
-  let index = startIndex;
-  while (index > 0) {
-    const parentIndex = Math.floor((index - 1) / 2);
-    if (compareTurnSearchResults(heap[index]!, heap[parentIndex]!) <= 0) break;
-    [heap[index], heap[parentIndex]] = [heap[parentIndex]!, heap[index]!];
-    index = parentIndex;
+function buildSearchIndexes(input: SearchTurnsInMemoryInput): {
+  sourceIds: Set<string> | undefined;
+  linkStates: Set<LinkState> | undefined;
+  valueAxes: Set<ValueAxis> | undefined;
+  sessionsById: Map<string, SessionProjection>;
+  projectsById: Map<string, ProjectIdentity>;
+  projectObservationCandidatesBySessionId: Map<string, DerivedCandidate[]>;
+} {
+  const projectObservationCandidatesBySessionId = new Map<string, DerivedCandidate[]>();
+  for (const candidate of input.candidates ?? []) {
+    if (candidate.candidate_kind !== "project_observation") continue;
+    const existing = projectObservationCandidatesBySessionId.get(candidate.session_ref);
+    if (existing) existing.push(candidate);
+    else projectObservationCandidatesBySessionId.set(candidate.session_ref, [candidate]);
   }
+  return {
+    sourceIds: input.source_ids && input.source_ids.length > 0 ? new Set(input.source_ids) : undefined,
+    linkStates: input.link_states && input.link_states.length > 0 ? new Set(input.link_states) : undefined,
+    valueAxes: input.value_axes && input.value_axes.length > 0 ? new Set(input.value_axes) : undefined,
+    sessionsById: new Map(input.sessions.map((session) => [session.id, session])),
+    projectsById: new Map(input.projects.map((project) => [project.project_id, project])),
+    projectObservationCandidatesBySessionId,
+  };
 }
 
-function siftWorstSearchResultDown(heap: TurnSearchResult[], startIndex: number): void {
-  let index = startIndex;
-  while (true) {
-    const leftIndex = index * 2 + 1;
-    if (leftIndex >= heap.length) return;
-    const rightIndex = leftIndex + 1;
-    const worseChildIndex = rightIndex < heap.length &&
-        compareTurnSearchResults(heap[rightIndex]!, heap[leftIndex]!) > 0
-      ? rightIndex
-      : leftIndex;
-    if (compareTurnSearchResults(heap[worseChildIndex]!, heap[index]!) <= 0) return;
-    [heap[index], heap[worseChildIndex]] = [heap[worseChildIndex]!, heap[index]!];
-    index = worseChildIndex;
+function turnPassesFilters(
+  turn: UserTurnProjection,
+  input: SearchTurnsInMemoryInput,
+  sourceIds: Set<string> | undefined,
+  linkStates: Set<LinkState> | undefined,
+  valueAxes: Set<ValueAxis> | undefined,
+): boolean {
+  if (input.project_id && turn.project_id !== input.project_id) return false;
+  if (sourceIds && !sourceIds.has(turn.source_id)) return false;
+  if (linkStates && !linkStates.has(turn.link_state)) return false;
+  if (valueAxes && !valueAxes.has(turn.value_axis)) return false;
+  return true;
+}
+
+function collapseTitleOnlyTurnMatches(matches: readonly TurnSearchResult[]): TurnSearchResult[] {
+  const titleOnlyBySession = new Map<string, TurnSearchResult>();
+  const kept: TurnSearchResult[] = [];
+  for (const result of matches) {
+    if (result.match_field !== "title") {
+      kept.push(result);
+      continue;
+    }
+    const current = titleOnlyBySession.get(result.turn.session_id);
+    if (!current || compareTurnSearchResults(result, current) < 0) {
+      titleOnlyBySession.set(result.turn.session_id, result);
+    }
   }
+  kept.push(...titleOnlyBySession.values());
+  return kept;
 }
 
 export function materializeSearchCandidate(input: MaterializeSearchCandidateInput): SearchCandidateFields {
@@ -187,6 +289,7 @@ export function materializeSearchCandidate(input: MaterializeSearchCandidateInpu
   return {
     canonical_text: boundSearchCanonicalText(input.turn.canonical_text ?? ""),
     path_text: pathParts.filter((value): value is string => Boolean(value)).join(" ") || undefined,
+    title_text: sessionTitleText(input.session) || undefined,
   };
 }
 
@@ -212,16 +315,24 @@ export function stripSearchTruncationMarker(value: string): string {
     : value;
 }
 
-export function computeRelevanceScore(
+export function computeSearchRecencyScore(
   turn: Pick<UserTurnProjection, "submission_started_at">,
-  highlights: readonly SearchHighlight[],
   nowMs = Date.now(),
 ): number {
   const turnMs = Date.parse(turn.submission_started_at) || 0;
   const ageMs = Math.max(0, nowMs - turnMs);
   const ninetyDaysMs = 90 * 24 * 60 * 60 * 1000;
-  const recency = 5 * Math.max(0, 1 - Math.log1p(ageMs / ninetyDaysMs) / Math.log1p(100));
-  return highlights.length * 10 + recency;
+  return 5 * Math.max(0, 1 - Math.log1p(ageMs / ninetyDaysMs) / Math.log1p(100));
+}
+
+export function computeRelevanceScore(
+  turn: Pick<UserTurnProjection, "submission_started_at">,
+  highlights: readonly SearchHighlight[],
+  nowMs = Date.now(),
+  matchField: SearchMatchField = "text",
+): number {
+  const fieldWeight = matchField === "title" ? TITLE_SCORE : matchField === "path" ? PATH_SCORE : TEXT_SCORE;
+  return fieldWeight + highlights.length * 10 + computeSearchRecencyScore(turn, nowMs);
 }
 
 export function findHighlights(text: string, query: string): SearchHighlight[] {
@@ -255,7 +366,15 @@ export function matchesSearchCandidateQuery(candidate: SearchCandidateFields, qu
 }
 
 export function matchesSearchCandidatePlan(candidate: SearchCandidateFields, plan: SearchPlan): boolean {
-  return matchesSearchPlan(candidate.canonical_text ?? "", plan) || matchesSearchPlan(candidate.path_text ?? "", plan);
+  return classifySearchMatch(candidate, plan) !== undefined;
+}
+
+export function classifySearchMatch(candidate: SearchCandidateFields, plan: SearchPlan): SearchMatchField | undefined {
+  if (plan.normalizedQuery.length === 0) return "text";
+  if (matchesSearchPlan(candidate.canonical_text ?? "", plan)) return "text";
+  if (matchesSearchPlan(candidate.title_text ?? "", plan)) return "title";
+  if (matchesSearchPlan(candidate.path_text ?? "", plan)) return "path";
+  return undefined;
 }
 
 export function compareTurnSearchResults(left: TurnSearchResult, right: TurnSearchResult): number {
@@ -267,6 +386,17 @@ export function compareTurnSearchResults(left: TurnSearchResult, right: TurnSear
     return timeOrder;
   }
   return left.turn.id.localeCompare(right.turn.id);
+}
+
+export function compareSessionSearchResults(left: SessionSearchResult, right: SessionSearchResult): number {
+  if (left.relevance_score !== right.relevance_score) {
+    return right.relevance_score - left.relevance_score;
+  }
+  const leftTime = left.best_turn?.submission_started_at ?? left.session.updated_at;
+  const rightTime = right.best_turn?.submission_started_at ?? right.session.updated_at;
+  const timeOrder = rightTime.localeCompare(leftTime);
+  if (timeOrder !== 0) return timeOrder;
+  return left.session.id.localeCompare(right.session.id);
 }
 
 export function buildSearchPlan(query: string): SearchPlan {
@@ -294,6 +424,10 @@ export function matchesSearchPlan(text: string, plan: SearchPlan): boolean {
     return plan.terms.every((term) => loweredText.includes(term.value));
   }
   return plan.normalizedQuery.length === 0 ? true : loweredText.includes(plan.normalizedQuery);
+}
+
+function sessionTitleText(session: SearchCandidateSessionFields | undefined): string {
+  return [session?.canonical_title, session?.title].filter((value): value is string => Boolean(value)).join(" ");
 }
 
 function mergeHighlights(highlights: SearchHighlight[]): SearchHighlight[] {

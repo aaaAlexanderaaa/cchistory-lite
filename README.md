@@ -6,16 +6,16 @@ snapshot that is never written to disk.
 
 ```
 $ cchistory-lite search "retry backoff" --source codex --limit 3
-Search "retry backoff" (3 matches)
-  2026-03-09T06:12:44Z · api-gateway / session 9f31c2 · turn 41ab0c
-    make the retry backoff jittered so the workers stop synchronising
+Search "retry backoff" (3 sessions; one record = one session)
+- sess:codex:9f31c2…
+  make the retry backoff jittered so the workers stop synchronising
   ...
 ```
 
 - **Zero-store.** Lite never creates or reads a `~/.cchistory` database. `--store` and `--db`
   are rejected at argument-parse time.
-- **Ephemeral.** The canonical snapshot lives only in process memory. Each CLI command scans
-  fresh and drops it on exit.
+- **Ephemeral.** The canonical snapshot lives only in process memory. One-shot CLI commands
+  scan fresh and drop it on exit; `shell` and the TUI keep one snapshot until refresh or exit.
 - **Read-only.** Adapters only read native history; SQLite-backed sources are opened with
   `readOnly: true`. Nothing is ever written back to a source root.
 - **No mutation surface.** There is no sync, import, backup, restore, merge, GC, or migration
@@ -100,10 +100,11 @@ cchistory-lite <command> [options]
 | `ls [projects\|sessions\|sources]` | Flat list of one collection, newest/most active first (default `projects`, 20 rows) |
 | `latest [sessions\|turns] [N]` | Show the newest session activity or UserTurns (default `sessions 20`; sessions include aggregate turns/models/tokens) |
 | `tree [projects\|project <ref>\|session <ref>]` | Hierarchical view including Related Work |
-| `search <query>` | Search canonical turn text and paths |
+| `search <query>` | Search sessions by title, user-authored turn text, and paths |
 | `show project\|session\|turn\|source <ref>` | Full detail for exactly one object |
 | `stats [--by source\|project\|model\|day]` | Token and usage aggregation |
-| `query --request <file\|->` | Run ordered search/session/reply operations in one scan; JSON only |
+| `query --request <file\|->` | Run ordered search/latest/list/session/reply operations in one scan; JSON only |
+| `shell` | Hold one directory-scoped snapshot and run search/show/latest against it |
 | `export [--format jsonl\|json\|markdown]` | One-way canonical export |
 | `tui` | Launch the terminal browser (spawns `cchistory-lite-tui`) |
 | `help [command]` | Command synopsis |
@@ -120,8 +121,9 @@ cchistory-lite <command> [options]
 | `--json=canonical` | Full canonical evidence output, schema `cchistory-lite-canonical/v1` |
 | `--request <file\|->` | Read a `query` request from a file or stdin (`-`) |
 | `--project <ref>` | Scope to one project (`search`, `stats`) |
-| `--dir <path>` | Keep sessions under a working directory (`latest`, supported `ls` views, `search`, `stats`, `tree projects`) |
-| `--limit <n>` | Row limit (`ls`, default 20; `search`, default 50) |
+| `--dir <path>` | Keep sessions under a working directory (`latest`, supported `ls` views, `search`, `stats`, `tree projects`, `query`, `shell`) |
+| `--no-dir` | Do not apply a directory scope (overrides the JSON/query/shell cwd default) |
+| `--limit <n>` | Row limit (`ls`, default 20; `search`, default 50 sessions) |
 | `--all` | Disable the default `ls` limit; mutually exclusive with `--limit` |
 | `--offset <n>` | Search offset (default 0) |
 | `--by <dimension>` | Usage rollup dimension (`stats`) |
@@ -139,8 +141,11 @@ Windows. Sessions without a working directory are excluded; projects match eithe
 or a contained matching session.
 
 For Codex and Claude Code, `--dir` performs a lightweight metadata preflight and avoids fully
-parsing logical sessions with a resolved non-matching working directory. Uncertain metadata and
-other adapters retain the full read-only probe followed by the same canonical filter.
+parsing logical sessions with a resolved non-matching working directory. Grok skips sessions
+whose encoded cwd path is known not to match. Uncertain metadata and other adapters retain the
+full read-only probe followed by the same canonical filter. `--json`, `query`, and `shell`
+default to the current working directory; pass `--no-dir` to read every selected source.
+Human-readable CLI without `--json` still defaults to the whole machine.
 
 Human-readable collections use semantic timeline blocks rather than tables and adapt to terminal
 width. Sessions show their title, model summary, aggregate token count, and, when supported, the
@@ -168,15 +173,22 @@ display evidence, lineage, system messages, or tool context. That larger respons
 `cchistory-lite-canonical/v1`. One-way `export` is unchanged and continues to use
 `cchistory-lite-export/v1`; it does not accept `--json=canonical`.
 
+`search` matches turns, then CLI/JSON/`query` return one top-level session per
+hit (`unit: "session"`). `total` and `shown` are session counts; `shown` equals
+`results.length`. The TUI still lists matching turns. Session search also
+matches titles and Grok/Cursor user-query envelopes rather than the surrounding
+injected prompt.
+
 `query` batches ordered operations into one fresh read-only scan. Requests use
-`cchistory-lite-query/v1` and results use `cchistory-lite-query-result/v1`:
+`cchistory-lite-query/v2` and results use `cchistory-lite-query-result/v2`:
 
 ```bash
 cat <<'JSON' | cchistory-lite query --request - --source codex --safe
 {
-  "schema": "cchistory-lite-query/v1",
+  "schema": "cchistory-lite-query/v2",
   "operations": [
     { "id": "find", "kind": "search", "query": "retry backoff", "limit": 10 },
+    { "id": "recent", "kind": "latest", "target": "sessions", "limit": 20 },
     { "id": "sessions", "kind": "session", "refs": ["sess:codex:..."] },
     { "id": "replies", "kind": "replies", "turn_refs": ["turn-id"] }
   ]

@@ -10,7 +10,7 @@
  *   - TERM=dumb
  *   - the caller passes `color: false` (non-TTY output, `--no-color`)
  *
- * Colors are forced when FORCE_COLOR is set (any value).
+ * Colors are forced when FORCE_COLOR is set to a non-zero value.
  */
 
 import process from "node:process";
@@ -22,7 +22,7 @@ interface ColorPolicy {
 }
 
 function shouldUseColor(policy: ColorPolicy = {}): boolean {
-  if (process.env["FORCE_COLOR"] !== undefined) return true;
+  if (process.env["FORCE_COLOR"] !== undefined && process.env["FORCE_COLOR"] !== "0") return true;
   if (process.env["NO_COLOR"] !== undefined) return false;
   if (process.env["TERM"] === "dumb") return false;
   if (policy.color === false) return false;

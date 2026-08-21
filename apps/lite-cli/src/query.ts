@@ -13,10 +13,15 @@ import {
   turnSummary,
 } from "./json-v2.js";
 
-export const QUERY_REQUEST_SCHEMA = "cchistory-lite-query/v1";
-export const QUERY_RESULT_SCHEMA = "cchistory-lite-query-result/v1";
+export const QUERY_REQUEST_SCHEMA = "cchistory-lite-query/v2";
+export const QUERY_RESULT_SCHEMA = "cchistory-lite-query-result/v2";
 
-export type QueryOperation = SearchOperation | SessionOperation | RepliesOperation;
+export type QueryOperation =
+  | SearchOperation
+  | SessionOperation
+  | RepliesOperation
+  | LatestOperation
+  | ListOperation;
 
 export interface QueryRequest {
   schema: typeof QUERY_REQUEST_SCHEMA;
@@ -25,7 +30,7 @@ export interface QueryRequest {
 
 interface QueryOperationBase {
   id: string;
-  kind: "search" | "session" | "replies";
+  kind: "search" | "session" | "replies" | "latest" | "list";
 }
 
 interface SearchOperation extends QueryOperationBase {
@@ -44,6 +49,19 @@ interface SessionOperation extends QueryOperationBase {
 interface RepliesOperation extends QueryOperationBase {
   kind: "replies";
   turn_refs: string[];
+}
+
+interface LatestOperation extends QueryOperationBase {
+  kind: "latest";
+  target?: "sessions" | "turns";
+  limit?: number;
+}
+
+interface ListOperation extends QueryOperationBase {
+  kind: "list";
+  collection: "sessions" | "projects";
+  limit?: number;
+  offset?: number;
 }
 
 export interface QueryExecutionResult {
@@ -133,17 +151,78 @@ function executeOperation(
   if (operation.kind === "search") {
     const project = operation.project_ref ? snapshot.getProject(operation.project_ref) : undefined;
     if (operation.project_ref && !project) throw new QueryReferenceError(`Project not found: ${operation.project_ref}.`);
-    const result = snapshot.search({
+    const limit = operation.limit ?? 50;
+    const offset = operation.offset ?? 0;
+    const result = snapshot.searchSessions({
       query: operation.query,
       projectId: project?.project_id,
-      limit: operation.limit ?? 50,
-      offset: operation.offset ?? 0,
+      limit,
+      offset,
       directoryScope,
     });
     return {
       query: operation.query,
+      unit: "session",
       total: result.total,
+      shown: result.results.length,
+      offset,
+      limit,
       results: result.results.map((entry) => searchResultSummary(entry as unknown as Record<string, unknown>, snapshot)),
+    };
+  }
+
+  if (operation.kind === "latest") {
+    const target = operation.target ?? "sessions";
+    const limit = operation.limit ?? 20;
+    if (target === "turns") {
+      const turns = snapshot.listResolvedTurns({ directoryScope });
+      const page = turns.slice(0, limit);
+      return {
+        target,
+        total: turns.length,
+        shown: page.length,
+        limit,
+        turns: page.map((turn) => turnSummary(turn, snapshot)),
+      };
+    }
+    const sessions = snapshot.listTopLevelSessions({ directoryScope })
+      .filter((session) => session.turn_count > 0);
+    const page = sessions.slice(0, limit);
+    return {
+      target,
+      total: sessions.length,
+      shown: page.length,
+      limit,
+      sessions: page.map((session) => sessionSummary(session, snapshot)),
+    };
+  }
+
+  if (operation.kind === "list") {
+    const offset = operation.offset ?? 0;
+    const limit = operation.limit ?? 20;
+    if (operation.collection === "projects") {
+      const projects = snapshot.listProjects({ directoryScope });
+      const page = projects.slice(offset, offset + limit);
+      return {
+        collection: operation.collection,
+        unit: "project",
+        total: projects.length,
+        shown: page.length,
+        offset,
+        limit,
+        projects: page.map(projectSummary),
+      };
+    }
+    const sessions = snapshot.listTopLevelSessions({ directoryScope });
+    const page = sessions.slice(offset, offset + limit);
+    return {
+      collection: operation.collection,
+      unit: "session",
+      total: sessions.length,
+      shown: page.length,
+      offset,
+      limit,
+      sessions: page.map((session) => sessionSummary(session, snapshot)),
     };
   }
 
@@ -205,6 +284,30 @@ function parseOperation(value: unknown, index: number): QueryOperation {
   if (kind === "replies") {
     assertOnlyKeys(operation, new Set(["id", "kind", "turn_refs"]), `operation ${id}`);
     return { id, kind, turn_refs: requireStringArray(operation.turn_refs, `operation ${id} turn_refs`) };
+  }
+  if (kind === "latest") {
+    assertOnlyKeys(operation, new Set(["id", "kind", "target", "limit"]), `operation ${id}`);
+    const parsed: LatestOperation = { id, kind };
+    if (operation.target !== undefined) {
+      const target = requireNonEmptyString(operation.target, `operation ${id} target`);
+      if (target !== "sessions" && target !== "turns") {
+        throw new QueryRequestError(`operation ${id} target must be sessions or turns.`);
+      }
+      parsed.target = target;
+    }
+    if (operation.limit !== undefined) parsed.limit = requireInteger(operation.limit, `operation ${id} limit`, 1);
+    return parsed;
+  }
+  if (kind === "list") {
+    assertOnlyKeys(operation, new Set(["id", "kind", "collection", "limit", "offset"]), `operation ${id}`);
+    const collection = requireNonEmptyString(operation.collection, `operation ${id} collection`);
+    if (collection !== "sessions" && collection !== "projects") {
+      throw new QueryRequestError(`operation ${id} collection must be sessions or projects.`);
+    }
+    const parsed: ListOperation = { id, kind, collection };
+    if (operation.limit !== undefined) parsed.limit = requireInteger(operation.limit, `operation ${id} limit`, 1);
+    if (operation.offset !== undefined) parsed.offset = requireInteger(operation.offset, `operation ${id} offset`, 0);
+    return parsed;
   }
   throw new QueryRequestError(`Unsupported query operation kind: ${JSON.stringify(kind)}.`);
 }

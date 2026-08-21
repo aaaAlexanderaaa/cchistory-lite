@@ -85,10 +85,11 @@ sources
 ls [projects|sessions|sources] [--limit <n>|--all] [--dir <path>]
 latest [sessions|turns] [N] [--dir <path>]
 tree [projects|project <ref>|session <ref>] [--dir <path>]
-search <query> [--project <ref>] [--source <ref>] [--dir <path>] [--limit <n>]
+search <query> [--project <ref>] [--source <ref>] [--dir <path>] [--no-dir] [--limit <n>]
 show project|session|turn|source <ref>
-stats [--by source|project|model|day] [--dir <path>]
-query --request <file|-> [--dir <path>]
+stats [--by source|project|model|day] [--dir <path>] [--no-dir]
+query --request <file|-> [--dir <path>] [--no-dir]
+shell [--dir <path>] [--no-dir]
 export --format jsonl|json|markdown [--out <file>|-]
 tui
 ```
@@ -96,7 +97,10 @@ tui
 Use `--json` for compact `cchistory-lite/v2` read output, or
 `--json=canonical` for full `cchistory-lite-canonical/v1` evidence. Each one-shot
 command performs a fresh canonical scan; use `query` to batch agent reads into
-one scan, or the TUI to amortize a scan across interactive browsing.
+one scan, `shell` to keep one directory-scoped snapshot in memory, or the TUI
+to amortize a scan across interactive browsing. `--json`, `query`, and `shell`
+default to `--dir=$PWD`; pass `--no-dir` to disable that scope. Human-readable
+CLI without `--json` still defaults to every selected source.
 
 `ls` shows 20 rows by default. Pass `--limit <n>` or `--all`; JSON collection
 payloads include the untruncated `total` and returned `shown` counts. `latest`
@@ -120,7 +124,8 @@ segments. Sessions without `working_directory` are excluded. It applies to
 the latter keeps projects as containers but removes non-matching sessions,
 turns, and empty projects. Codex and Claude Code first inspect lightweight
 session metadata and skip full parsing only for resolved non-matching cwd signals;
-uncertain metadata falls back to the full read-only probe. Use `--source-root
+uncertain metadata falls back to the full read-only probe. Grok skips sessions
+whose encoded cwd is known not to match before parsing. Use `--source-root
 <slot>=<path>` when the native history itself is in a non-default location.
 
 For large archives, ordinary read commands materialize one
@@ -164,7 +169,7 @@ Batch requests are strict JSON documents:
 
 ```json
 {
-  "schema": "cchistory-lite-query/v1",
+  "schema": "cchistory-lite-query/v2",
   "operations": [
     { "id": "find", "kind": "search", "query": "parser regression", "limit": 20 },
     { "id": "sessions", "kind": "session", "refs": ["sess:codex:..."] },
@@ -174,7 +179,7 @@ Batch requests are strict JSON documents:
 ```
 
 Pass the document with `cchistory-lite query --request request.json` or
-`--request -` for stdin. The `cchistory-lite-query-result/v1` response preserves
+`--request -` for stdin. The `cchistory-lite-query-result/v2` response preserves
 operation order. An operation-level reference error leaves other results intact
 and exits `1`; an invalid request or scan failure writes
 `cchistory-lite-error/v1` to stderr and leaves stdout empty. The release artifact

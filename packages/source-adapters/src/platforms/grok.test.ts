@@ -5,9 +5,23 @@ import path from "node:path";
 import { test } from "node:test";
 import { getDefaultSourcesForHost, listSourceFiles, runSourceProbe } from "../index.js";
 import { createSourceDefinition } from "../test-helpers.js";
-import { decodeGrokEncodedCwd, parseGrokSessionLayout } from "./grok.js";
+import { decodeGrokEncodedCwd, parseGrokSessionLayout, previewSourceFileWorkingDirectory } from "./grok.js";
 
 const SESSION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+
+test("previewSourceFileWorkingDirectory reads Grok cwd from the encoded path without opening files", () => {
+  const filePath = path.join(
+    "/Users/mock/.grok/sessions",
+    "%2Fworkspace%2Fgrok-fixture",
+    SESSION_ID,
+    "chat_history.jsonl",
+  );
+  assert.deepEqual(previewSourceFileWorkingDirectory("grok", filePath), {
+    state: "known",
+    workingDirectory: "/workspace/grok-fixture",
+  });
+  assert.deepEqual(previewSourceFileWorkingDirectory("codex", filePath), { state: "absent" });
+});
 
 test("parseGrokSessionLayout recovers the native session id and decoded cwd", () => {
   const filePath = path.join(

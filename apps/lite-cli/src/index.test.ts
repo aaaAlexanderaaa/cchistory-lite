@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -35,15 +37,21 @@ test("Lite CLI searches, reports stats, and writes one-way export", async () => 
   try {
     const sourceArgs = ["--source-root", `codex=${codexRoot}`, "--safe"];
     const rootArgs = [...sourceArgs, "--json"];
+    const unscopedArgs = [...rootArgs, "--no-dir"];
     const search = captureIo(tempHome);
-    assert.equal(await runLiteCli(["search", "mock", ...rootArgs], search.io), 0);
+    assert.equal(await runLiteCli(["search", "mock", ...unscopedArgs], search.io), 0);
     const searchPayload = JSON.parse(search.stdout.join("")) as {
       kind: string;
       total: number;
-      results: Array<{ turn: { id: string } }>;
+      results: Array<{ session: { id: string }; best_turn: { id: string } | null }>;
+      unit: string;
+      shown: number;
     };
     assert.equal(searchPayload.kind, "search");
+    assert.equal(searchPayload.unit, "session");
     assert.ok(searchPayload.total > 0);
+    assert.equal(searchPayload.shown, searchPayload.results.length);
+    assert.ok(searchPayload.shown <= searchPayload.total);
     assert.equal((searchPayload as { schema?: string }).schema, "cchistory-lite/v2");
 
     const sources = captureIo(tempHome);
@@ -57,7 +65,7 @@ test("Lite CLI searches, reports stats, and writes one-way export", async () => 
     assert.equal(sourcesPayload.total, 1);
 
     const sessions = captureIo(tempHome);
-    assert.equal(await runLiteCli(["ls", "sessions", ...rootArgs], sessions.io), 0);
+    assert.equal(await runLiteCli(["ls", "sessions", ...unscopedArgs], sessions.io), 0);
     const sessionsPayload = JSON.parse(sessions.stdout.join("")) as {
       kind: string;
       sessions: Array<{ id: string }>;
@@ -66,18 +74,18 @@ test("Lite CLI searches, reports stats, and writes one-way export", async () => 
     assert.ok(sessionsPayload.sessions.length > 0);
 
     const tree = captureIo(tempHome);
-    assert.equal(await runLiteCli(["tree", "projects", ...rootArgs], tree.io), 0);
+    assert.equal(await runLiteCli(["tree", "projects", ...unscopedArgs], tree.io), 0);
     assert.equal((JSON.parse(tree.stdout.join("")) as { kind: string }).kind, "project_tree");
 
     const turnDetail = captureIo(tempHome);
     assert.equal(
-      await runLiteCli(["show", "turn", searchPayload.results[0]!.turn.id, ...rootArgs], turnDetail.io),
+      await runLiteCli(["show", "turn", searchPayload.results[0]!.best_turn!.id, ...rootArgs], turnDetail.io),
       0,
     );
     assert.equal((JSON.parse(turnDetail.stdout.join("")) as { kind: string }).kind, "turn_detail");
 
     const projects = captureIo(tempHome);
-    assert.equal(await runLiteCli(["ls", "projects", ...rootArgs], projects.io), 0);
+    assert.equal(await runLiteCli(["ls", "projects", ...unscopedArgs], projects.io), 0);
     const projectsPayload = JSON.parse(projects.stdout.join("")) as {
       kind: string;
       projects: Array<{ project_id: string }>;
@@ -105,7 +113,7 @@ test("Lite CLI searches, reports stats, and writes one-way export", async () => 
     assert.match(invalidShowTarget.stderr.join(""), /show target must be project, session, turn, or source/);
 
     const stats = captureIo(tempHome);
-    assert.equal(await runLiteCli(["stats", ...rootArgs], stats.io), 0);
+    assert.equal(await runLiteCli(["stats", ...unscopedArgs], stats.io), 0);
     const statsPayload = JSON.parse(stats.stdout.join("")) as { kind: string; overview: { total_turns: number } };
     assert.equal(statsPayload.kind, "stats");
     assert.ok(statsPayload.overview.total_turns > 0);
@@ -115,7 +123,7 @@ test("Lite CLI searches, reports stats, and writes one-way export", async () => 
     assert.match(humanStats.stdout.join(""), /Excluded zero-token turns:/);
 
     const rollup = captureIo(tempHome);
-    assert.equal(await runLiteCli(["stats", "--by", "source", ...rootArgs], rollup.io), 0);
+    assert.equal(await runLiteCli(["stats", "--by", "source", ...unscopedArgs], rollup.io), 0);
     const rollupPayload = JSON.parse(rollup.stdout.join("")) as { rollup: { dimension: string } };
     assert.equal(rollupPayload.rollup.dimension, "source");
 
@@ -234,7 +242,7 @@ test("Lite CLI exposes projection diagnostics without corrupting the data stream
   assert.doesNotMatch(human.stdout.join(""), /Projection warnings/u);
 
   const json = captureIo(repoRoot, undefined, { scan: async () => broken });
-  assert.equal(await runLiteCli(["ls", "sessions", "--json"], json.io), 0);
+  assert.equal(await runLiteCli(["ls", "sessions", "--json", "--no-dir"], json.io), 0);
   const payload = JSON.parse(json.stdout.join("")) as {
     projection_issues: Array<{ code: string; entity: string; id: string }>;
   };
@@ -399,12 +407,12 @@ test("Lite CLI compact session titles cannot reintroduce text removed by canonic
 
   const query = captureIo(repoRoot, undefined, {
     readStdin: async () => JSON.stringify({
-      schema: "cchistory-lite-query/v1",
+      schema: "cchistory-lite-query/v2",
       operations: [{ id: "session", kind: "session", refs: [session.id] }],
     }),
     scan: async () => maskedSnapshot,
   });
-  assert.equal(await runLiteCli(["query", "--request", "-"], query.io), 0);
+  assert.equal(await runLiteCli(["query", "--request", "-", "--no-dir"], query.io), 0);
   assert.doesNotMatch(query.stdout.join(""), new RegExp(secret, "u"));
   assert.match(query.stdout.join(""), /Rotate the credential\./u);
 
@@ -458,7 +466,7 @@ test("Lite CLI query executes one scan and returns operation-level errors", asyn
   assert.ok(turn);
   const calls: ScanLiteHistoryOptions[] = [];
   const request = JSON.stringify({
-    schema: "cchistory-lite-query/v1",
+    schema: "cchistory-lite-query/v2",
     operations: [
       { id: "find", kind: "search", query: turn.canonical_text.split(/\s+/u)[0], limit: 2 },
       { id: "session", kind: "session", refs: [session.id] },
@@ -474,7 +482,7 @@ test("Lite CLI query executes one scan and returns operation-level errors", asyn
       return snapshot;
     },
   });
-  assert.equal(await runLiteCli(["query", "--request", "-"], captured.io), 1);
+  assert.equal(await runLiteCli(["query", "--request", "-", "--no-dir"], captured.io), 1);
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.contextMode, "matching");
   assert.deepEqual(calls[0]?.contextTargets, [
@@ -485,7 +493,7 @@ test("Lite CLI query executes one scan and returns operation-level errors", asyn
     schema: string;
     operations: Array<{ id: string; status: string; result?: unknown; error?: { code: string } }>;
   };
-  assert.equal(payload.schema, "cchistory-lite-query-result/v1");
+  assert.equal(payload.schema, "cchistory-lite-query-result/v2");
   assert.deepEqual(payload.operations.map((operation) => operation.status), ["ok", "ok", "ok", "error", "error"]);
   assert.deepEqual(
     payload.operations.slice(-2).map((operation) => operation.error?.code),
@@ -513,7 +521,7 @@ test("Lite CLI query validates request JSON before scanning", async () => {
 
 test("Lite CLI keeps structured query errors after global options and during parsing or scanning", async () => {
   const request = JSON.stringify({
-    schema: "cchistory-lite-query/v1",
+    schema: "cchistory-lite-query/v2",
     operations: [{ id: "find", kind: "search", query: "anything" }],
   });
   const scanFailure = captureIo(repoRoot, undefined, {
@@ -757,7 +765,7 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
   );
 
   const defaults = captureIo(repoRoot, undefined, { scan: async () => zeroTurnSnapshot });
-  assert.equal(await runLiteCli(["latest", "--json"], defaults.io), 0);
+  assert.equal(await runLiteCli(["latest", "--json", "--no-dir"], defaults.io), 0);
   const defaultPayload = JSON.parse(defaults.stdout.join("")) as {
     kind: string;
     total: number;
@@ -787,14 +795,14 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
   assert.equal(latestSessionRow?.total_tokens, latestSessionTokenTotal);
 
   const turns = captureIo(repoRoot, undefined, { scan: scanner });
-  assert.equal(await runLiteCli(["latest", "turn", "2", "--json"], turns.io), 0);
+  assert.equal(await runLiteCli(["latest", "turn", "2", "--json", "--no-dir"], turns.io), 0);
   const turnPayload = JSON.parse(turns.stdout.join("")) as { kind: string; shown: number; turns: unknown[] };
   assert.equal(turnPayload.kind, "turns");
   assert.equal(turnPayload.shown, 2);
   assert.equal(turnPayload.turns.length, 2);
 
   const numeric = captureIo(repoRoot, undefined, { scan: scanner });
-  assert.equal(await runLiteCli(["latest", "1", "--json"], numeric.io), 0);
+  assert.equal(await runLiteCli(["latest", "1", "--json", "--no-dir"], numeric.io), 0);
   assert.equal((JSON.parse(numeric.stdout.join("")) as { shown: number }).shown, 1);
 
   let rejectedScans = 0;
@@ -830,7 +838,7 @@ test("Lite CLI ls limits human and JSON output and rejects conflicting controls 
   );
 
   const all = captureIo(repoRoot, undefined, { scan: scanner });
-  assert.equal(await runLiteCli(["ls", "sessions", "--all", "--json"], all.io), 0);
+  assert.equal(await runLiteCli(["ls", "sessions", "--all", "--json", "--no-dir"], all.io), 0);
   const allPayload = JSON.parse(all.stdout.join("")) as {
     total: number;
     shown: number;
@@ -895,10 +903,17 @@ test("Lite CLI applies --dir to sessions, search, stats, and project trees", asy
   assert.ok(query);
   const search = captureIo(repoRoot, undefined, { scan: scanner });
   assert.equal(await runLiteCli(["search", query, "--dir", scopeDir, "--json"], search.io), 0);
-  const searchPayload = JSON.parse(search.stdout.join("")) as { results: Array<{ turn: { session_id: string } }> };
+  const searchPayload = JSON.parse(search.stdout.join("")) as {
+    unit: string;
+    total: number;
+    shown: number;
+    results: Array<{ session: { id: string } }>;
+  };
   const scopedSessionIds = new Set(snapshot.listResolvedSessions({ directoryScope: scopeDir }).map((session) => session.id));
+  assert.equal(searchPayload.unit, "session");
+  assert.equal(searchPayload.shown, searchPayload.results.length);
   assert.ok(searchPayload.results.length > 0);
-  assert.ok(searchPayload.results.every((result) => scopedSessionIds.has(result.turn.session_id)));
+  assert.ok(searchPayload.results.every((result) => scopedSessionIds.has(result.session.id)));
 
   const stats = captureIo(repoRoot, undefined, { scan: scanner });
   assert.equal(await runLiteCli(["stats", "--dir", scopeDir, "--json"], stats.io), 0);
@@ -1014,6 +1029,209 @@ test("Lite CLI colorizes semantic human-readable fields", () => {
   assert.match(wrappedCommand, /\u001b\[2m    \u001b\[0m\u001b\[32m\/directory\u001b\[0m/);
   assert.match(wrappedCommand, /\u001b\[2m && claude --resume\u001b\[0m/);
   assert.match(wrappedCommand, /\u001b\[2m    550867ae-full-session-id\u001b\[0m/);
+});
+
+test("Lite CLI JSON search defaults to cwd and --no-dir restores the unscoped snapshot", async () => {
+  const snapshot = await getCodexSnapshot();
+  const scoped = snapshot.listResolvedSessions().find((session) => session.working_directory);
+  assert.ok(scoped?.working_directory);
+  const scanOptions: ScanLiteHistoryOptions[] = [];
+  const scanner = async (options: ScanLiteHistoryOptions) => {
+    scanOptions.push(options);
+    return snapshot;
+  };
+
+  const jsonDefault = captureIo(scoped.working_directory, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["search", "Review", "--json"], jsonDefault.io), 0);
+  assert.equal(scanOptions.at(-1)?.directoryScope, scoped.working_directory);
+  const defaultPayload = JSON.parse(jsonDefault.stdout.join("")) as {
+    unit: string;
+    total: number;
+    shown: number;
+    results: unknown[];
+  };
+  assert.equal(defaultPayload.unit, "session");
+  assert.equal(defaultPayload.shown, defaultPayload.results.length);
+  assert.equal(defaultPayload.total, defaultPayload.shown);
+
+  const unscoped = captureIo(scoped.working_directory, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["search", "Review", "--json", "--no-dir"], unscoped.io), 0);
+  assert.equal(scanOptions.at(-1)?.directoryScope, undefined);
+
+  const conflict = captureIo(scoped.working_directory);
+  assert.equal(await runLiteCli(["search", "Review", "--json", "--dir", scoped.working_directory, "--no-dir"], conflict.io), 2);
+  assert.match(conflict.stderr.join(""), /--no-dir and --dir cannot be used together/);
+});
+
+test("Lite CLI query latest and list count the same unit they return", async () => {
+  const snapshot = await getCodexSnapshot();
+  const request = JSON.stringify({
+    schema: "cchistory-lite-query/v2",
+    operations: [
+      { id: "recent", kind: "latest", target: "sessions", limit: 2 },
+      { id: "sessions", kind: "list", collection: "sessions", limit: 1 },
+    ],
+  });
+  const captured = captureIo(repoRoot, undefined, {
+    readStdin: async () => request,
+    scan: async () => snapshot,
+  });
+  assert.equal(await runLiteCli(["query", "--request", "-", "--no-dir"], captured.io), 0);
+  const payload = JSON.parse(captured.stdout.join("")) as {
+    operations: Array<{ id: string; result: { total: number; shown: number; sessions?: unknown[] } }>;
+  };
+  const recent = payload.operations[0]?.result;
+  const listed = payload.operations[1]?.result;
+  assert.equal(recent?.shown, recent?.sessions?.length);
+  assert.ok((recent?.total ?? 0) >= (recent?.shown ?? 1));
+  assert.equal(listed?.shown, listed?.sessions?.length);
+  assert.equal(listed?.shown, 1);
+});
+
+test("Lite shell JSON-lines searches sessions against one snapshot and refreshes on request", async () => {
+  const snapshot = await getCodexSnapshot();
+  const turn = snapshot.listResolvedTurns()[0];
+  assert.ok(turn);
+  const queryWord = turn.canonical_text.split(/\s+/u).find((part) => part.length >= 4);
+  assert.ok(queryWord);
+  let scans = 0;
+  const lines = [
+    JSON.stringify({ id: "find", kind: "search", query: queryWord, limit: 3 }),
+    JSON.stringify({ kind: "refresh" }),
+    JSON.stringify({ id: "again", kind: "search", query: queryWord, limit: 1 }),
+    JSON.stringify({ kind: "exit" }),
+  ];
+  const captured = captureIo(repoRoot, undefined, {
+    isTTY: false,
+    readLine: async () => lines.shift() ?? null,
+    scan: async () => {
+      scans += 1;
+      return snapshot;
+    },
+  });
+  assert.equal(await runLiteCli(["shell", "--json", "--no-dir"], captured.io), 0);
+  assert.equal(scans, 2);
+  const payloads = captured.stdout.join("").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.equal(payloads[0]?.kind, "query_result");
+  assert.equal((payloads[1] as { kind?: string }).kind, "refreshed");
+  const first = payloads[0] as { operations: Array<{ result: { unit: string; shown: number; total: number; results: unknown[] } }> };
+  const search = first.operations[0]?.result;
+  assert.equal(search?.unit, "session");
+  assert.equal(search?.shown, search?.results.length);
+  assert.ok((search?.total ?? 0) >= (search?.shown ?? 0));
+});
+
+test("Lite shell JSON-lines replies from a line before stdin closes and loads matching context", async () => {
+  const snapshot = await getCodexSnapshot();
+  const turn = snapshot.listResolvedTurns().find((entry) => snapshot.getTurnContext(entry.id)?.assistant_replies.length);
+  assert.ok(turn);
+  const light = new LiveHistorySnapshot({ ...snapshot.data, contexts: [] });
+  const scans: ScanLiteHistoryOptions[] = [];
+  const stdin = new PassThrough();
+  const captured = captureIo(repoRoot, undefined, {
+    stdin,
+    isTTY: true,
+    stdinIsTTY: false,
+    scan: async (options) => {
+      scans.push(options);
+      return options.contextMode === "matching" ? snapshot : light;
+    },
+  });
+  const running = runLiteCli(["shell", "--no-dir"], captured.io);
+  const queryWord = turn.canonical_text.split(/\s+/u).find((part) => part.length >= 4);
+  assert.ok(queryWord);
+  stdin.write(`${JSON.stringify({ id: "find", kind: "search", query: queryWord, limit: 1 })}\n`);
+  const started = Date.now();
+  while (!captured.stdout.join("").includes("query_result") && Date.now() - started < 2000) {
+    await delay(10);
+  }
+  assert.match(captured.stdout.join(""), /"kind":"query_result"/);
+  stdin.write(`${JSON.stringify({ kind: "replies", turn_refs: [turn.id] })}\n`);
+  stdin.write(`${JSON.stringify({ kind: "exit" })}\n`);
+  stdin.end();
+  assert.equal(await running, 0);
+  assert.ok(scans.some((options) => options.contextMode === "none"));
+  assert.ok(scans.some((options) =>
+    options.contextMode === "matching"
+    && options.contextTargets?.some((target) => target.kind === "turn" && target.ref === turn.id),
+  ));
+  const payloads = captured.stdout.join("").trim().split("\n").map((line) => JSON.parse(line) as {
+    kind?: string;
+    operations?: Array<{ result?: { turns?: Array<{ assistant_replies?: unknown[] }> } }>;
+  });
+  const replies = payloads.find((payload) => payload.operations?.[0]?.result?.turns);
+  assert.ok((replies?.operations?.[0]?.result?.turns?.[0]?.assistant_replies?.length ?? 0) > 0);
+});
+
+test("Lite shell latest sessions N uses the count and JSON-lines follows stdin TTY not stdout", async () => {
+  const snapshot = await getCodexSnapshot();
+  const eligible = snapshot.listTopLevelSessions().filter((session) => session.turn_count > 0);
+  assert.ok(eligible.length > 2);
+  const humanLines = ["latest sessions 2", "latest 2 extra", "exit"];
+  const human = captureIo(repoRoot, undefined, {
+    isTTY: true,
+    stdinIsTTY: true,
+    readLine: async () => humanLines.shift() ?? null,
+    scan: async () => snapshot,
+  });
+  assert.equal(await runLiteCli(["shell", "--no-dir"], human.io), 0);
+  const sessionRows = human.stdout.join("").trim().split("\n").filter((line) => line.startsWith("sess:"));
+  assert.equal(sessionRows.length, 2);
+  assert.match(human.stderr.join(""), /latest <N> does not accept a second positional argument/);
+
+  const jsonAsHuman = ['{"kind":"search","query":"x"}', "exit"];
+  const jsonOnTtyStdout = captureIo(repoRoot, undefined, {
+    isTTY: true,
+    stdinIsTTY: true,
+    readLine: async () => jsonAsHuman.shift() ?? null,
+    scan: async () => snapshot,
+  });
+  assert.equal(await runLiteCli(["shell", "--no-dir"], jsonOnTtyStdout.io), 0);
+  assert.match(jsonOnTtyStdout.stderr.join(""), /Unknown shell command/);
+});
+
+test("Lite shell JSON-lines keeps the snapshot when refresh fails and uses structured startup errors", async () => {
+  const snapshot = await getCodexSnapshot();
+  let scans = 0;
+  const refreshLines = [
+    JSON.stringify({ kind: "refresh" }),
+    JSON.stringify({ id: "find", kind: "search", query: "Review", limit: 1 }),
+    JSON.stringify({ kind: "exit" }),
+  ];
+  const refresh = captureIo(repoRoot, undefined, {
+    isTTY: true,
+    stdinIsTTY: false,
+    readLine: async () => refreshLines.shift() ?? null,
+    scan: async () => {
+      scans += 1;
+      if (scans === 2) throw new Error("synthetic refresh failure");
+      return snapshot;
+    },
+  });
+  assert.equal(await runLiteCli(["shell", "--json", "--no-dir"], refresh.io), 1);
+  const refreshPayloads = refresh.stdout.join("").trim().split("\n").map((line) => JSON.parse(line) as {
+    kind?: string;
+    error?: { code?: string };
+    operations?: Array<{ status?: string }>;
+  });
+  assert.equal(refreshPayloads[0]?.kind, "error");
+  assert.equal(refreshPayloads[0]?.error?.code, "scan_failed");
+  assert.equal(refreshPayloads[1]?.kind, "query_result");
+  assert.equal(refreshPayloads[1]?.operations?.[0]?.status, "ok");
+  assert.equal(refresh.stderr.join(""), "");
+
+  const startup = captureIo(repoRoot, undefined, {
+    isTTY: true,
+    stdinIsTTY: false,
+    scan: async () => {
+      throw new Error("synthetic startup scan failure");
+    },
+  });
+  assert.equal(await runLiteCli(["shell", "--no-dir"], startup.io), 1);
+  assert.equal(startup.stdout.join(""), "");
+  const startupError = JSON.parse(startup.stderr.join("")) as { schema: string; error: { code: string } };
+  assert.equal(startupError.schema, "cchistory-lite-error/v1");
+  assert.equal(startupError.error.code, "scan_failed");
 });
 
 function captureIo(

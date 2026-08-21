@@ -49,7 +49,11 @@ export function compactPayload(
       return {
         ...base,
         query: payload.query,
+        unit: payload.unit ?? "session",
         total: payload.total,
+        shown: payload.shown ?? records(payload.results).length,
+        offset: payload.offset ?? 0,
+        limit: payload.limit ?? null,
         results: records(payload.results).map((result) => searchResultSummary(result, snapshot)),
       };
     case "project_tree":
@@ -225,15 +229,33 @@ function sessionNodeSummary(node: Record<string, unknown>, snapshot: LiveHistory
 }
 
 export function searchResultSummary(result: Record<string, unknown>, snapshot: LiveHistorySnapshot): Record<string, unknown> {
-  const turn = record(result.turn) as unknown as UserTurnProjection;
-  const session = optionalRecord(result.session) as unknown as SessionProjection | undefined;
+  const sessionRecord = optionalRecord(result.session) as unknown as SessionProjection | undefined;
+  const turnRecord = optionalRecord(result.best_turn) ?? optionalRecord(result.turn);
+  const session = sessionRecord ?? (turnRecord
+    ? snapshot.getSession((turnRecord as unknown as UserTurnProjection).session_id)
+    : undefined);
   const project = optionalRecord(result.project) as unknown as ProjectIdentity | undefined;
+  const bestTurn = turnRecord as unknown as UserTurnProjection | undefined;
+  if (!session) {
+    return {
+      session: null,
+      project: project ? projectSummary(project) : null,
+      best_turn: null,
+      highlights: Array.isArray(result.highlights) ? result.highlights : [],
+      relevance_score: result.relevance_score ?? null,
+      match_field: result.match_field ?? null,
+    };
+  }
+  const resolvedProject = project ?? (session.primary_project_id
+    ? snapshot.getProject(session.primary_project_id)
+    : undefined);
   return {
-    turn: turnSummary(turn, snapshot),
-    session: session ? sessionSummary(session, snapshot) : null,
-    project: project ? projectSummary(project) : null,
+    session: sessionSummary(session, snapshot),
+    project: resolvedProject ? projectSummary(resolvedProject) : null,
+    best_turn: bestTurn ? turnSummary(bestTurn, snapshot) : null,
     highlights: Array.isArray(result.highlights) ? result.highlights : [],
     relevance_score: result.relevance_score,
+    match_field: result.match_field ?? null,
   };
 }
 

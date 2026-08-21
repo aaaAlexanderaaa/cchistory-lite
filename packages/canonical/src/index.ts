@@ -30,6 +30,8 @@ export {
 export {
   boundSearchCanonicalText,
   buildSearchPlan,
+  classifySearchMatch,
+  compareSessionSearchResults,
   compareTurnSearchResults,
   computeRelevanceScore,
   findHighlights,
@@ -39,6 +41,7 @@ export {
   matchesSearchPlan,
   SEARCH_CANONICAL_TEXT_SCAN_BYTES,
   SEARCH_TRUNCATION_MARKER,
+  searchSessionsInMemory,
   searchTurnsInMemory,
   stripSearchTruncationMarker,
   type MaterializeSearchCandidateInput,
@@ -46,6 +49,7 @@ export {
   type SearchCandidateSessionFields,
   type SearchPlan,
   type SearchProjectObservationCandidate,
+  type SearchSessionsInMemoryInput,
   type SearchTerm,
   type SearchTurnsInMemoryInput,
 } from "./search.js";

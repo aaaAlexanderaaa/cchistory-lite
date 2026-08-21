@@ -19,6 +19,7 @@ import {
   type SourceStatus,
   type SourceSyncPayload,
   type TurnContextProjection,
+  type SessionSearchResult,
   type TurnSearchResult,
   type UsageStatsDimension,
   type UsageStatsOverview,
@@ -44,6 +45,7 @@ import {
   installRuntimeWarningFilter,
   orderSessionsByLastMessage,
   pathMatchesDirectoryScope,
+  searchSessionsInMemory,
   searchTurnsInMemory,
   resolveTurnUsage,
   summarizeSessionUsage,
@@ -168,6 +170,7 @@ export class LiveHistorySnapshot {
   private turnsBySessionId?: Map<string, UserTurnProjection[]>;
   private turnsByProjectId?: Map<string, UserTurnProjection[]>;
   private searchRankCache?: Map<string, readonly TurnSearchResult[]>;
+  private sessionSearchRankCache?: Map<string, readonly SessionSearchResult[]>;
 
   constructor(data: LiveSnapshotInputData, searchCandidates: readonly DerivedCandidate[] = []) {
     this.data = { ...data, related_work: data.related_work ?? [] };
@@ -389,6 +392,35 @@ export class LiveHistorySnapshot {
     return { results: ranked.slice(offset, offset + limit), total: ranked.length };
   }
 
+  searchSessions(options: LiveSearchOptions = {}): { results: SessionSearchResult[]; total: number } {
+    const limit = Math.max(0, options.limit ?? 50);
+    const offset = Math.max(0, options.offset ?? 0);
+    const cacheKey = JSON.stringify([
+      options.query ?? "",
+      options.projectId ?? null,
+      options.sourceIds ?? null,
+      options.directoryScope ?? null,
+    ]);
+    this.sessionSearchRankCache ??= new Map();
+    let ranked = this.sessionSearchRankCache.get(cacheKey);
+    if (!ranked) {
+      ranked = searchSessionsInMemory({
+        turns: filterTurnsByDirectoryScope(this.data.turns, this.data.sessions, options.directoryScope),
+        sessions: filterSessionsByDirectoryScope(this.data.sessions, options.directoryScope),
+        projects: this.data.projects,
+        candidates: this.searchCandidates,
+        related_work: this.data.related_work,
+        query: options.query,
+        project_id: options.projectId,
+        source_ids: options.sourceIds,
+        limit: Infinity,
+        offset: 0,
+      }).results;
+      this.sessionSearchRankCache.set(cacheKey, ranked);
+    }
+    return { results: ranked.slice(offset, offset + limit), total: ranked.length };
+  }
+
   private sessionTurnBuckets(): Map<string, UserTurnProjection[]> {
     if (!this.turnsBySessionId) {
       const buckets = new Map<string, UserTurnProjection[]>();
@@ -546,10 +578,20 @@ async function scanSourceWithCollector(
   sourceAdapters: typeof import("@cchistory/source-adapters"),
   sourceFiles?: readonly string[],
 ): Promise<{ host: Host; payload: LiveSourcePayload }> {
+  let scopedFiles = sourceFiles;
+  const directoryScope = options.directoryScope;
+  if (directoryScope && scopedFiles === undefined) {
+    const listed = await sourceAdapters.listSourceFiles(source.platform, source.base_dir, options.limitFiles);
+    scopedFiles = listed.filter((filePath) => {
+      const preview = sourceAdapters.previewSourceFileWorkingDirectory(source.platform, filePath);
+      if (preview.state !== "known" || !preview.workingDirectory) return true;
+      return pathMatchesDirectoryScope(preview.workingDirectory, directoryScope);
+    });
+  }
   const probe = await sourceAdapters.runSourceProbe(
     {
       ...buildProbeOptions(source, options),
-      ...(sourceFiles ? { source_file_paths: { [source.id]: sourceFiles } } : {}),
+      ...(scopedFiles ? { source_file_paths: { [source.id]: scopedFiles } } : {}),
     },
     [source],
   );

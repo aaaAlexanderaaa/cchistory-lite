@@ -61,9 +61,10 @@ It also owns two runtime policies:
 
 ### `@cchistory/lite-cli` and `@cchistory/lite-tui`
 
-Two thin surfaces over the same runtime. The CLI is one-shot: scan, render, exit. The TUI holds
-exactly one snapshot for the process lifetime and pages over it. Neither contains history
-semantics of its own — anything they compute would be a bug in layering.
+Two thin surfaces over the same runtime. The CLI is one-shot: scan, render, exit. The TUI and `shell` each hold exactly one snapshot for the process lifetime and page over
+it. Neither contains history semantics of its own — anything they compute would be a bug in
+layering. CLI `search` projects matching turns into one row per top-level session; the TUI
+search pane still lists turns.
 
 ## Context discipline
 
@@ -71,7 +72,7 @@ Reading full assistant/tool context for every turn is the expensive path, so it 
 
 | Caller | Context mode |
 | --- | --- |
-| `sources`, `ls`, `latest`, `tree`, `search`, `show project`, `show source`, `stats`, TUI startup | `none` — context dropped after deriving turns |
+| `sources`, `ls`, `latest`, `tree`, `search`, `show project`, `show source`, `stats`, `shell` startup, TUI startup | `none` — context dropped after deriving turns |
 | `show session <complete-canonical-id>` | targeted `full` scan of that one logical session |
 | `show session <fuzzy-ref>`, `show turn <ref>` | one `matching` scan; context retained only for possible resolver matches |
 | JSON/JSONL `export` | `full` |

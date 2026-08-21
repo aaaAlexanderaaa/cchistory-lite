@@ -101,6 +101,23 @@ export function decodeGrokEncodedCwd(encodedCwd: string): string | undefined {
   }
 }
 
+export function previewSourceFileWorkingDirectory(
+  platform: string,
+  filePath: string,
+): { state: "known" | "absent" | "uncertain"; workingDirectory?: string } {
+  if (platform !== "grok") {
+    return { state: "absent" };
+  }
+  const layout = parseGrokSessionLayout(filePath);
+  if (!layout) {
+    return { state: "uncertain" };
+  }
+  if (!layout.workingDirectory) {
+    return { state: "absent" };
+  }
+  return { state: "known", workingDirectory: layout.workingDirectory };
+}
+
 export async function listGrokCompanionEvidencePaths(_baseDir: string, filePath: string): Promise<string[]> {
   const sessionDir = resolveGrokSessionDir(filePath);
   if (!sessionDir) {

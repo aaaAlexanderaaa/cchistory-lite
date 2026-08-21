@@ -59,18 +59,25 @@ async function main() {
     }
     const search = await execFile(
       cli,
-      ['search', 'mock', '--source-root', `codex=${fixtureRoot}`, '--source', 'codex', '--safe', '--json'],
+      ['search', 'mock', '--source-root', `codex=${fixtureRoot}`, '--source', 'codex', '--safe', '--json', '--no-dir'],
       { cwd: extractRoot, maxBuffer: 8 * 1024 * 1024 },
     );
     const payload = JSON.parse(search.stdout);
-    if (payload.schema !== 'cchistory-lite/v2' || payload.kind !== 'search' || payload.total < 1) {
+    if (
+      payload.schema !== 'cchistory-lite/v2'
+      || payload.kind !== 'search'
+      || payload.unit !== 'session'
+      || payload.total < 1
+      || payload.shown !== payload.results.length
+      || payload.shown > payload.total
+    ) {
       throw new Error(`Installed Lite CLI fixture search failed: ${search.stdout}`);
     }
     const schemaNames = [
       'cchistory-lite-v2.schema.json',
       'cchistory-lite-canonical-v1.schema.json',
-      'cchistory-lite-query-v1.schema.json',
-      'cchistory-lite-query-result-v1.schema.json',
+      'cchistory-lite-query-v2.schema.json',
+      'cchistory-lite-query-result-v2.schema.json',
       'cchistory-lite-error-v1.schema.json',
     ];
     for (const schemaName of schemaNames) {
@@ -78,17 +85,17 @@ async function main() {
     }
     const requestPath = path.join(tempRoot, 'query.json');
     await writeFile(requestPath, `${JSON.stringify({
-      schema: 'cchistory-lite-query/v1',
+      schema: 'cchistory-lite-query/v2',
       operations: [{ id: 'find', kind: 'search', query: 'mock', limit: 1 }],
     })}\n`, 'utf8');
     const query = await execFile(
       cli,
-      ['query', '--request', requestPath, '--source-root', `codex=${fixtureRoot}`, '--source', 'codex', '--safe'],
+      ['query', '--request', requestPath, '--source-root', `codex=${fixtureRoot}`, '--source', 'codex', '--safe', '--no-dir'],
       { cwd: extractRoot, maxBuffer: 8 * 1024 * 1024 },
     );
     const queryPayload = JSON.parse(query.stdout);
     if (
-      queryPayload.schema !== 'cchistory-lite-query-result/v1'
+      queryPayload.schema !== 'cchistory-lite-query-result/v2'
       || queryPayload.kind !== 'query_result'
       || queryPayload.operations?.[0]?.status !== 'ok'
       || queryPayload.operations[0].result?.total < 1
