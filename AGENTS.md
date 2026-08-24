@@ -21,6 +21,9 @@ These are not style preferences. Breaking one is a defect regardless of what it 
 6. **No mutation surface.** There is no sync, import, backup, restore, merge, GC, or migration
    command, and adding one is a product change, not an implementation detail.
 
+When looking up native history while working here, follow
+`skills/using-cchistory-lite/SKILL.md` instead of grepping adapter roots.
+
 ## Visual changes
 
 - Do not implement a visual or interaction design before the user has reviewed and approved the

@@ -77,6 +77,17 @@ export {
   buildSessionRelatedWorkIndex,
   listSessionRelatedWork,
 } from "./related-work.js";
+export {
+  addContributionStats,
+  buildSessionFamilyInventory,
+  emptyContributionStats,
+  FAMILY_IO_PREVIEW_CHARS,
+  listDelegatedRelationsForFamilyChildren,
+  listSessionFamilies,
+  mergeSessionFamilyInventories,
+  type SessionFamilyInput,
+  type SessionFamilyInventory,
+} from "./session-family.js";
 export { filterTopLevelSessions } from "./session-collections.js";
 export {
   auditProjectionConsistency,

@@ -16,6 +16,7 @@ import { compactPayload } from "./json-v2.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const codexRoot = path.join(repoRoot, "mock_data", ".codex", "sessions");
+const grokRoot = path.join(repoRoot, "mock_data", "fixtures", "grok-cli");
 const openclawRoot = path.join(repoRoot, "mock_data", ".openclaw", "agents");
 const fixedNow = Date.parse("2026-08-03T12:00:00.000Z");
 let codexSnapshotPromise: Promise<LiveHistorySnapshot> | undefined;
@@ -322,6 +323,58 @@ test("Lite CLI tree and session detail preserve canonical related work", async (
   }
 });
 
+test("Lite CLI inventories delegated families with storage and I/O without mutating sources", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-cli-families-"));
+  const parentId = "sess:grok:aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const childId = "sess:grok:bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+  try {
+    const scanArgs = ["--source-root", `grok=${grokRoot}`, "--source", "grok", "--safe", "--json"];
+    const listed = captureIo(tempHome);
+    assert.equal(await runLiteCli(["ls", "families", ...scanArgs, "--no-dir"], listed.io), 0);
+    const listPayload = JSON.parse(listed.stdout.join("")) as {
+      kind: string;
+      total: number;
+      families: Array<{
+        parent_session_ref: string;
+        child_count: number;
+        combined: { storage_bytes: number };
+        children: Array<{ child_session_ref: string | null; stats: { storage_bytes: number } }>;
+      }>;
+    };
+    assert.equal(listPayload.kind, "families");
+    assert.ok(listPayload.total >= 1);
+    const family = listPayload.families.find((entry) => entry.parent_session_ref === parentId);
+    assert.ok(family);
+    assert.equal(family.child_count, 1);
+    assert.equal(family.children[0]?.child_session_ref, childId);
+    assert.ok(family.combined.storage_bytes > 0);
+
+    const detail = captureIo(tempHome);
+    assert.equal(await runLiteCli(["show", "session", parentId, ...scanArgs], detail.io), 0);
+    const detailPayload = JSON.parse(detail.stdout.join("")) as {
+      session: { id: string; delegated_child_count: number; family_storage_bytes: number };
+      family: {
+        child_count: number;
+        children: Array<{
+          child_session_ref: string | null;
+          title: string | null;
+          input_preview: string | null;
+          output_preview: string | null;
+        }>;
+      };
+    };
+    assert.equal(detailPayload.session.id, parentId);
+    assert.ok(detailPayload.session.delegated_child_count >= 1);
+    assert.ok(detailPayload.session.family_storage_bytes > 0);
+    assert.equal(detailPayload.family.child_count, family.child_count);
+    assert.equal(detailPayload.family.children[0]?.child_session_ref, childId);
+    assert.ok(detailPayload.family.children[0]?.title);
+    assert.ok(detailPayload.family.children.some((child) => child.input_preview || child.output_preview));
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test("Lite CLI compact JSON excludes raw evidence while canonical JSON retains it", async () => {
   const snapshot = await getCodexSnapshot();
   const target = snapshot.listResolvedTurns().find((turn) => snapshot.getTurnContext(turn.id)?.assistant_replies.length);
@@ -381,6 +434,56 @@ test("Lite CLI compact session titles cannot reintroduce text removed by canonic
     updated_at: session.updated_at,
     evidence_confidence: 1,
   };
+  const family = {
+    parent_session_ref: session.id,
+    source_id: session.source_id,
+    source_platform: session.source_platform,
+    child_count: 1,
+    parent: {
+      storage_bytes: 1,
+      blob_count: 1,
+      turn_count: 1,
+      assistant_reply_count: 0,
+      tool_call_count: 0,
+      tool_success_count: 0,
+      tool_error_count: 0,
+      tool_pending_count: 0,
+    },
+    combined: {
+      storage_bytes: 1,
+      blob_count: 1,
+      turn_count: 1,
+      assistant_reply_count: 0,
+      tool_call_count: 0,
+      tool_success_count: 0,
+      tool_error_count: 0,
+      tool_pending_count: 0,
+    },
+    children: [{
+      id: "delegated-child-masked",
+      identity_kind: "session" as const,
+      parent_session_ref: session.id,
+      child_session_ref: session.id,
+      source_id: session.source_id,
+      source_platform: session.source_platform,
+      title: rawTitle,
+      created_at: session.created_at,
+      updated_at: session.updated_at,
+      input_preview: `${"x".repeat(220)} ${secret} spawn the helper`,
+      output_preview: `${"x".repeat(220)} ${secret} helper done`,
+      origin_paths: [],
+      stats: {
+        storage_bytes: 0,
+        blob_count: 0,
+        turn_count: 0,
+        assistant_reply_count: 0,
+        tool_call_count: 0,
+        tool_success_count: 0,
+        tool_error_count: 0,
+        tool_pending_count: 0,
+      },
+    }],
+  };
   const compactPayloads = [
     compactPayload({ kind: "sessions", sessions: [session] }, maskedSnapshot),
     compactPayload({
@@ -389,7 +492,8 @@ test("Lite CLI compact session titles cannot reintroduce text removed by canonic
       total: 1,
       results: [{ turn, session, highlights: [], relevance_score: 1 }],
     }, maskedSnapshot),
-    compactPayload({ kind: "session_detail", session, related_work: [relatedWork], turns: [] }, maskedSnapshot),
+    compactPayload({ kind: "session_detail", session, family, related_work: [relatedWork], turns: [] }, maskedSnapshot),
+    compactPayload({ kind: "families", families: [family] }, maskedSnapshot),
     compactPayload({ kind: "turn_detail", turn, session, context: undefined }, maskedSnapshot),
   ];
 

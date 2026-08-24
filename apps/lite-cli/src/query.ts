@@ -9,6 +9,7 @@ import {
   projectSummary,
   relatedWorkSummary,
   searchResultSummary,
+  familySummary,
   sessionSummary,
   turnSummary,
 } from "./json-v2.js";
@@ -59,7 +60,7 @@ interface LatestOperation extends QueryOperationBase {
 
 interface ListOperation extends QueryOperationBase {
   kind: "list";
-  collection: "sessions" | "projects";
+  collection: "sessions" | "projects" | "families";
   limit?: number;
   offset?: number;
 }
@@ -213,6 +214,19 @@ function executeOperation(
         projects: page.map(projectSummary),
       };
     }
+    if (operation.collection === "families") {
+      const families = snapshot.listSessionFamilies({ directoryScope });
+      const page = families.slice(offset, offset + limit);
+      return {
+        collection: operation.collection,
+        unit: "family",
+        total: families.length,
+        shown: page.length,
+        offset,
+        limit,
+        families: page.map((family) => familySummary(family, snapshot)),
+      };
+    }
     const sessions = snapshot.listTopLevelSessions({ directoryScope });
     const page = sessions.slice(offset, offset + limit);
     return {
@@ -235,6 +249,10 @@ function executeOperation(
       if (!session || (allowed && !allowed.has(session.id))) throw new QueryReferenceError(`Session not found: ${ref}.`);
       return {
         session: sessionSummary(session, snapshot),
+        family: (() => {
+          const family = snapshot.getSessionFamily(session.id);
+          return family ? familySummary(family, snapshot) : null;
+        })(),
         turns: snapshot.listSessionTurns(session.id).map((turn) => turnSummary(turn, snapshot)),
         related_work: snapshot.listSessionRelatedWork(session.id).map((entry) => relatedWorkSummary(entry as unknown as Record<string, unknown>)),
       };
@@ -301,8 +319,8 @@ function parseOperation(value: unknown, index: number): QueryOperation {
   if (kind === "list") {
     assertOnlyKeys(operation, new Set(["id", "kind", "collection", "limit", "offset"]), `operation ${id}`);
     const collection = requireNonEmptyString(operation.collection, `operation ${id} collection`);
-    if (collection !== "sessions" && collection !== "projects") {
-      throw new QueryRequestError(`operation ${id} collection must be sessions or projects.`);
+    if (collection !== "sessions" && collection !== "projects" && collection !== "families") {
+      throw new QueryRequestError(`operation ${id} collection must be sessions, projects, or families.`);
     }
     const parsed: ListOperation = { id, kind, collection };
     if (operation.limit !== undefined) parsed.limit = requireInteger(operation.limit, `operation ${id} limit`, 1);

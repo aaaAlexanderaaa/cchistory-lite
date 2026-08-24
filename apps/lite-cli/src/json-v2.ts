@@ -4,11 +4,14 @@ import type {
   ProjectIdentity,
   SessionProjection,
   SessionRelatedWorkProjection,
+  SessionFamilyProjection,
+  DelegatedChildProjection,
+  SessionContributionStats,
   SourceStatus,
   TurnContextProjection,
   UserTurnProjection,
 } from "@cchistory/domain";
-import type { LiveHistorySnapshot } from "@cchistory/live-runtime";
+import { maskCompactPreview, type LiveHistorySnapshot } from "@cchistory/live-runtime";
 
 export const COMPACT_JSON_SCHEMA = "cchistory-lite/v2";
 export const CANONICAL_JSON_SCHEMA = "cchistory-lite-canonical/v1";
@@ -38,6 +41,12 @@ export function compactPayload(
         ...base,
         ...counts(payload),
         sessions: records(payload.sessions).map((value) => sessionSummary(value as unknown as SessionProjection, snapshot)),
+      };
+    case "families":
+      return {
+        ...base,
+        ...counts(payload),
+        families: records(payload.families).map((value) => familySummary(value as unknown as SessionFamilyProjection, snapshot)),
       };
     case "turns":
       return {
@@ -71,6 +80,7 @@ export function compactPayload(
       return {
         ...base,
         session: sessionSummary(record(payload.session) as unknown as SessionProjection, snapshot),
+        family: payload.family ? familySummary(payload.family as SessionFamilyProjection, snapshot) : null,
         related_work: records(payload.related_work).map(relatedWorkSummary),
         turns: records(payload.turns).map((entry) => {
           const turn = record(entry.turn) as unknown as UserTurnProjection;
@@ -150,6 +160,9 @@ export function sessionSummary(session: SessionProjection, snapshot: LiveHistory
     if (model) models.add(model);
   }
   const usage = snapshot.getSessionUsage(session.id);
+  const contribution = snapshot.getSessionContribution(session.id);
+  const family = snapshot.getSessionFamily(session.id);
+  const familyForSession = family?.parent_session_ref === session.id ? family : undefined;
   return {
     id: session.id,
     source_id: session.source_id,
@@ -161,10 +174,65 @@ export function sessionSummary(session: SessionProjection, snapshot: LiveHistory
     turn_count: session.turn_count,
     model_summary: models.size > 0 ? [...models].join(", ") : null,
     total_tokens: usage?.total_tokens ?? null,
+    storage_bytes: contribution?.stats.storage_bytes ?? 0,
+    delegated_child_count: familyForSession?.child_count ?? 0,
+    family_storage_bytes: familyForSession?.combined.storage_bytes ?? contribution?.stats.storage_bytes ?? 0,
+    family_total_tokens: familyForSession?.combined.total_tokens ?? usage?.total_tokens ?? null,
     working_directory: session.working_directory ?? null,
     source_session_id: session.source_session_id ?? null,
     resume_command: session.resume_command ?? null,
     primary_project_id: session.primary_project_id ?? null,
+  };
+}
+
+export function familySummary(family: SessionFamilyProjection, snapshot: LiveHistorySnapshot): Record<string, unknown> {
+  const parent = snapshot.getSession(family.parent_session_ref);
+  return {
+    parent_session_ref: family.parent_session_ref,
+    parent_source_session_id: parent?.source_session_id ?? null,
+    parent_title: parent?.canonical_title ?? null,
+    source_platform: family.source_platform,
+    child_count: family.child_count,
+    parent: contributionStatsSummary(family.parent),
+    combined: contributionStatsSummary(family.combined),
+    children: family.children.map((child) => delegatedChildSummary(child, snapshot)),
+  };
+}
+
+function delegatedChildSummary(child: DelegatedChildProjection, snapshot: LiveHistorySnapshot): Record<string, unknown> {
+  const childSession = child.child_session_ref ? snapshot.getSession(child.child_session_ref) : undefined;
+  return {
+    id: child.id,
+    identity_kind: child.identity_kind,
+    child_session_ref: child.child_session_ref ?? null,
+    agent_key: child.agent_key ?? null,
+    title: childSession?.canonical_title ?? maskCompactPreview(child.title, "user_message") ?? null,
+    status: child.status ?? null,
+    created_at: child.created_at,
+    updated_at: child.updated_at,
+    input_preview: maskCompactPreview(child.input_preview, "tool_input") ?? null,
+    output_preview: maskCompactPreview(child.output_preview, "tool_output") ?? null,
+    parent_tool_ref: child.parent_tool_ref ?? null,
+    origin_paths: child.origin_paths,
+    stats: contributionStatsSummary(child.stats),
+  };
+}
+
+function contributionStatsSummary(stats: SessionContributionStats): Record<string, unknown> {
+  return {
+    storage_bytes: stats.storage_bytes,
+    blob_count: stats.blob_count,
+    turn_count: stats.turn_count,
+    assistant_reply_count: stats.assistant_reply_count,
+    tool_call_count: stats.tool_call_count,
+    tool_success_count: stats.tool_success_count,
+    tool_error_count: stats.tool_error_count,
+    tool_pending_count: stats.tool_pending_count,
+    input_tokens: stats.input_tokens ?? null,
+    output_tokens: stats.output_tokens ?? null,
+    cached_input_tokens: stats.cached_input_tokens ?? null,
+    reasoning_output_tokens: stats.reasoning_output_tokens ?? null,
+    total_tokens: stats.total_tokens ?? null,
   };
 }
 

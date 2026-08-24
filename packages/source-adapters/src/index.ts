@@ -16,6 +16,7 @@ export {
 } from "./core/legacy.js";
 export { buildStageRuns } from "./core/projections.js";
 export { selectTailBlob } from "@cchistory/domain";
+export { applyMaskTemplates } from "./masks.js";
 export { listPlatformAdapters, listPlatformAdaptersBySupportTier, listStablePlatformAdapters } from "./platforms/registry.js";
 export { parseGrokSessionLayout, previewSourceFileWorkingDirectory } from "./platforms/grok.js";
 export type { HostDiscoveryCandidate, HostDiscoveryEntry } from "./core/legacy.js";

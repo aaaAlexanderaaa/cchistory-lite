@@ -107,7 +107,7 @@ async function runHumanShell(
     try {
       if (command === "exit" || command === "quit") break;
       if (command === "help") {
-        input.io.stdout("Commands: search <query>, latest [sessions|turns] [N], ls sessions|projects, show session|turn <ref>, refresh, exit\n");
+        input.io.stdout("Commands: search <query>, latest [sessions|turns] [N], ls sessions|projects|families, show session|turn <ref>, refresh, exit\n");
         continue;
       }
       if (command === "refresh") {
@@ -150,8 +150,13 @@ async function runHumanShell(
           for (const session of snapshot.listTopLevelSessions({ directoryScope: input.directoryScope }).slice(0, 20)) {
             input.io.stdout(`${session.id}  ${session.title ?? session.source_session_id ?? session.id}\n`);
           }
+        } else if (collection === "families") {
+          for (const family of snapshot.listSessionFamilies({ directoryScope: input.directoryScope }).slice(0, 20)) {
+            const parent = snapshot.getSession(family.parent_session_ref);
+            input.io.stdout(`${family.parent_session_ref}  ${family.child_count} subagents  ${family.combined.storage_bytes}B  ${parent?.title ?? ""}\n`);
+          }
         } else {
-          throw new Error("ls target must be sessions or projects.");
+          throw new Error("ls target must be sessions, projects, or families.");
         }
         continue;
       }

@@ -12,8 +12,8 @@
   "scripts": {
     "build": "pnpm run build:lite",
     "build:lite": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/canonical build && pnpm --filter @cchistory/source-adapters build && pnpm --filter @cchistory/live-runtime build && pnpm --filter @cchistory/lite-cli build && pnpm --filter @cchistory/lite-tui build",
-    "lite": "node apps/lite-cli/dist/index.js",
-    "lite:tui": "node apps/lite-tui/dist/index.js",
+    "lite": "node apps/lite-cli/dist/bin.js",
+    "lite:tui": "node apps/lite-tui/dist/bin.js",
     "lite:link": "pnpm --filter @cchistory/lite-cli build && cd apps/lite-cli && npm link",
     "lite:tui:link": "pnpm --filter @cchistory/lite-tui build && cd apps/lite-tui && npm link",
     "lite:artifact": "node scripts/build-lite-artifact.mjs",

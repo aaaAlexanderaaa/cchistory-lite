@@ -13,6 +13,8 @@ import type {
   ProjectIdentity,
   SessionProjection,
   SessionRelatedWorkProjection,
+  SessionFamilyProjection,
+  SessionContributionStats,
   SourceStatus,
   TurnContextProjection,
   UsageStatsDimension,
@@ -20,6 +22,7 @@ import type {
 } from "@cchistory/domain";
 import {
   AmbiguousReferenceError,
+  maskCompactPreview,
   runWithAdaptiveNodeMemory,
   scanLiteHistory,
   type LiteSourceRoot,
@@ -303,6 +306,18 @@ function runList(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
     );
     return;
   }
+  if (target === "families") {
+    const allFamilies = snapshot.listSessionFamilies({ directoryScope });
+    const families = allFamilies.slice(0, limit);
+    output(
+      io,
+      jsonMode,
+      { schema: JSON_SCHEMA, kind: "families", total: allFamilies.length, shown: families.length, families },
+      renderFamilies(snapshot, families, collectionRenderOptions(io, "Families", allFamilies.length, "use --limit <n> or --all", "family")),
+      snapshot,
+    );
+    return;
+  }
   if (target === "sources") {
     if (directoryScope) throw new UsageError("--dir is not valid for ls sources.");
     const allSources = snapshot.listSources();
@@ -316,7 +331,7 @@ function runList(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
     );
     return;
   }
-  throw new UsageError(`ls target must be projects, sessions, or sources; received ${JSON.stringify(target)}.`);
+  throw new UsageError(`ls target must be projects, sessions, families, or sources; received ${JSON.stringify(target)}.`);
 }
 
 function runLatest(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliIo, jsonMode: JsonOutputMode): void {
@@ -439,6 +454,7 @@ function runShow(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
     const turns = snapshot.listSessionTurns(session.id);
     const detail = {
       session,
+      family: snapshot.getSessionFamily(session.id),
       related_work: snapshot.listSessionRelatedWork(session.id),
       turns: turns.map((turn) => ({ turn, context: snapshot.getTurnContext(turn.id) })),
     };
@@ -606,6 +622,8 @@ function* iterateJsonlRows(snapshot: LiveHistorySnapshot): Iterable<unknown> {
   for (const value of data.projects) yield { schema: EXPORT_SCHEMA, kind: "project", value };
   for (const value of data.sessions) yield { schema: EXPORT_SCHEMA, kind: "session", value };
   for (const value of data.related_work) yield { schema: EXPORT_SCHEMA, kind: "related_work", value };
+  for (const value of data.session_contributions) yield { schema: EXPORT_SCHEMA, kind: "session_contribution", value };
+  for (const value of data.delegated_children) yield { schema: EXPORT_SCHEMA, kind: "delegated_child", value };
   for (const value of data.turns) yield { schema: EXPORT_SCHEMA, kind: "turn", value };
   for (const value of data.contexts) yield { schema: EXPORT_SCHEMA, kind: "context", value };
   for (const value of data.ask_user_question_turns) {
@@ -700,7 +718,7 @@ function renderSessions(
       `● ${formatRelativeTime(activityAt, options.now)} · ${sourceName}`,
       ...wrapHumanText(session.title ?? "Untitled session", options.columns, "  ", "    "),
       ...wrapHumanText(
-        `${session.turn_count} turns · ${model} · ${tokens === "n/a" ? "tokens n/a" : `${tokens} tokens`}`,
+        `${session.turn_count} turns · ${model} · ${tokens === "n/a" ? "tokens n/a" : `${tokens} tokens`}${formatSessionFamilyHint(snapshot, session.id)}`,
         options.columns,
         "  ",
         "    ",
@@ -843,6 +861,7 @@ function renderSessionDetail(
   snapshot: LiveHistorySnapshot,
   detail: {
     session: SessionProjection;
+    family?: SessionFamilyProjection;
     related_work: SessionRelatedWorkProjection[];
     turns: Array<{ turn: UserTurnProjection; context: TurnContextProjection | undefined }>;
   },
@@ -865,8 +884,10 @@ function renderSessionDetail(
       ["Updated", formatDateTime(session.updated_at, now)],
       ["Model", session.model ?? "-"],
       ["Turns", String(turns.length)],
+      ...sessionFamilyMeta(detail.family),
     ]),
   ];
+  appendFamily(lines, snapshot, detail.family);
   if (turns.length > 0) {
     lines.push("", `Turns (${turns.length}, oldest first)`);
     for (const { turn, context } of turns) {
@@ -1018,6 +1039,107 @@ function formatTokenTotal(total: number | undefined): string {
 
 function indentBlock(value: string, prefix: string): string {
   return value.split(/\r?\n/u).map((line) => `${prefix}${line}`).join("\n");
+}
+
+function sessionFamilyMeta(family: SessionFamilyProjection | undefined): Array<[string, string]> {
+  if (!family || family.child_count === 0) return [];
+  return [
+    ["Storage", `${formatByteSize(family.parent.storage_bytes)} parent · ${formatByteSize(family.combined.storage_bytes)} with ${family.child_count} subagent${family.child_count === 1 ? "" : "s"}`],
+    ["Family tokens", family.combined.total_tokens === undefined ? "-" : formatNumber(family.combined.total_tokens)],
+    ["Family tools", formatToolStats(family.combined)],
+  ];
+}
+
+function appendFamily(
+  lines: string[],
+  snapshot: LiveHistorySnapshot,
+  family: SessionFamilyProjection | undefined,
+): void {
+  if (!family || family.child_count === 0) return;
+  lines.push("", `Subagents (${family.child_count}; ${formatByteSize(family.combined.storage_bytes - family.parent.storage_bytes)} child storage)`);
+  for (const child of family.children) {
+    const childRef = child.child_session_ref
+      ? snapshot.getSessionDisplayRef(child.child_session_ref) ?? child.child_session_ref
+      : child.agent_key ?? child.id;
+    const label = child.title ?? child.agent_key ?? childRef;
+    lines.push(
+      `- ${formatByteSize(child.stats.storage_bytes)}  ${child.stats.turn_count} turns  ${formatToolStats(child.stats)}  ${child.agent_key ?? child.identity_kind}  ${child.status ?? "unknown"}`,
+      `  ${singleLine(label, 100)}`,
+    );
+    const inputPreview = maskCompactPreview(child.input_preview, "tool_input");
+    const outputPreview = maskCompactPreview(child.output_preview, "tool_output");
+    if (inputPreview) lines.push(`  in: ${singleLine(inputPreview, 100)}`);
+    if (outputPreview) lines.push(`  out: ${singleLine(outputPreview, 100)}`);
+    lines.push(`  child ${childRef}`);
+  }
+}
+
+function renderFamilies(
+  snapshot: LiveHistorySnapshot,
+  families: SessionFamilyProjection[],
+  options: CollectionRenderOptions,
+): string {
+  const lines = [renderCollectionHeading(options, families.length, "heaviest combined storage first")];
+  for (const family of families) {
+    const parent = snapshot.getSession(family.parent_session_ref);
+    const sessionRef = snapshot.getSessionDisplayRef(family.parent_session_ref) ?? family.parent_session_ref;
+    const sourceName = parent
+      ? snapshot.getSource(parent.source_id)?.display_name ?? parent.source_platform
+      : family.source_platform;
+    lines.push(
+      `● ${formatByteSize(family.combined.storage_bytes)} combined · ${formatByteSize(family.parent.storage_bytes)} parent · ${family.child_count} subagents · ${sourceName}`,
+      ...wrapHumanText(parent?.title ?? sessionRef, options.columns, "  ", "    "),
+      ...wrapHumanText(
+        `${formatToolStats(family.combined)} · ${family.combined.total_tokens === undefined ? "tokens n/a" : `${formatNumber(family.combined.total_tokens)} tokens`}`,
+        options.columns,
+        "  ",
+        "    ",
+      ),
+      ...wrapHumanText(`session ${sessionRef}`, options.columns, "  ", "    "),
+    );
+    for (const child of family.children.slice(0, 8)) {
+      const childRef = child.child_session_ref
+        ? snapshot.getSessionDisplayRef(child.child_session_ref) ?? child.child_session_ref
+        : child.agent_key ?? "sidecar";
+      lines.push(
+        ...wrapHumanText(
+          `${formatByteSize(child.stats.storage_bytes)}  ${child.agent_key ?? child.identity_kind}  ${child.status ?? "unknown"}  ${childRef}`,
+          options.columns,
+          "  ",
+          "    ",
+        ),
+      );
+    }
+    if (family.children.length > 8) {
+      lines.push(`  … ${family.children.length - 8} more subagents`);
+    }
+  }
+  appendCollectionFooter(lines, options, families.length);
+  return `${lines.join("\n")}\n`;
+}
+
+function formatSessionFamilyHint(snapshot: LiveHistorySnapshot, sessionId: string): string {
+  const family = snapshot.getSessionFamily(sessionId);
+  if (!family || family.child_count === 0 || family.parent_session_ref !== sessionId) return "";
+  return ` · ${family.child_count} subagents · ${formatByteSize(family.combined.storage_bytes)}`;
+}
+
+function formatToolStats(stats: SessionContributionStats): string {
+  if (stats.tool_call_count === 0) return "0 tools";
+  return `${stats.tool_call_count} tools (${stats.tool_success_count} ok / ${stats.tool_error_count} err / ${stats.tool_pending_count} pending)`;
+}
+
+function formatByteSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = value >= 100 || unit === 0 ? 0 : value >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)}${units[unit]}`;
 }
 
 function appendRelatedWork(lines: string[], relatedWork: readonly SessionRelatedWorkProjection[]): void {
@@ -1213,7 +1335,7 @@ function colorizeResumeDirectory(value: string): { text: string; complete: boole
 
 function colorizeHumanLine(line: string): string {
   if (!line) return line;
-  if (/^(?:Latest|Sessions|Projects|Sources|Stats|Search|Project tree|Session tree|Source:|Session:|Turn:)/u.test(line)) {
+  if (/^(?:Latest|Sessions|Projects|Families|Sources|Stats|Search|Project tree|Session tree|Source:|Session:|Turn:)/u.test(line)) {
     return paint(`${ANSI.bold}${ANSI.cyan}`, line);
   }
   const timeline = line.match(/^● (.+?)(?: · (.+))?$/u);
@@ -1525,7 +1647,7 @@ Lite never reads or creates a CC History Full store.
 
 Usage:
   cchistory-lite sources [options]
-  cchistory-lite ls [projects|sessions|sources] [--limit <n>|--all] [--dir <path>] [options]
+  cchistory-lite ls [projects|sessions|families|sources] [--limit <n>|--all] [--dir <path>] [options]
   cchistory-lite latest [sessions|turns] [N] [--dir <path>] [options]
   cchistory-lite tree [projects|project <ref>|session <ref>] [--dir <path>] [options]
   cchistory-lite search <query> [--project <ref>] [--dir <path>] [--limit <n>] [options]
@@ -1553,6 +1675,8 @@ collection views, search, stats, tree projects, query, and shell. query, shell, 
 collection/search/stats commands default to the current working directory; pass --no-dir for
 the whole machine. Human-readable CLI without --json still defaults to every source.
 search returns one row per top-level session; --limit/--offset/--total count sessions, not turns.
+ls families lists parent sessions that have delegated subagents, heaviest combined
+native storage first. It is an inventory for manual cleanup, not a GC command.
 
 Source options:
   --source-root <slot-or-id>=<path>  Override one registered adapter root; repeatable

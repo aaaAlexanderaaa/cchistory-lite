@@ -682,6 +682,60 @@ export interface SessionRelatedWorkProjection {
   raw_detail: Record<string, unknown>;
 }
 
+export interface SessionContributionStats {
+  storage_bytes: number;
+  blob_count: number;
+  turn_count: number;
+  assistant_reply_count: number;
+  tool_call_count: number;
+  tool_success_count: number;
+  tool_error_count: number;
+  tool_pending_count: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  cached_input_tokens?: number;
+  reasoning_output_tokens?: number;
+  total_tokens?: number;
+}
+
+export interface SessionContributionProjection {
+  session_ref: string;
+  source_id: string;
+  source_platform: SourcePlatform;
+  stats: SessionContributionStats;
+}
+
+export type DelegatedChildIdentityKind = "session" | "sidecar";
+
+export interface DelegatedChildProjection {
+  id: string;
+  identity_kind: DelegatedChildIdentityKind;
+  parent_session_ref: string;
+  child_session_ref?: string;
+  source_id: string;
+  source_platform: SourcePlatform;
+  agent_key?: string;
+  title?: string;
+  status?: string;
+  created_at: string;
+  updated_at: string;
+  input_preview?: string;
+  output_preview?: string;
+  parent_tool_ref?: string;
+  origin_paths: string[];
+  stats: SessionContributionStats;
+}
+
+export interface SessionFamilyProjection {
+  parent_session_ref: string;
+  source_id: string;
+  source_platform: SourcePlatform;
+  child_count: number;
+  parent: SessionContributionStats;
+  children: DelegatedChildProjection[];
+  combined: SessionContributionStats;
+}
+
 export interface UserMessageProjection {
   id: string;
   raw_text: string;

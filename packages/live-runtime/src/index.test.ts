@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, appendFile, mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
@@ -15,9 +15,11 @@ import {
   calculateAdaptiveOldSpaceMiB,
   isAdaptiveNodeMemoryApplied,
   LiveHistorySnapshot,
+  maskCompactPreview,
   resolveLiteSources,
   scanLiteHistory,
 } from "./index.js";
+import { settleLauncherExit } from "./bootstrap.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const mockDataRoot = path.join(repoRoot, "mock_data");
@@ -51,6 +53,36 @@ test("Lite Node heap policy uses half host memory capped at 4 GiB", () => {
   assert.equal(isAdaptiveNodeMemoryApplied([], "1536", 1536), false);
   assert.equal(isAdaptiveNodeMemoryApplied(["--max-old-space-size=1536"], "1536", 1536), true);
   assert.equal(isAdaptiveNodeMemoryApplied(["--max-old-space-size=1024"], "1536", 1536), false);
+});
+
+test("settleLauncherExit reports rejected launcher failures to stderr", async () => {
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  const chunks: string[] = [];
+  process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+    chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    void rest;
+    return true;
+  }) as typeof process.stderr.write;
+  const previousExitCode = process.exitCode;
+  try {
+    settleLauncherExit(Promise.reject(new Error("import failed")));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(process.exitCode, 1);
+    assert.match(chunks.join(""), /import failed/u);
+  } finally {
+    process.stderr.write = originalWrite;
+    process.exitCode = previousExitCode;
+  }
+});
+
+test("compact family I/O previews mask secrets before the 240-character cut", () => {
+  const secret = `sk-${"A".repeat(24)}`;
+  const preview = `${"x".repeat(220)} ${secret} trailing task`;
+  const masked = maskCompactPreview(preview, "tool_input");
+  assert.ok(masked);
+  assert.doesNotMatch(masked, new RegExp(secret, "u"));
+  assert.ok(masked.length <= 240);
+  assert.match(masked, /trailing task/u);
 });
 
 test("Lite materializer resolves canonical history across the fixture-backed adapter matrix", async () => {
@@ -222,17 +254,32 @@ test("Lite targeted probes preserve one-session parity across the fixture adapte
       contextMode: "full",
       sessionRefs: [target.source_session_id],
     });
+    const expectedSessionIds = new Set([
+      target.id,
+      ...full.listDelegatedChildren(target.id)
+        .map((child) => child.child_session_ref)
+        .filter((id): id is string => id !== undefined),
+    ]);
     assert.deepEqual(
       targeted.listResolvedSessions().map(targetSessionParityFields),
-      full.listResolvedSessions().filter((session) => session.id === target.id).map(targetSessionParityFields),
+      full.listResolvedSessions().filter((session) => expectedSessionIds.has(session.id)).map(targetSessionParityFields),
       `${sourceRef} session parity`,
+    );
+    assert.equal(
+      targeted.listTopLevelSessions().some((session) => session.id !== target.id && expectedSessionIds.has(session.id)),
+      false,
+      `${sourceRef} delegated children stay out of top-level collections`,
     );
     assert.deepEqual(
       targeted.listResolvedTurns().map(targetTurnParityFields),
-      full.listResolvedTurns().filter((turn) => turn.session_id === target.id).map(targetTurnParityFields),
+      full.listResolvedTurns().filter((turn) => expectedSessionIds.has(turn.session_id)).map(targetTurnParityFields),
       `${sourceRef} turn parity`,
     );
-    const targetTurnIds = new Set(full.listSessionTurns(target.id).map((turn) => turn.id));
+    const targetTurnIds = new Set(
+      full.listResolvedTurns()
+        .filter((turn) => expectedSessionIds.has(turn.session_id))
+        .map((turn) => turn.id),
+    );
     assert.deepEqual(
       targeted.data.contexts.map(targetContextParityFields),
       full.data.contexts.filter((context) => targetTurnIds.has(context.turn_id)).map(targetContextParityFields),
@@ -272,6 +319,9 @@ test("every logical-session projection boundary preserves source-wide canonical 
       withoutGeneratedAt(sourceWide.getUsageOverview({ include_known_zero_token: true })),
       `${platform} usage`,
     );
+    assert.deepEqual(grouped.data.session_contributions, sourceWide.data.session_contributions, `${platform} contributions`);
+    assert.deepEqual(grouped.data.delegated_children, sourceWide.data.delegated_children, `${platform} delegated children`);
+    assert.deepEqual(grouped.listSessionFamilies(), sourceWide.listSessionFamilies(), `${platform} families`);
   }
 });
 
@@ -317,9 +367,23 @@ test("Lite keeps Codex delegated children addressable but out of top-level proje
     entry.direction === "inbound" &&
     entry.parent_session_ref === parentId
   ));
+  const family = full.getSessionFamily(parentId);
+  assert.ok(family);
+  assert.equal(family.child_count, 1);
+  assert.equal(family.children[0]?.child_session_ref, childId);
+  assert.ok((family.combined.storage_bytes ?? 0) >= (family.parent.storage_bytes ?? 0));
+  assert.equal(full.listSessionFamilies().filter((entry) => entry.parent_session_ref === parentId).length, 1);
+  assert.equal(full.getSessionFamily(childId), undefined);
 
   const targetedParent = await scanLiteHistory({ ...common, sessionRefs: [parentId] });
-  assert.deepEqual(targetedParent.listResolvedSessions().map((session) => session.id), [parentId]);
+  assert.deepEqual(
+    new Set(targetedParent.listResolvedSessions().map((session) => session.id)),
+    new Set([parentId, childId]),
+  );
+  assert.ok(targetedParent.getSession(childId));
+  assert.equal(targetedParent.listTopLevelSessions().some((session) => session.id === childId), false);
+  assert.equal(targetedParent.getSessionFamily(parentId)?.children[0]?.child_session_ref, childId);
+  assert.equal(targetedParent.getSession(childId)?.title, child.title);
   assert.ok(targetedParent.listSessionRelatedWork(parentId).some((entry) =>
     entry.direction === "outbound" && entry.child_session_ref === childId
   ));
@@ -380,6 +444,125 @@ test("Lite keeps Grok delegated children addressable but out of top-level projec
   );
   assert.equal(childInbound.length, 1);
   assert.equal(childInbound[0]?.parent_session_ref, parentId);
+  const family = full.getSessionFamily(parentId);
+  assert.ok(family);
+  assert.equal(family.child_count, 1);
+  assert.equal(family.children[0]?.child_session_ref, childId);
+  assert.ok(family.combined.storage_bytes > family.parent.storage_bytes);
+  assert.equal(family.children.filter((entry) => entry.child_session_ref === childId).length, 1);
+  assert.equal(full.getSessionFamily(childId), undefined);
+
+  const targetedParent = await scanLiteHistory({ ...common, sessionRefs: [parentId] });
+  assert.ok(targetedParent.getSession(childId));
+  assert.equal(targetedParent.listTopLevelSessions().some((session) => session.id === childId), false);
+  assert.equal(targetedParent.getSessionFamily(parentId)?.children[0]?.child_session_ref, childId);
+  assert.equal(targetedParent.getSession(childId)?.title, child.title);
+  assert.deepEqual(targetedParent.projectionIssues, []);
+});
+
+test("Lite inventories Claude sidecar subagent files under the parent session", async () => {
+  const snapshot = await scanLiteHistory({
+    homeDir: path.join(mockDataRoot, "empty-home"),
+    hostname: "cchistory-lite-claude-sidecar-host",
+    sourceRefs: ["claude_code"],
+    sourceRoots: [{
+      sourceRef: "claude_code",
+      baseDir: path.join(mockDataRoot, ".claude", "projects", "-Users-mock-user-workspace-chat-ui-kit"),
+    }],
+    safeMode: true,
+    contextMode: "full",
+  });
+  const parentId = "sess:claude_code:cc1df109-4282-4321-8248-8bbcd471da78";
+  const family = snapshot.getSessionFamily(parentId);
+  assert.ok(family);
+  assert.equal(family.child_count, 1);
+  assert.equal(family.children[0]?.identity_kind, "sidecar");
+  assert.equal(family.children[0]?.child_session_ref, undefined);
+  assert.ok(family.combined.storage_bytes > family.parent.storage_bytes);
+  assert.equal(snapshot.listTopLevelSessions().some((session) => session.id === parentId), true);
+  const families = snapshot.listSessionFamilies();
+  assert.equal(families.filter((entry) => entry.parent_session_ref === parentId).length, 1);
+  assert.equal(
+    families.every((entry) => snapshot.getSession(entry.parent_session_ref) !== undefined),
+    true,
+  );
+  assert.equal(
+    families.some((entry) => entry.children.some((child) => child.child_session_ref === parentId)),
+    false,
+  );
+});
+
+test("Lite does not list Claude message parentUuid ancestry as a session family", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-claude-parent-uuid-"));
+  try {
+    const sourceSessionId = "9d77cfc2-1e2e-4fcb-a0f5-0013bd8cf101";
+    const projectDir = path.join(tempRoot, ".claude", "projects", "-workspace-claude-parent-uuid");
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, `${sourceSessionId}.jsonl`),
+      await readFile(path.join(mockDataRoot, "fixtures", "source-shapes", "claude", "ordinary-parent-uuid.jsonl")),
+    );
+    const snapshot = await scanLiteHistory({
+      homeDir: tempRoot,
+      hostname: "cchistory-lite-claude-parent-uuid-host",
+      sourceRefs: ["claude_code"],
+      sourceRoots: [{ sourceRef: "claude_code", baseDir: projectDir }],
+      safeMode: true,
+      contextMode: "full",
+    });
+    const sessionId = `sess:claude_code:${sourceSessionId}`;
+    assert.ok(snapshot.getSession(sessionId));
+    assert.equal(snapshot.listSessionFamilies().length, 0);
+    assert.equal(snapshot.getSessionFamily(sessionId), undefined);
+    assert.equal(
+      snapshot.data.delegated_children.some((child) => child.child_session_ref === sessionId),
+      false,
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Lite path-links Cursor nested subagent transcripts out of top-level collections", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-cursor-family-"));
+  try {
+    const parentId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee01";
+    const childId = "agent-aaaa";
+    const transcriptDir = path.join(tempRoot, ".cursor", "projects", "workspace-a", "agent-transcripts", parentId);
+    await mkdir(path.join(transcriptDir, "subagents"), { recursive: true });
+    await writeFile(
+      path.join(transcriptDir, `${parentId}.jsonl`),
+      `${JSON.stringify({ role: "user", message: { content: [{ type: "text", text: "Parent ask." }] } })}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(transcriptDir, "subagents", `${childId}.jsonl`),
+      `${JSON.stringify({ role: "user", message: { content: [{ type: "text", text: "Child ask." }] } })}\n`,
+      "utf8",
+    );
+    const snapshot = await scanLiteHistory({
+      homeDir: tempRoot,
+      hostname: "cchistory-lite-cursor-family-host",
+      sourceRefs: ["cursor_agent"],
+      sourceRoots: [{ sourceRef: "cursor_agent", baseDir: path.join(tempRoot, ".cursor", "projects") }],
+      safeMode: true,
+      contextMode: "full",
+    });
+    const parentRef = `sess:cursor_agent:${parentId}`;
+    const childRef = `sess:cursor_agent:${childId}`;
+    assert.ok(snapshot.getSession(parentRef));
+    assert.ok(snapshot.getSession(childRef));
+    const family = snapshot.getSessionFamily(parentRef);
+    assert.ok(family);
+    assert.equal(family.child_count, 1);
+    assert.equal(family.children[0]?.identity_kind, "session");
+    assert.equal(family.children[0]?.child_session_ref, childRef);
+    assert.equal(snapshot.listTopLevelSessions().some((session) => session.id === childRef), false);
+    assert.equal(snapshot.listTopLevelSessions().some((session) => session.id === parentRef), true);
+    assert.equal(snapshot.getSessionFamily(childRef), undefined);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("Lite scans explicit roots without creating or reading a Full store", async () => {
@@ -553,7 +736,15 @@ test("Lite targeted full-context scan materializes only the requested logical se
     sessionRefs: [target.source_session_id],
   });
 
-  assert.deepEqual(detailed.listResolvedSessions().map((session) => session.id), [target.id]);
+  assert.deepEqual(
+    new Set(detailed.listResolvedSessions().map((session) => session.id)),
+    new Set([
+      target.id,
+      ...base.listDelegatedChildren(target.id)
+        .map((child) => child.child_session_ref)
+        .filter((id): id is string => id !== undefined),
+    ]),
+  );
   const turn = detailed.listResolvedTurns()[0];
   assert.ok(turn);
   assert.ok(detailed.getTurnContext(turn.id));
@@ -790,14 +981,30 @@ test("Lite direct canonical targeting narrows the source platform and fails loud
     sessionRefs: [target.id],
   });
   assert.deepEqual(targeted.listSources().map((source) => source.platform), ["codex"]);
-  assert.deepEqual(targeted.listResolvedSessions().map((session) => session.id), [target.id]);
+  assert.deepEqual(
+    new Set(targeted.listResolvedSessions().map((session) => session.id)),
+    new Set([
+      target.id,
+      ...base.listDelegatedChildren(target.id)
+        .map((child) => child.child_session_ref)
+        .filter((id): id is string => id !== undefined),
+    ]),
+  );
 
   const nativeTargeted = await scanLiteHistory({
     ...common,
     contextMode: "full",
     sessionRefs: [target.source_session_id!],
   });
-  assert.deepEqual(nativeTargeted.listResolvedSessions().map((session) => session.id), [target.id]);
+  assert.deepEqual(
+    new Set(nativeTargeted.listResolvedSessions().map((session) => session.id)),
+    new Set([
+      target.id,
+      ...base.listDelegatedChildren(target.id)
+        .map((child) => child.child_session_ref)
+        .filter((id): id is string => id !== undefined),
+    ]),
+  );
 
   const codexTargets = base.listResolvedSessions()
     .filter((session) => session.source_platform === "codex" && session.source_session_id)
@@ -810,7 +1017,14 @@ test("Lite direct canonical targeting narrows the source platform and fails loud
   });
   assert.deepEqual(
     new Set(multiTargeted.listResolvedSessions().map((session) => session.id)),
-    new Set(codexTargets.map((session) => session.id)),
+    new Set([
+      ...codexTargets.map((session) => session.id),
+      ...codexTargets.flatMap((session) =>
+        base.listDelegatedChildren(session.id)
+          .map((child) => child.child_session_ref)
+          .filter((id): id is string => id !== undefined)
+      ),
+    ]),
   );
 
   await assert.rejects(

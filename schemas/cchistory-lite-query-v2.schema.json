@@ -71,7 +71,7 @@
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "kind": { "const": "list" },
-        "collection": { "enum": ["sessions", "projects"] },
+        "collection": { "enum": ["sessions", "projects", "families"] },
         "limit": { "type": "integer", "minimum": 1 },
         "offset": { "type": "integer", "minimum": 0 }
       },

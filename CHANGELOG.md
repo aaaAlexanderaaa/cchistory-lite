@@ -9,6 +9,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Read-only delegated-session family inventory: `ls families`, compact session
+  rows with `storage_bytes` / `delegated_child_count` / `family_storage_bytes`,
+  and `show session` / `query` family blocks with per-child input/output
+  previews, origin paths, token totals, and tool success/error counts. Codex
+  and Grok children remain separate sessions; Claude `/subagents/` transcripts
+  and Cursor nested `agent-transcripts/<parent>/subagents/` files are inventoried
+  as sidecar or path-linked children. Lite still does not delete native history.
 - `cchistory-lite shell` holds one directory-scoped snapshot in memory. TTY
   sessions use human subcommands; `--json` or a non-TTY stdin uses JSON-lines
   (`search` / `latest` / `list` / `session` / `replies`, plus `refresh` and
@@ -16,6 +23,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `query` operations `latest` and `list` batch recency and collection reads
   into the same scan as search, session, and replies.
 - `--no-dir` opts out of the JSON/query/shell current-directory default.
+- Vendor-neutral agent skill `skills/using-cchistory-lite/` plus lookup
+  recipes in the Lite guide. Copy or symlink the skill directory into a
+  host agent’s skill path for auto-discovery.
 - Experimental `cursor_agent` adapter reads Cursor Agent CLI transcripts from
   `~/.cursor/projects/<slug>/agent-transcripts/*.jsonl`. It is opt-in via
   `--source cursor_agent` so a default scan does not duplicate the same
@@ -28,6 +38,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `subagent` / `subagent_resume` / `subagent_fork` only when that summary
   also names the parent). Synthetic user rows
   (`project_instructions`, `system_reminder`, …) stay out of UserTurns.
+
+### Fixed
+
+- Compact family `input_preview` / `output_preview` mask the full spawn text
+  before the 240-character cut, so secrets that straddle that cut still match
+  the compact templates.
+- Targeted `show session` on a delegated parent keeps child sessions
+  addressable so family `child_session_ref` resolves, while children stay out
+  of top-level collections.
+- Family listings overlay the richer child-session contribution when
+  parent-side spawn stats are incomplete.
+- `cchistory-lite` / `cchistory-lite-tui` launchers report dynamic-import and
+  heap-relaunch failures instead of exiting 1 with an empty stderr.
+- Compact family `input_preview` / `output_preview` use the same mask templates
+  as other compact JSON. `show session` on a delegated child no longer renders
+  the parent family's storage and sibling list.
+- `ls families` no longer treats Claude message `parentUuid` / sidecar
+  `isSidechain` fragments as parent sessions. Sidecar children stay under the
+  real parent; unresolved related-work parents stay internal for child-only
+  merge and are omitted from family listings.
+- The Node `ExperimentalWarning` for built-in `node:sqlite` is documented in
+  the README and suppressed before adapters load. Lite still does not create a
+  SQLite store; Cursor / Antigravity / ZCode native databases stay read-only.
 
 ### Changed
 

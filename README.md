@@ -23,8 +23,34 @@ Search "retry backoff" (3 sessions; one record = one session)
 
 ## Requirements
 
-- Node.js >= 22 (uses the built-in `node:sqlite` module)
+- Node.js >= 22 (built-in `node:sqlite`; no npm `sqlite` package — see below)
 - pnpm >= 10 < 11 (for building from source)
+
+### Why Node prints a SQLite warning
+
+Lite does **not** create or open a Lite database. There is no `~/.cchistory`, no
+`cchistory.sqlite`, and no third-party `sqlite` / `better-sqlite3` dependency.
+
+A few upstream tools keep *their own* history in SQLite files. Lite uses Node 22's
+built-in [`node:sqlite`](https://nodejs.org/api/sqlite.html) module to open those
+files read-only, then throws the snapshot away when the process exits:
+
+| Slot | Native file Lite may open |
+| --- | --- |
+| `cursor` | VS Code `state.vscdb`, Cursor chat `store.db` |
+| `antigravity` | VS Code `state.vscdb` |
+| `zcode` | `~/.zcode` `db.sqlite` |
+
+When that built-in module first loads, Node can print:
+
+```
+ExperimentalWarning: SQLite is an experimental feature and might change at any time
+```
+
+That is Node marking `node:sqlite` experimental. It is not Lite writing a store.
+`cchistory-lite` / `cchistory-lite-tui` suppress it by default. Set
+`CCHISTORY_SHOW_RUNTIME_WARNINGS=1` if you want the warning visible, or
+`NODE_NO_WARNINGS=1` to hide all Node warnings.
 
 ## Install
 
@@ -41,6 +67,12 @@ Link both binaries onto your `PATH`:
 pnpm run lite:link       # cchistory-lite
 pnpm run lite:tui:link   # cchistory-lite-tui
 ```
+
+Agents looking up local history should follow
+[`skills/using-cchistory-lite/SKILL.md`](skills/using-cchistory-lite/SKILL.md)
+(copy-paste recipes in [`docs/guide/lite.md`](docs/guide/lite.md)). That skill
+is vendor-neutral; copy or symlink it into the host agent’s skill path if the
+host auto-loads from there.
 
 Or run them straight out of the workspace without linking:
 
@@ -99,7 +131,7 @@ cchistory-lite <command> [options]
 | Command | What it does |
 | --- | --- |
 | `sources` | List resolved adapters with sync status, session/turn counts, and root |
-| `ls [projects\|sessions\|sources]` | Flat list of one collection, newest/most active first (default `projects`, 20 rows) |
+| `ls [projects\|sessions\|families\|sources]` | Flat list of one collection, newest/most active first (default `projects`, 20 rows). `families` lists parent sessions with delegated subagents, heaviest combined native storage first |
 | `latest [sessions\|turns] [N]` | Show the newest session activity or UserTurns (default `sessions 20`; sessions include aggregate turns/models/tokens) |
 | `tree [projects\|project <ref>\|session <ref>]` | Hierarchical view including Related Work |
 | `search <query>` | Search sessions by title, user-authored turn text, and paths |

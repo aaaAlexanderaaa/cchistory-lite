@@ -13,6 +13,9 @@ import {
   type ProjectIdentity,
   type SessionProjection,
   type SessionRelatedWorkProjection,
+  type SessionContributionProjection,
+  type DelegatedChildProjection,
+  type SessionFamilyProjection,
   type SourceFragment,
   type SourceDefinition,
   type SourcePlatform,
@@ -42,6 +45,11 @@ import {
   filterSessionsByDirectoryScope,
   filterTopLevelSessions,
   filterTurnsByDirectoryScope,
+  buildSessionFamilyInventory,
+  FAMILY_IO_PREVIEW_CHARS,
+  listDelegatedRelationsForFamilyChildren,
+  listSessionFamilies,
+  mergeSessionFamilyInventories,
   installRuntimeWarningFilter,
   orderSessionsByLastMessage,
   pathMatchesDirectoryScope,
@@ -54,7 +62,7 @@ import {
   type TurnUsageProjection,
   type UsageFilters,
 } from "@cchistory/canonical";
-import type { SourceProbeProgressEvent } from "@cchistory/source-adapters";
+import { applyMaskTemplates, type SourceProbeProgressEvent } from "@cchistory/source-adapters";
 
 export {
   buildAdaptiveNodeExecArgv,
@@ -64,6 +72,17 @@ export {
 } from "./node-memory.js";
 
 installRuntimeWarningFilter();
+
+export function maskCompactPreview(
+  value: string | undefined,
+  kind: "tool_input" | "tool_output" | "user_message",
+): string | undefined {
+  if (!value?.trim()) return undefined;
+  const masked = applyMaskTemplates(value, kind).canonical_text.replace(/\s+/gu, " ").trim();
+  if (!masked) return undefined;
+  if (kind === "user_message" || masked.length <= FAMILY_IO_PREVIEW_CHARS) return masked;
+  return `${masked.slice(0, FAMILY_IO_PREVIEW_CHARS - 1)}…`;
+}
 
 export interface LiteSourceRoot {
   sourceRef: string;
@@ -125,7 +144,11 @@ type LiveSourcePayload = Pick<
   | "loss_audits"
 > & {
   fragments?: readonly SourceFragment[];
+  records?: SourceSyncPayload["records"];
+  atoms?: SourceSyncPayload["atoms"];
   related_work?: readonly SessionRelatedWorkProjection[];
+  session_contributions?: readonly SessionContributionProjection[];
+  delegated_children?: readonly DelegatedChildProjection[];
 };
 
 export interface LiveSnapshotData {
@@ -134,14 +157,18 @@ export interface LiveSnapshotData {
   projects: ProjectIdentity[];
   sessions: SessionProjection[];
   related_work: SessionRelatedWorkProjection[];
+  session_contributions: SessionContributionProjection[];
+  delegated_children: DelegatedChildProjection[];
   turns: UserTurnProjection[];
   contexts: TurnContextProjection[];
   ask_user_question_turns: AskUserQuestionTurn[];
   loss_audits: LossAuditRecord[];
 }
 
-type LiveSnapshotInputData = Omit<LiveSnapshotData, "related_work"> & {
+type LiveSnapshotInputData = Omit<LiveSnapshotData, "related_work" | "session_contributions" | "delegated_children"> & {
   related_work?: SessionRelatedWorkProjection[];
+  session_contributions?: SessionContributionProjection[];
+  delegated_children?: DelegatedChildProjection[];
 };
 
 export interface LiveSearchOptions {
@@ -165,6 +192,10 @@ export class LiveHistorySnapshot {
   private readonly contextsByTurnId: Map<string, TurnContextProjection>;
   private readonly lastMessageAtBySessionId: ReadonlyMap<string, string>;
   private readonly searchCandidates: readonly DerivedCandidate[];
+  private readonly contributionsBySessionId: Map<string, SessionContributionProjection>;
+  private readonly childrenByParentId: Map<string, DelegatedChildProjection[]>;
+  private readonly familiesByParentId: Map<string, SessionFamilyProjection>;
+  private readonly families: SessionFamilyProjection[];
   // Snapshot data is immutable, so derived indexes and ranked searches are
   // memoized for the lifetime of the instance (a refresh builds a new one).
   private turnsBySessionId?: Map<string, UserTurnProjection[]>;
@@ -173,7 +204,12 @@ export class LiveHistorySnapshot {
   private sessionSearchRankCache?: Map<string, readonly SessionSearchResult[]>;
 
   constructor(data: LiveSnapshotInputData, searchCandidates: readonly DerivedCandidate[] = []) {
-    this.data = { ...data, related_work: data.related_work ?? [] };
+    this.data = {
+      ...data,
+      related_work: data.related_work ?? [],
+      session_contributions: data.session_contributions ?? [],
+      delegated_children: data.delegated_children ?? [],
+    };
     this.projectionIssues = auditProjectionConsistency(this.data);
     this.sourcesById = new Map(data.sources.map((source) => [source.id, source]));
     this.projectsById = new Map(data.projects.map((project) => [project.project_id, project]));
@@ -188,6 +224,21 @@ export class LiveHistorySnapshot {
     this.lastMessageAtBySessionId = buildSessionLastMessageIndex(data.turns);
     this.contextsByTurnId = new Map(data.contexts.map((context) => [context.turn_id, context]));
     this.searchCandidates = searchCandidates;
+    this.contributionsBySessionId = new Map(
+      this.data.session_contributions.map((entry) => [entry.session_ref, entry]),
+    );
+    this.families = listSessionFamilies(this.data.sessions, {
+      contributions: this.data.session_contributions,
+      children: this.data.delegated_children,
+    });
+    this.familiesByParentId = new Map(this.families.map((family) => [family.parent_session_ref, family]));
+    this.data.delegated_children = this.families.flatMap((family) => family.children);
+    this.childrenByParentId = new Map();
+    for (const child of this.data.delegated_children) {
+      const siblings = this.childrenByParentId.get(child.parent_session_ref) ?? [];
+      siblings.push(child);
+      this.childrenByParentId.set(child.parent_session_ref, siblings);
+    }
   }
 
   listSources(): SourceStatus[] {
@@ -236,6 +287,30 @@ export class LiveHistorySnapshot {
   listSessionRelatedWork(sessionRef: string): SessionRelatedWorkProjection[] {
     const session = this.getSession(sessionRef);
     return session ? [...(this.relatedWorkBySessionId.get(session.id) ?? [])] : [];
+  }
+
+  getSessionContribution(sessionRef: string): SessionContributionProjection | undefined {
+    const session = this.getSession(sessionRef);
+    if (!session) return undefined;
+    return this.contributionsBySessionId.get(session.id);
+  }
+
+  listDelegatedChildren(sessionRef: string): DelegatedChildProjection[] {
+    const session = this.getSession(sessionRef);
+    if (!session) return [];
+    return [...(this.childrenByParentId.get(session.id) ?? [])];
+  }
+
+  getSessionFamily(sessionRef: string): SessionFamilyProjection | undefined {
+    const session = this.getSession(sessionRef);
+    if (!session) return undefined;
+    return this.familiesByParentId.get(session.id);
+  }
+
+  listSessionFamilies(options: LiveDirectoryScopeOptions = {}): SessionFamilyProjection[] {
+    if (!options.directoryScope) return [...this.families];
+    const allowed = new Set(this.listResolvedSessions(options).map((session) => session.id));
+    return this.families.filter((family) => allowed.has(family.parent_session_ref));
   }
 
   listAskUserQuestionTurns(filter: { sourceId?: string; sessionId?: string } = {}): AskUserQuestionTurn[] {
@@ -485,39 +560,50 @@ export async function scanLiteHistory(options: ScanLiteHistoryOptions = {}): Pro
   }
   const sourceAdapters = await import("@cchistory/source-adapters");
   const contextMode = options.contextMode ?? "full";
-  const payloads: LiveSourcePayload[] = [];
-  let host: Host | undefined;
 
-  // Rebuild the native file inventory on every invocation, then scan one
-  // source at a time so raw adapter payloads can be released promptly. Each
-  // adapter explicitly declares its minimum safe projection boundary; the
-  // runtime never infers independence from a file-oriented source shape.
-  for (const source of sources) {
-    const adapter = sourceAdapters.listPlatformAdapters().find((entry) => entry.platform === source.platform);
-    const result = adapter?.projectionBoundary === "logical_session"
-      ? await scanLogicalSessionGroups(
-          source,
-          options,
-          contextMode,
-          sourceAdapters,
-          (filePaths, includeWorkspaceMetadata) => sourceAdapters.inspectSourceFilesLogicalSessionMetadata(
-            source.platform,
-            filePaths,
-            { includeWorkspaceMetadata },
-          ),
-        )
-      : await scanSourceWithCollector(source, options, contextMode, sourceAdapters);
-    host ??= result.host;
-    payloads.push(result.payload);
-  }
+  const scanSources = async (scanOptions: ScanLiteHistoryOptions) => {
+    const nextPayloads: LiveSourcePayload[] = [];
+    let nextHost: Host | undefined;
+    // Rebuild the native file inventory on every invocation, then scan one
+    // source at a time so raw adapter payloads can be released promptly. Each
+    // adapter explicitly declares its minimum safe projection boundary; the
+    // runtime never infers independence from a file-oriented source shape.
+    for (const source of sources) {
+      const adapter = sourceAdapters.listPlatformAdapters().find((entry) => entry.platform === source.platform);
+      const result = adapter?.projectionBoundary === "logical_session"
+        ? await scanLogicalSessionGroups(
+            source,
+            scanOptions,
+            contextMode,
+            sourceAdapters,
+            (filePaths, includeWorkspaceMetadata) => sourceAdapters.inspectSourceFilesLogicalSessionMetadata(
+              source.platform,
+              filePaths,
+              { includeWorkspaceMetadata },
+            ),
+          )
+        : await scanSourceWithCollector(source, scanOptions, contextMode, sourceAdapters);
+      nextHost ??= result.host;
+      nextPayloads.push(result.payload);
+    }
+    if (!nextHost) {
+      const emptyProbe = await sourceAdapters.runSourceProbe({}, []);
+      nextHost = emptyProbe.host;
+    }
+    return { host: nextHost, payloads: nextPayloads };
+  };
 
-  if (!host) {
-    const emptyProbe = await sourceAdapters.runSourceProbe({}, []);
-    host = emptyProbe.host;
-  }
-
+  let { host, payloads } = await scanSources(options);
   const requestedSessionRefs = options.sessionRefs?.filter((ref) => ref.trim().length > 0) ?? [];
   if (requestedSessionRefs.length === 0) return buildLiveSnapshot({ host, sources: payloads });
+
+  const missingChildRefs = missingDelegatedChildSessionRefs(payloads, requestedSessionRefs);
+  if (missingChildRefs.length > 0) {
+    ({ host, payloads } = await scanSources({
+      ...options,
+      sessionRefs: [...requestedSessionRefs, ...missingChildRefs],
+    }));
+  }
 
   const combined = buildLiveSnapshot({ host, sources: payloads });
   for (const ref of requestedSessionRefs) {
@@ -557,13 +643,20 @@ export function buildLiveSnapshot(probe: { host: Host; sources: readonly LiveSou
     candidates: [...candidates, ...fallbackCandidates],
   });
   const relatedWork = probe.sources.flatMap((payload) => materializeRelatedWork(payload));
+  const family = mergeSessionFamilyInventories(probe.sources.map((payload) => familyInventoryForLivePayload(payload)));
+  const familyRelatedWork = [
+    ...relatedWork,
+    ...listDelegatedRelationsForFamilyChildren(linked.sessions, family.children, relatedWork),
+  ];
 
   return new LiveHistorySnapshot(normalizeJsonShapeForJsonOutputMutating({
     host: probe.host,
     sources,
     projects: linked.projects,
     sessions: linked.sessions,
-    related_work: relatedWork,
+    related_work: familyRelatedWork,
+    session_contributions: family.contributions,
+    delegated_children: family.children,
     turns: linked.turns,
     contexts: probe.sources.flatMap((payload) => payload.contexts),
     ask_user_question_turns: probe.sources.flatMap((payload) => payload.ask_user_question_turns),
@@ -716,6 +809,7 @@ async function scanLogicalSessionGroups(
   const contextsByTurnId = new Map<string, TurnContextProjection>();
   const askTurnsById = new Map<string, SourceSyncPayload["ask_user_question_turns"][number]>();
   const sessionRelationFragments: SourceFragment[] = [];
+  const familyInventories: Array<ReturnType<typeof familyInventoryFromPayload>> = [];
   const lossAudits: LossAuditRecord[] = [];
   const fileProcessingErrors: string[] = [];
   let totalRecords = 0;
@@ -770,6 +864,10 @@ async function scanLogicalSessionGroups(
     sessionRelationFragments.push(
       ...groupPayload.fragments.filter((fragment) => fragment.fragment_kind === "session_relation"),
     );
+    familyInventories.push(familyInventoryFromPayload(
+      groupPayload,
+      flattenRelatedWorkIndex(buildSessionRelatedWorkIndex(groupPayload.sessions, groupPayload.fragments)),
+    ));
     lossAudits.push(...groupPayload.loss_audits);
   }
 
@@ -783,6 +881,7 @@ async function scanLogicalSessionGroups(
   const sessions = [...sessionsById.values()];
   const turns = [...turnsById.values()];
   const firstError = fileProcessingErrors[0];
+  const family = mergeSessionFamilyInventories(familyInventories);
   return {
     host,
     payload: {
@@ -815,6 +914,8 @@ async function scanLogicalSessionGroups(
       candidates: [...candidatesById.values()],
       sessions,
       related_work: flattenRelatedWorkIndex(buildSessionRelatedWorkIndex(sessions, sessionRelationFragments)),
+      session_contributions: family.contributions,
+      delegated_children: family.children,
       turns,
       contexts: [...contextsByTurnId.values()],
       ask_user_question_turns: [...askTurnsById.values()],
@@ -842,17 +943,66 @@ function compactSourcePayload(
   contextMode: LiteContextMode,
   contextTargets: readonly LiteContextTarget[] = [],
 ): LiveSourcePayload {
+  const relatedWork = flattenRelatedWorkIndex(buildSessionRelatedWorkIndex(payload.sessions, payload.fragments));
+  const family = familyInventoryFromPayload(payload, relatedWork);
   return {
     source: payload.source,
     blobs: payload.blobs,
     candidates: payload.candidates.filter((candidate) => candidate.candidate_kind === "project_observation"),
     sessions: payload.sessions,
-    related_work: flattenRelatedWorkIndex(buildSessionRelatedWorkIndex(payload.sessions, payload.fragments)),
+    related_work: relatedWork,
+    session_contributions: family.contributions,
+    delegated_children: family.children,
     turns: payload.turns,
     contexts: selectPayloadContexts(payload, contextMode, contextTargets),
     ask_user_question_turns: payload.ask_user_question_turns,
     loss_audits: payload.loss_audits,
   };
+}
+
+function familyInventoryFromPayload(
+  payload: {
+    sessions: SourceSyncPayload["sessions"];
+    turns: SourceSyncPayload["turns"];
+    contexts: SourceSyncPayload["contexts"];
+    blobs: SourceSyncPayload["blobs"];
+    records?: SourceSyncPayload["records"];
+    atoms?: SourceSyncPayload["atoms"];
+    fragments?: readonly SourceFragment[];
+  },
+  relatedWork: readonly SessionRelatedWorkProjection[],
+) {
+  return buildSessionFamilyInventory({
+    sessions: payload.sessions,
+    turns: payload.turns,
+    contexts: payload.contexts,
+    related_work: relatedWork,
+    fragments: payload.fragments,
+    blobs: payload.blobs,
+    records: payload.records,
+    atoms: payload.atoms,
+  });
+}
+
+function familyInventoryForLivePayload(payload: LiveSourcePayload) {
+  if (payload.session_contributions !== undefined && payload.delegated_children !== undefined) {
+    return {
+      contributions: [...payload.session_contributions],
+      children: [...payload.delegated_children],
+    };
+  }
+  return familyInventoryFromPayload(
+    {
+      sessions: payload.sessions,
+      turns: payload.turns,
+      contexts: payload.contexts,
+      blobs: payload.blobs,
+      records: payload.records ?? [],
+      atoms: payload.atoms ?? [],
+      fragments: payload.fragments ?? [],
+    },
+    materializeRelatedWork(payload),
+  );
 }
 
 function selectPayloadContexts(
@@ -925,12 +1075,19 @@ function filterLiveSourcePayloadBySessions(
   payload: LiveSourcePayload,
   sessionRefs: readonly string[],
 ): LiveSourcePayload {
-  const sessions = payload.sessions.filter((session) =>
-    sessionRefs.some((ref) => ref === session.id || ref === session.source_session_id),
+  const selectedIds = new Set(
+    payload.sessions
+      .filter((session) =>
+        sessionRefs.some((ref) => ref === session.id || ref === session.source_session_id),
+      )
+      .map((session) => session.id),
   );
+  const familySessionIds = expandDelegatedFamilySessionIds(payload, selectedIds);
+  const sessions = payload.sessions.filter((session) => familySessionIds.has(session.id));
   const sessionIds = new Set(sessions.map((session) => session.id));
   const turns = payload.turns.filter((turn) => sessionIds.has(turn.session_id));
   const turnIds = new Set(turns.map((turn) => turn.id));
+  const relatedWork = payload.related_work?.filter((entry) => sessionIds.has(entry.query_session_ref));
   return {
     ...payload,
     sessions,
@@ -938,8 +1095,66 @@ function filterLiveSourcePayloadBySessions(
     candidates: payload.candidates.filter((candidate) => sessionIds.has(candidate.session_ref)),
     contexts: payload.contexts.filter((context) => turnIds.has(context.turn_id)),
     ask_user_question_turns: payload.ask_user_question_turns.filter((turn) => sessionIds.has(turn.session_id)),
-    related_work: payload.related_work?.filter((entry) => sessionIds.has(entry.query_session_ref)),
+    related_work: relatedWork,
+    session_contributions: payload.session_contributions?.filter((entry) => familySessionIds.has(entry.session_ref)),
+    delegated_children: payload.delegated_children?.filter((entry) =>
+      familySessionIds.has(entry.parent_session_ref) ||
+      (entry.child_session_ref !== undefined && familySessionIds.has(entry.child_session_ref)),
+    ),
   };
+}
+
+function missingDelegatedChildSessionRefs(
+  payloads: readonly LiveSourcePayload[],
+  sessionRefs: readonly string[],
+): string[] {
+  const missing = new Set<string>();
+  for (const payload of payloads) {
+    const selectedIds = new Set(
+      payload.sessions
+        .filter((session) =>
+          sessionRefs.some((ref) => ref === session.id || ref === session.source_session_id),
+        )
+        .map((session) => session.id),
+    );
+    for (const ref of expandDelegatedFamilySessionIds(payload, selectedIds)) {
+      if (payload.sessions.some((session) => session.id === ref || session.source_session_id === ref)) {
+        continue;
+      }
+      missing.add(ref);
+    }
+  }
+  return [...missing];
+}
+
+function expandDelegatedFamilySessionIds(
+  payload: LiveSourcePayload,
+  selectedIds: ReadonlySet<string>,
+): Set<string> {
+  const familySessionIds = new Set(selectedIds);
+  const add = (ref: string | undefined) => {
+    if (!ref) return;
+    familySessionIds.add(ref);
+    for (const session of payload.sessions) {
+      if (session.id === ref || session.source_session_id === ref) familySessionIds.add(session.id);
+    }
+  };
+  const family = familyInventoryForLivePayload(payload);
+  let grew = true;
+  while (grew) {
+    const before = familySessionIds.size;
+    for (const child of family.children) {
+      if (familySessionIds.has(child.parent_session_ref)) add(child.child_session_ref);
+    }
+    for (const entry of payload.related_work ?? []) {
+      if (entry.relation_kind !== "delegated_session") continue;
+      if (entry.parent_session_ref && familySessionIds.has(entry.parent_session_ref)) {
+        add(entry.child_session_ref);
+      }
+    }
+    grew = familySessionIds.size > before;
+  }
+  return familySessionIds;
 }
 
 function sessionRefMatchesGroup(ref: string, groupKey: string, source: SourceDefinition): boolean {
