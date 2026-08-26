@@ -1056,12 +1056,10 @@ test("Lite CLI show resolves canonical session refs before a source-wide detail 
     },
   });
   assert.equal(await runLiteCli(["show", "session", session.id, "--limit-files", "1"], direct.io), 0);
-  assert.equal(directCalls.length, 2);
-  assert.equal(directCalls[0]?.contextMode, "none");
-  assert.equal(directCalls[1]?.contextMode, "full");
-  assert.deepEqual(directCalls[1]?.sourceRefs, [session.source_id]);
-  assert.deepEqual(directCalls[1]?.sessionRefs, [session.id]);
-  assert.equal(directCalls[1]?.limitFiles, undefined);
+  assert.equal(directCalls.length, 1);
+  assert.equal(directCalls[0]?.contextMode, "full");
+  assert.deepEqual(directCalls[0]?.sessionRefs, [session.id]);
+  assert.equal(directCalls[0]?.limitFiles, undefined);
   assert.match(direct.stdout.join(""), /^Session:/);
   assert.match(direct.stdout.join(""), /\nSource\s+/);
   assert.match(direct.stdout.join(""), /\nTurns \(/);
@@ -1095,11 +1093,34 @@ test("Lite CLI show resolves canonical session refs before a source-wide detail 
   }
 });
 
+test("Lite CLI sample is a bounded latest-shaped preview", async () => {
+  const snapshot = await getCodexSnapshot();
+  const scanOptions: ScanLiteHistoryOptions[] = [];
+  const captured = captureIo(repoRoot, undefined, {
+    scan: async (options) => {
+      scanOptions.push(options);
+      return snapshot;
+    },
+  });
+  assert.equal(await runLiteCli(["sample", "3", "--json"], captured.io), 0);
+  assert.equal(scanOptions[0]?.sample?.perSource, 3);
+  assert.equal(scanOptions[0]?.directoryScope, undefined);
+  const payload = JSON.parse(captured.stdout.join("")) as {
+    sampled?: boolean;
+    sample_per_source?: number;
+    kind?: string;
+  };
+  assert.equal(payload.kind, "sessions");
+  assert.equal(payload.sampled, true);
+  assert.equal(payload.sample_per_source, 3);
+});
+
 test("Lite CLI help documents latest, limits, and directory scope", async () => {
   const captured = captureIo(repoRoot);
   assert.equal(await runLiteCli(["help"], captured.io), 0);
   const help = captured.stdout.join("");
   assert.match(help, /cchistory-lite latest \[sessions\|turns\] \[N\]/);
+  assert.match(help, /cchistory-lite sample \[N\]/);
   assert.match(help, /--limit <n>/);
   assert.match(help, /--all/);
   assert.match(help, /--dir <path>/);

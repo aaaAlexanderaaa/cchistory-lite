@@ -80,7 +80,7 @@ const FORBIDDEN_COMMANDS = new Set([
   "migration",
   "agent",
 ]);
-const KNOWN_COMMANDS = new Set(["sources", "ls", "latest", "tree", "search", "show", "stats", "export", "query", "shell", "tui"]);
+const KNOWN_COMMANDS = new Set(["sources", "ls", "latest", "sample", "tree", "search", "show", "stats", "export", "query", "shell", "tui"]);
 
 export interface LiteCliIo {
   cwd: string;
@@ -174,6 +174,9 @@ export async function runLiteCli(argv: string[], io: LiteCliIo = defaultIo()): P
       case "latest":
         runLatest(parsed, snapshot, io, jsonMode);
         return 0;
+      case "sample":
+        runSample(parsed, snapshot, io, jsonMode);
+        return 0;
       case "tree":
         runTree(parsed, snapshot, io, jsonMode);
         return 0;
@@ -238,6 +241,7 @@ async function scan(
     limitFiles: optionalInteger(parsed, "limit-files", 1),
     contextMode,
     directoryScope: resolveDirectoryScope(parsed, io),
+    sample: parsed.command === "sample" ? { perSource: parseSampleLimit(parsed.positionals) } : undefined,
     onProgress: io.isTTY && !json ? (event) => {
       if (event.stage === "source_start") {
         io.stderr(`Scanning ${event.display_name} (${event.slot_id})…\n`);
@@ -255,12 +259,8 @@ async function runShowWithContext(parsed: ParsedArgs, io: LiteCliIo, jsonMode: J
   const [kind, ref] = parsed.positionals as ["session" | "turn", string];
   let snapshot: LiveHistorySnapshot;
   if (kind === "session" && /^sess:[^:]+:.+$/u.test(ref)) {
-    const resolution = await scan(parsed, io, "none", jsonMode !== "none");
-    const session = requireSession(resolution, ref);
-    const source = requireSource(resolution, session.source_id);
     snapshot = await scan(parsed, io, "full", jsonMode !== "none", {
-      sourceRefs: [source.id],
-      sessionRefs: [session.id],
+      sessionRefs: [ref],
       limitFiles: undefined,
     });
   } else {
@@ -332,6 +332,50 @@ function runList(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
     return;
   }
   throw new UsageError(`ls target must be projects, sessions, families, or sources; received ${JSON.stringify(target)}.`);
+}
+
+function runSample(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliIo, jsonMode: JsonOutputMode): void {
+  const limit = parseSampleLimit(parsed.positionals);
+  const directoryScope = resolveDirectoryScope(parsed, io);
+  const candidates = snapshot
+    .listTopLevelSessions({ directoryScope })
+    .filter((session) => session.turn_count > 0);
+  const sessions = candidates;
+  output(
+    io,
+    jsonMode,
+    {
+      schema: JSON_SCHEMA,
+      kind: "sessions",
+      sampled: true,
+      sample_per_source: limit,
+      total: candidates.length,
+      shown: sessions.length,
+      sessions: buildSessionCollectionRows(snapshot, sessions),
+    },
+    renderSessions(
+      snapshot,
+      sessions,
+      collectionRenderOptions(
+        io,
+        "Sample sessions (bounded preview, not a full scan)",
+        candidates.length,
+        "raise N or drop --dir",
+        "session",
+      ),
+    ),
+    snapshot,
+  );
+}
+
+function parseSampleLimit(positionals: string[]): number {
+  if (positionals.length === 0) return 50;
+  if (positionals.length > 1) throw new UsageError("sample accepts at most a count.");
+  const raw = Number(positionals[0]);
+  if (!Number.isInteger(raw) || raw < 1) {
+    throw new UsageError("sample count must be an integer >= 1.");
+  }
+  return raw;
 }
 
 function runLatest(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliIo, jsonMode: JsonOutputMode): void {
@@ -1450,6 +1494,9 @@ function validateCommandShape(parsed: ParsedArgs): void {
       if (parsed.positionals.length > 2) throw new UsageError("latest accepts at most a kind and count.");
       parseLatestPositionals(parsed.positionals);
       break;
+    case "sample":
+      parseSampleLimit(parsed.positionals);
+      break;
     case "tree": {
       const target = parsed.positionals[0] ?? "projects";
       const expected = target === "projects" ? 1 : 2;
@@ -1476,6 +1523,8 @@ function validateCommandOptions(parsed: ParsedArgs): void {
   if (parsed.command === "ls") {
     for (const name of ["limit", "dir"]) allowedValues.add(name);
   } else if (parsed.command === "latest") {
+    allowedValues.add("dir");
+  } else if (parsed.command === "sample") {
     allowedValues.add("dir");
   } else if (parsed.command === "tree") {
     allowedValues.add("dir");
@@ -1580,13 +1629,14 @@ function parseLatestPositionals(positionals: readonly string[]): { kind: "sessio
 }
 
 function commandAcceptsDirectoryScope(command: string): boolean {
-  return command === "ls" || command === "latest" || command === "tree" || command === "search"
+  return command === "ls" || command === "latest" || command === "sample" || command === "tree" || command === "search"
     || command === "stats" || command === "query" || command === "shell";
 }
 
 function defaultsDirectoryScopeToCwd(parsed: ParsedArgs): boolean {
   if (!commandAcceptsDirectoryScope(parsed.command)) return false;
   if (parsed.command === "query" || parsed.command === "shell") return true;
+  if (parsed.command === "sample") return false;
   if (getJsonOutputMode(parsed) === "none") return false;
   if (parsed.command === "ls" && (parsed.positionals[0] ?? "projects") === "sources") return false;
   if (parsed.command === "tree" && (parsed.positionals[0] ?? "projects") !== "projects") return false;
@@ -1649,6 +1699,7 @@ Usage:
   cchistory-lite sources [options]
   cchistory-lite ls [projects|sessions|families|sources] [--limit <n>|--all] [--dir <path>] [options]
   cchistory-lite latest [sessions|turns] [N] [--dir <path>] [options]
+  cchistory-lite sample [N] [--dir <path>] [options]
   cchistory-lite tree [projects|project <ref>|session <ref>] [--dir <path>] [options]
   cchistory-lite search <query> [--project <ref>] [--dir <path>] [--limit <n>] [options]
   cchistory-lite show project|session|turn|source <ref> [options]
@@ -1667,11 +1718,13 @@ Browsing options:
 latest defaults to the 20 newest sessions. latest sessions is one record per session and
 shows aggregate turn count, models, and total tokens; sessions with 0 turns are omitted.
 Session recency follows last real message activity, including pending Gemini sessions.
+sample parses at most N top-level sessions per source (default 50) as a latest-shaped preview.
+Delegated children are replaced by their parent. It is not a complete host scan.
 latest turns is one record per UserTurn and shows its session, model, and total tokens. Use latest 50
 or latest turns 50 to choose a count.
 Directory paths are resolved from the current directory and support ~. Sessions without a
 working directory are excluded when a directory scope is present. --dir applies only to
-collection views, search, stats, tree projects, query, and shell. query, shell, and --json
+collection views, search, stats, tree projects, query, shell, and sample. query, shell, and --json
 collection/search/stats commands default to the current working directory; pass --no-dir for
 the whole machine. Human-readable CLI without --json still defaults to every source.
 search returns one row per top-level session; --limit/--offset/--total count sessions, not turns.

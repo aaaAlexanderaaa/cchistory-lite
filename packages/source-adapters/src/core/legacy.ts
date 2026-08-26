@@ -6,3 +6,4 @@ export * from "./parser.js";
 export * from "./atomizer.js";
 export * from "./projections.js";
 export * from "./session-grouping.js";
+export * from "./directory-preview.js";

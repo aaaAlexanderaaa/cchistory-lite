@@ -23,7 +23,11 @@ import { parseClaudeRecord as parseClaudeRuntimeRecord } from "../platforms/clau
 import { parseCodexRecord as parseCodexRuntimeRecord } from "../platforms/codex/runtime.js";
 import { resolveCursorTranscriptWorkspacePath } from "../platforms/cursor/runtime.js";
 import { applyGrokWorkspaceFromPath, listGrokRecordSidecarPaths } from "../platforms/grok.js";
-import { parseGrokRecord as parseGrokRuntimeRecord } from "../platforms/grok/runtime.js";
+import {
+  expandGrokUpdateSidecarRecords,
+  interleaveGrokTurnCompletedRecords,
+  parseGrokRecord as parseGrokRuntimeRecord,
+} from "../platforms/grok/runtime.js";
 import { parseFactoryRecord as parseFactoryRuntimeRecord } from "../platforms/factory-droid/runtime.js";
 import {
   extractGenericContentItems as extractGenericContentItemsRuntime,
@@ -262,13 +266,20 @@ export async function extractRecords(
     return normalizeFactoryRecordObservedTimes(collected, fallbackObservedAt);
   }
   if (context.source.platform === "grok") {
-    return applyJsonlOrdinalObservedTimes(
-      collected,
+    const expanded = expandGrokUpdateSidecarRecords(collected);
+    const ordered = applyJsonlOrdinalObservedTimes(
+      expanded,
       fallbackObservedAt,
-      collected
+      expanded
         .map((record) => record.record_path_or_offset)
-        .filter((pointer) => pointer === "summary" || pointer.startsWith("subagent_meta")),
+        .filter((pointer) =>
+          pointer === "summary" ||
+          pointer === "updates" ||
+          pointer.startsWith("subagent_meta") ||
+          pointer.startsWith("updates:")
+        ),
     );
+    return interleaveGrokTurnCompletedRecords(ordered);
   }
   if (context.source.platform === "cursor" || context.source.platform === "cursor_agent") {
     return applyJsonlOrdinalObservedTimes(collected, fallbackObservedAt);

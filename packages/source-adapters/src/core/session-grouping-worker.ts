@@ -6,7 +6,7 @@ interface SessionMetadataWorkerRequest {
   index: number;
   platform: SourcePlatform;
   filePath: string;
-  options?: { includeWorkspaceMetadata?: boolean };
+  options?: { includeWorkspaceMetadata?: boolean; workspaceScan?: "first" | "full" };
 }
 
 const port = parentPort;

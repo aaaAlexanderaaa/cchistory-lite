@@ -6,9 +6,46 @@ import { test } from "node:test";
 import { getDefaultSourcesForHost, listSourceFiles, runSourceProbe } from "../index.js";
 import { createSourceDefinition } from "../test-helpers.js";
 import { decodeGrokEncodedCwd, parseGrokSessionLayout, previewSourceFileWorkingDirectory } from "./grok.js";
+import { interleaveGrokTurnCompletedRecords } from "./grok/runtime.js";
+import type { RawRecord } from "@cchistory/domain";
 
 const SESSION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const CHILD_SESSION_ID = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+
+function grokRecord(pointer: string, payload: unknown, observedAt = "2026-03-09T06:00:00.000Z"): RawRecord {
+  return {
+    id: pointer,
+    source_id: "src-grok",
+    blob_id: "blob",
+    session_ref: `sess:grok:${SESSION_ID}`,
+    ordinal: Number(pointer.replace(/\D/gu, "") || 0),
+    record_path_or_offset: pointer,
+    observed_at: observedAt,
+    parseable: true,
+    raw_json: JSON.stringify(payload),
+  };
+}
+
+test("interleaveGrokTurnCompletedRecords places each turn_completed after its user turn", () => {
+  const records = [
+    grokRecord("0", { type: "user", content: "one" }),
+    grokRecord("1", { type: "assistant", content: "ok" }),
+    grokRecord("2", { type: "user", content: "two" }),
+    grokRecord("3", { type: "assistant", content: "done" }),
+    grokRecord("updates:0", {
+      timestamp: 1_773_000_183,
+      params: { update: { sessionUpdate: "turn_completed", usage: { totalTokens: 120 } } },
+    }),
+    grokRecord("updates:1", {
+      timestamp: 1_773_000_300,
+      params: { update: { sessionUpdate: "turn_completed", usage: { totalTokens: 58 } } },
+    }),
+  ];
+  const ordered = interleaveGrokTurnCompletedRecords(records);
+  assert.deepEqual(ordered.map((record) => record.record_path_or_offset), ["0", "1", "2", "3"]);
+  assert.equal(JSON.parse(ordered[1]!.raw_json).usage.totalTokens, 120);
+  assert.equal(JSON.parse(ordered[3]!.raw_json).usage.totalTokens, 58);
+});
 
 test("previewSourceFileWorkingDirectory reads Grok cwd from the encoded path without opening files", () => {
   const filePath = path.join(
@@ -145,13 +182,12 @@ test("[grok] chat_history sessions produce user turns and keep synthetic rows as
 
     const chatPath = path.join(sessionDir, "chat_history.jsonl");
     const lines = [
-      { type: "system", content: "You are Grok fixture assistant.", timestamp: "2026-03-09T06:00:00.000Z" },
-      { type: "user", content: [{ type: "text", text: "Review the Grok adapter boundary." }], timestamp: "2026-03-09T06:01:00.000Z" },
+      { type: "system", content: "You are Grok fixture assistant." },
+      { type: "user", content: [{ type: "text", text: "Review the Grok adapter boundary." }] },
       {
         type: "user",
         content: [{ type: "text", text: "Project instructions fixture." }],
         synthetic_reason: "project_instructions",
-        timestamp: "2026-03-09T06:01:30.000Z",
       },
       {
         type: "reasoning",
@@ -159,7 +195,6 @@ test("[grok] chat_history sessions produce user turns and keep synthetic rows as
         status: "completed",
         summary: [{ type: "summary_text", text: "Inspecting the source shape." }],
         encrypted_content: "enc-fixture",
-        timestamp: "2026-03-09T06:02:00.000Z",
       },
       {
         type: "assistant",
@@ -168,22 +203,19 @@ test("[grok] chat_history sessions produce user turns and keep synthetic rows as
         model_fingerprint: "fp-fixture",
         reasoning_effort: "high",
         tool_calls: [{ id: "call-1", name: "read_file", arguments: "{\"target_file\":\"README.md\"}" }],
-        timestamp: "2026-03-09T06:03:00.000Z",
       },
-      { type: "tool_result", tool_call_id: "call-1", content: "fixture readme", timestamp: "2026-03-09T06:03:10.000Z" },
+      { type: "tool_result", tool_call_id: "call-1", content: "fixture readme" },
       {
         type: "backend_tool_call",
         kind: { tool_type: "web_search", id: "call-2", status: "completed", action: { query: "grok cli sessions" } },
-        timestamp: "2026-03-09T06:03:20.000Z",
       },
-      { type: "user", content: [{ type: "text", text: "Now add regression coverage." }], timestamp: "2026-03-09T06:04:00.000Z" },
+      { type: "user", content: [{ type: "text", text: "Now add regression coverage." }] },
       {
         type: "assistant",
         content: "Coverage added.",
         model_id: "grok-4.6",
         model_fingerprint: "fp-fixture",
         reasoning_effort: "high",
-        timestamp: "2026-03-09T06:05:00.000Z",
       },
     ];
     await writeFile(chatPath, lines.map((line) => JSON.stringify(line)).join("\n"), "utf8");
@@ -216,18 +248,38 @@ test("[grok] chat_history sessions produce user turns and keep synthetic rows as
     );
     await writeFile(
       path.join(sessionDir, "updates.jsonl"),
-      `${JSON.stringify({
-        method: "session/update",
-        timestamp: 1_773_000_006_000,
-        params: {
-          sessionId: SESSION_ID,
-          update: {
-            sessionUpdate: "turn_completed",
-            stop_reason: "end_turn",
-            usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+      [
+        {
+          method: "session/update",
+          timestamp: 1_773_000_183,
+          params: {
+            sessionId: SESSION_ID,
+            update: {
+              sessionUpdate: "turn_completed",
+              stop_reason: "end_turn",
+              usage: {
+                inputTokens: 100,
+                outputTokens: 20,
+                totalTokens: 120,
+                cachedReadTokens: 10,
+                reasoningTokens: 4,
+              },
+            },
           },
         },
-      })}\n`,
+        {
+          method: "session/update",
+          timestamp: 1_773_000_300,
+          params: {
+            sessionId: SESSION_ID,
+            update: {
+              sessionUpdate: "turn_completed",
+              stop_reason: "end_turn",
+              usage: { inputTokens: 50, outputTokens: 8, totalTokens: 58 },
+            },
+          },
+        },
+      ].map((row) => JSON.stringify(row)).join("\n"),
       "utf8",
     );
     await writeFile(
@@ -258,6 +310,18 @@ test("[grok] chat_history sessions produce user turns and keep synthetic rows as
     assert.equal(payload.sessions[0]?.created_at, "2026-03-09T06:00:00.000Z");
     assert.equal(payload.sessions[0]?.updated_at, "2026-03-09T06:10:00.000Z");
     assert.equal(payload.turns.length, 2);
+    assert.equal(
+      payload.fragments.filter((fragment) => fragment.fragment_kind === "token_usage_signal").length,
+      2,
+    );
+    const usageTotals = payload.contexts.flatMap((context) =>
+      context.assistant_replies.map((reply) => reply.token_usage?.total_tokens),
+    );
+    assert.deepEqual(
+      usageTotals.filter((value) => value !== undefined).sort((left, right) => (left ?? 0) - (right ?? 0)),
+      [58, 120],
+    );
+    assert.equal(payload.turns[0]?.last_context_activity_at, new Date(1_773_000_183 * 1000).toISOString());
     assert.equal(
       payload.turns.filter((turn) => turn.canonical_text.includes("Review the Grok adapter boundary.")).length,
       1,

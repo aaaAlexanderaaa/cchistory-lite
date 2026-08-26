@@ -18,7 +18,16 @@ export { buildStageRuns } from "./core/projections.js";
 export { selectTailBlob } from "@cchistory/domain";
 export { applyMaskTemplates } from "./masks.js";
 export { listPlatformAdapters, listPlatformAdaptersBySupportTier, listStablePlatformAdapters } from "./platforms/registry.js";
-export { parseGrokSessionLayout, previewSourceFileWorkingDirectory } from "./platforms/grok.js";
+export {
+  inspectGrokChatHistoryCatalog,
+  parseGrokSessionLayout,
+  previewSourceFileWorkingDirectory,
+  resolveGrokSiblingSessionChatHistory,
+} from "./platforms/grok.js";
+export {
+  sanitizeClaudeProjectFolder,
+  sourceFileMayMatchDirectoryScope,
+} from "./core/directory-preview.js";
 export type { HostDiscoveryCandidate, HostDiscoveryEntry } from "./core/legacy.js";
 export type { SourceFileInventory } from "./core/legacy.js";
 export type { SourceFileLogicalSessionMetadata } from "./core/legacy.js";

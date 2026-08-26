@@ -153,6 +153,7 @@ export function normalizeTokenUsageObject(value: Record<string, unknown>): Token
     asNumber(value.cache_read_input_tokens) ??
     asNumber(value.cacheReadInputTokens) ??
     asNumber(value.cacheReadTokens) ??
+    asNumber(value.cachedReadTokens) ??
     asNumber(value.cache_read_tokens);
   const rawCacheCreation =
     asNumber(value.cache_creation_input_tokens) ??
@@ -163,6 +164,8 @@ export function normalizeTokenUsageObject(value: Record<string, unknown>): Token
   const reasoningOutput =
     asNumber(value.reasoning_output_tokens) ??
     asNumber(value.reasoningOutputTokens) ??
+    asNumber(value.reasoningTokens) ??
+    asNumber(value.reasoning_tokens) ??
     asNumber(value.thinkingTokens) ??
     asNumber(value.thinking_tokens);
 

@@ -26,6 +26,12 @@ export function parseGrokRecord(
     return parseGrokSummaryRecord(context, record, parsed, draft, helpers);
   }
   if (
+    record.record_path_or_offset === "updates" ||
+    record.record_path_or_offset.startsWith("updates:")
+  ) {
+    return parseGrokUpdateRecord(context, record, parsed, helpers);
+  }
+  if (
     record.record_path_or_offset.startsWith("subagent_meta") ||
     isGrokSubagentMetaPayload(parsed, helpers)
   ) {
@@ -34,9 +40,9 @@ export function parseGrokRecord(
 
   const recordType = helpers.asString(parsed.type) ?? "unknown";
   const timeKey =
+    record.observed_at ??
     helpers.coerceIso(parsed.timestamp) ??
     helpers.epochMillisToIso(helpers.asNumber(parsed.timestamp)) ??
-    record.observed_at ??
     helpers.nowIso();
 
   if (recordType === "system") {
@@ -81,6 +87,172 @@ export function parseGrokRecord(
   }
 
   return unhandledGrokRecord(context, record, recordType, parsed, timeKey, helpers);
+}
+
+export function grokUnixToIso(value: number | undefined): string | undefined {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return undefined;
+  }
+  const millis = value > 1e12 ? value : value * 1000;
+  const date = new Date(millis);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+export function expandGrokUpdateSidecarRecords(records: RawRecord[]): RawRecord[] {
+  const expanded: RawRecord[] = [];
+  for (const record of records) {
+    if (record.record_path_or_offset !== "updates") {
+      expanded.push(record);
+      continue;
+    }
+    const lines = record.raw_json.split(/\r?\n/u).filter((line) => line.trim().length > 0);
+    if (lines.length <= 1) {
+      expanded.push({ ...record, record_path_or_offset: lines.length === 1 ? "updates:0" : record.record_path_or_offset });
+      continue;
+    }
+    for (const [index, line] of lines.entries()) {
+      expanded.push({
+        ...record,
+        id: `${record.id}:${index}`,
+        ordinal: record.ordinal + index,
+        record_path_or_offset: `updates:${index}`,
+        raw_json: line,
+      });
+    }
+  }
+  return expanded;
+}
+
+export function interleaveGrokTurnCompletedRecords(records: RawRecord[]): RawRecord[] {
+  const chat: RawRecord[] = [];
+  const completed: RawRecord[] = [];
+  const other: RawRecord[] = [];
+  for (const record of records) {
+    const pointer = record.record_path_or_offset;
+    if (/^\d+$/u.test(pointer)) {
+      chat.push(record);
+      continue;
+    }
+    if (pointer.startsWith("updates:")) {
+      if (isGrokTurnCompletedRecord(record)) {
+        completed.push(stampGrokUpdateTime(record));
+      }
+      continue;
+    }
+    other.push(record);
+  }
+
+  const turns: RawRecord[][] = [];
+  let current: RawRecord[] = [];
+  for (const record of chat) {
+    if (isGrokRealUserRecord(record) && current.some((entry) => isGrokRealUserRecord(entry))) {
+      turns.push(current);
+      current = [];
+    }
+    current.push(record);
+  }
+  if (current.length > 0) {
+    turns.push(current);
+  }
+
+  const result = [...other];
+  let completedIndex = 0;
+  for (const turn of turns) {
+    const usage = completed[completedIndex];
+    const iso = usage ? grokTimestampFromRecord(usage) : undefined;
+    if (usage) completedIndex += 1;
+    const stampedTurn = turn.map((record) => iso ? { ...record, observed_at: iso } : record);
+    if (usage) {
+      attachGrokUsageToLastAssistant(stampedTurn, usage);
+    }
+    result.push(...stampedTurn);
+  }
+  return result;
+}
+
+function parseGrokUpdateRecord(
+  context: FragmentBuildContextLike,
+  record: RawRecord,
+  parsed: Record<string, unknown>,
+  helpers: CommonParseRuntimeHelpers,
+): ParseRuntimeResult {
+  const params = helpers.isObject(parsed.params) ? parsed.params : undefined;
+  const update = helpers.isObject(params?.update) ? params.update : undefined;
+  const kind = helpers.asString(update?.sessionUpdate);
+  if (kind !== "turn_completed") {
+    return { fragments: [], lossAudits: [] };
+  }
+  const usage = helpers.extractTokenUsage(update?.usage ?? update);
+  const timeKey = grokTimestampFromRecord(record) ?? record.observed_at ?? helpers.nowIso();
+  if (!usage) {
+    return { fragments: [], lossAudits: [] };
+  }
+  return {
+    fragments: [
+      helpers.createTokenUsageFragment(context, record, 0, timeKey, usage, helpers.normalizeStopReason(update?.stop_reason), {
+        scope: "turn",
+        source_event_type: "turn_completed",
+      }),
+    ],
+    lossAudits: [],
+  };
+}
+
+function isGrokTurnCompletedRecord(record: RawRecord): boolean {
+  try {
+    const parsed = JSON.parse(record.raw_json) as { params?: { update?: { sessionUpdate?: string } } };
+    return parsed?.params?.update?.sessionUpdate === "turn_completed";
+  } catch {
+    return false;
+  }
+}
+
+function isGrokRealUserRecord(record: RawRecord): boolean {
+  try {
+    const parsed = JSON.parse(record.raw_json) as { type?: string; synthetic_reason?: string };
+    return parsed.type === "user" && !parsed.synthetic_reason;
+  } catch {
+    return false;
+  }
+}
+
+function grokTimestampFromRecord(record: RawRecord): string | undefined {
+  try {
+    const parsed = JSON.parse(record.raw_json) as { timestamp?: number };
+    return grokUnixToIso(typeof parsed.timestamp === "number" ? parsed.timestamp : undefined);
+  } catch {
+    return undefined;
+  }
+}
+
+function stampGrokUpdateTime(record: RawRecord): RawRecord {
+  const iso = grokTimestampFromRecord(record);
+  return iso ? { ...record, observed_at: iso } : record;
+}
+
+function attachGrokUsageToLastAssistant(turn: RawRecord[], usageRecord: RawRecord): void {
+  let usage: unknown;
+  try {
+    const parsed = JSON.parse(usageRecord.raw_json) as { params?: { update?: { usage?: unknown } } };
+    usage = parsed.params?.update?.usage;
+  } catch {
+    return;
+  }
+  if (!usage || typeof usage !== "object") {
+    return;
+  }
+  for (let index = turn.length - 1; index >= 0; index -= 1) {
+    const record = turn[index];
+    if (!record) continue;
+    try {
+      const parsed = JSON.parse(record.raw_json) as Record<string, unknown>;
+      if (parsed.type !== "assistant") continue;
+      turn[index] = { ...record, raw_json: JSON.stringify({ ...parsed, usage }) };
+      return;
+    } catch {
+      continue;
+    }
+  }
 }
 
 function parseGrokSummaryRecord(

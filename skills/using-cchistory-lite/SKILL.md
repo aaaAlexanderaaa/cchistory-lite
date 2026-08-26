@@ -36,16 +36,17 @@ Copy-paste recipes and the JSON contract: `docs/guide/lite.md`. Flags:
 
 1. Find: `cchistory-lite search "<query>" --json`
 2. Recent: `cchistory-lite latest sessions 10 --json`
-3. Read one: `cchistory-lite show session <ref> --json`
-4. Subagent inventory: `cchistory-lite ls families --json` then `show session <parent> --json`.
+3. Preview this machine without a full scan: `cchistory-lite sample --json` (at most 50 top-level sessions per source; not `latest` recency)
+4. Read one: `cchistory-lite show session <ref> --json`
+5. Subagent inventory: `cchistory-lite ls families --json` then `show session <parent> --json`.
    Compact session rows include `delegated_child_count` and `family_storage_bytes`.
    Family children carry `input_preview`, `output_preview`, `origin_paths`, and
    tool/token/storage stats. Lite never deletes native history; use this to
    decide a manual cleanup. Delegated children stay omitted from search/`latest`
    rows; open the parent.
-5. Same directory, many queries: `cchistory-lite shell --json` (JSON-lines:
+6. Same directory, many queries: `cchistory-lite shell --json` (JSON-lines:
    `{"kind":"search","query":"…"}`, then `{"kind":"exit"}`)
-6. One scan, several ops: `cchistory-lite query --request -` with
+7. One scan, several ops: `cchistory-lite query --request -` with
    `cchistory-lite-query/v2`. `list` collections include `families`.
 
 Summarize. Do not paste full transcripts into context. Do not run a

@@ -9,6 +9,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `cchistory-lite sample [N]` previews at most N top-level sessions per source
+  (default 50) with the same row shape as `latest sessions`. Delegated children
+  are replaced by their parent. JSON sets `sampled: true`. This is not a complete
+  host scan and does not change `latest` recency.
+- Grok `updates.jsonl` `turn_completed.usage` is parsed into turn token totals
+  (including `cachedReadTokens` / `reasoningTokens`). Chat-history lines still
+  have no native timestamp; turn clocks come from those update events.
 - Read-only delegated-session family inventory: `ls families`, compact session
   rows with `storage_bytes` / `delegated_child_count` / `family_storage_bytes`,
   and `show session` / `query` family blocks with per-child input/output
@@ -64,6 +71,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- `--dir` rejects Claude / Factory project folders, Cursor `agent-transcripts`
+  slugs, and Grok encoded-cwd trees from the path (relative to each adapter
+  root) before opening conversation bodies. Codex `--dir` preflight uses the
+  first session cwd line instead of streaming the whole JSONL.
+  `show session sess:…` (including a unique id prefix) no longer does a
+  whole-source resolution scan first.
 - CLI / `--json` / `query` search now returns one row per top-level session
   (title, `resume_command`, best matching turn). `total`, `shown`, `limit`,
   and `offset` count sessions. The TUI still lists matching turns.

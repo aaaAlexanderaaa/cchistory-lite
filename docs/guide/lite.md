@@ -87,6 +87,7 @@ roots before probing them.
 sources
 ls [projects|sessions|families|sources] [--limit <n>|--all] [--dir <path>]
 latest [sessions|turns] [N] [--dir <path>]
+sample [N] [--dir <path>] [--no-dir]
 tree [projects|project <ref>|session <ref>] [--dir <path>]
 search <query> [--project <ref>] [--source <ref>] [--dir <path>] [--no-dir] [--limit <n>]
 show project|session|turn|source <ref>
@@ -111,7 +112,9 @@ is a read-only inventory of parent sessions that have delegated subagents: combi
 native storage, per-child bytes, token totals, tool success/error counts, and
 input/output previews. Lite does not delete those files. `latest`
 defaults to the 20 newest sessions and takes its count positionally, for example
-`latest 50` or `latest turns 50`.
+`latest 50` or `latest turns 50`. `sample` is a bounded latest-shaped preview
+(default 50 top-level sessions per source) for checking what Lite will show on
+this machine without a full scan. `sample --json` does not default to `--dir=$PWD`.
 
 `latest sessions` emits one timeline block per session, ordered by the session's
 last real message activity. Each block includes aggregate turn count, model
@@ -126,13 +129,13 @@ turns 50` when the default 20 records are not enough.
 `--dir` is a canonical history scope, not a source-root override. It expands `~`,
 resolves relative paths from the current directory, and matches lexical path
 segments. Sessions without `working_directory` are excluded. It applies to
-`latest`, `ls projects`, `ls sessions`, `search`, `stats`, and `tree projects`;
-the latter keeps projects as containers but removes non-matching sessions,
-turns, and empty projects. Codex and Claude Code first inspect lightweight
-session metadata and skip full parsing only for resolved non-matching cwd signals;
-uncertain metadata falls back to the full read-only probe. Grok skips sessions
-whose encoded cwd is known not to match before parsing. Use `--source-root
-<slot>=<path>` when the native history itself is in a non-default location.
+`latest`, `sample`, `ls projects`, `ls sessions`, `search`, `stats`, and
+`tree projects`; the latter keeps projects as containers but removes non-matching
+sessions, turns, and empty projects. Codex first-line cwd, Claude/Factory project
+folders, Cursor transcript slugs, and Grok encoded cwd can reject files before
+the conversation body is parsed; uncertain metadata falls back to the full
+read-only probe. Use `--source-root <slot>=<path>` when the native history
+itself is in a non-default location.
 
 For large archives, ordinary read commands materialize one
 canonical logical session at a time and release full assistant/tool context

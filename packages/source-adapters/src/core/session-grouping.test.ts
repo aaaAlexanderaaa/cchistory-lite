@@ -124,6 +124,18 @@ test("logical-session metadata follows canonical ordering across cwd changes", a
       workingDirectoryState: "known",
       workingDirectory: "/workspace/final",
     });
+    assert.deepEqual(
+      await inspectSourceFileLogicalSessionMetadata("codex", codexPath, {
+        includeWorkspaceMetadata: true,
+        workspaceScan: "first",
+      }),
+      {
+        sessionKey: "sess:codex:codex-changed",
+        sessionKeyState: "known",
+        workingDirectoryState: "known",
+        workingDirectory: "/workspace/first",
+      },
+    );
 
     const nonmonotonicPath = path.join(dir, "codex-nonmonotonic.jsonl");
     await writeFile(

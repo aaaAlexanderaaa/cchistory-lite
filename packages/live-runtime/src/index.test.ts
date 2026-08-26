@@ -75,6 +75,22 @@ test("settleLauncherExit reports rejected launcher failures to stderr", async ()
   }
 });
 
+test("sample scan promotes a Grok delegated child to its parent", async () => {
+  const snapshot = await scanLiteHistory({
+    homeDir: path.join(mockDataRoot, "empty-home"),
+    hostname: "cchistory-lite-sample-grok-host",
+    sourceRefs: ["grok"],
+    sourceRoots: [{ sourceRef: "grok", baseDir: path.join(mockDataRoot, fixtureRoots.grok) }],
+    safeMode: true,
+    contextMode: "none",
+    sample: { perSource: 1 },
+  });
+  const topLevel = snapshot.listTopLevelSessions().filter((session) => session.turn_count > 0);
+  assert.equal(topLevel.length, 1);
+  assert.equal(topLevel[0]?.source_session_id, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee");
+  assert.equal(topLevel.some((session) => session.source_session_id === "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"), false);
+});
+
 test("compact family I/O previews mask secrets before the 240-character cut", () => {
   const secret = `sk-${"A".repeat(24)}`;
   const preview = `${"x".repeat(220)} ${secret} trailing task`;
@@ -786,7 +802,7 @@ test("Lite directory scope is consistent across sessions, turns, projects, searc
   );
 });
 
-test("Lite resolves cwd changes and conservatively probes cross-file cwd conflicts", async () => {
+test("Lite --dir uses Codex first-line cwd and still probes split-file sessions together", async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-directory-pushdown-"));
   const codexRoot = path.join(tempHome, "codex-sessions");
   try {
@@ -857,12 +873,14 @@ test("Lite resolves cwd changes and conservatively probes cross-file cwd conflic
       },
     });
 
-    assert.deepEqual(
-      scoped.listResolvedSessions({ directoryScope: "/workspace/app" }),
-      full.listResolvedSessions({ directoryScope: "/workspace/app" }),
-    );
-    assert.deepEqual(fullyParsedFiles.sort(), ["changed.jsonl", "split-a.jsonl", "split-b.jsonl", "target.jsonl"]);
+    const scopedIds = scoped.listResolvedSessions({ directoryScope: "/workspace/app" }).map((session) => session.source_session_id);
+    assert.ok(scopedIds.includes("directory-target"));
+    assert.equal(scopedIds.includes("directory-outside"), false);
+    assert.equal(scopedIds.includes("directory-changed"), false);
+    assert.ok(fullyParsedFiles.includes("target.jsonl"));
     assert.equal(fullyParsedFiles.includes("outside.jsonl"), false);
+    assert.equal(fullyParsedFiles.includes("changed.jsonl"), false);
+    assert.ok(full.listResolvedSessions({ directoryScope: "/workspace/app" }).some((session) => session.source_session_id === "directory-changed"));
   } finally {
     await rm(tempHome, { recursive: true, force: true });
   }
@@ -1035,6 +1053,37 @@ test("Lite direct canonical targeting narrows the source platform and fails loud
     }),
     /requested session/,
   );
+
+  const uniquePrefix = uniqueCanonicalSessionPrefix(target.id, base.listResolvedSessions().map((session) => session.id));
+  const prefixTargeted = await scanLiteHistory({
+    ...common,
+    contextMode: "full",
+    sessionRefs: [uniquePrefix],
+  });
+  assert.equal(prefixTargeted.getSession(uniquePrefix)?.id, target.id);
+  assert.deepEqual(
+    new Set(prefixTargeted.listResolvedSessions().map((session) => session.id)),
+    new Set(targeted.listResolvedSessions().map((session) => session.id)),
+  );
+});
+
+test("Lite targeted scans resolve unique OpenClaw prefixes with related work", async () => {
+  const common = {
+    homeDir: path.join(mockDataRoot, "empty-home"),
+    hostname: "cchistory-lite-openclaw-prefix-host",
+    sourceRefs: ["openclaw"],
+    sourceRoots: [{ sourceRef: "openclaw", baseDir: path.join(mockDataRoot, fixtureRoots.openclaw) }],
+    safeMode: true,
+    contextMode: "full" as const,
+  };
+  const ownerId = "sess:openclaw:11111111-2222-4333-8444-555555555555";
+  const prefix = "sess:openclaw:11111111";
+  const targeted = await scanLiteHistory({ ...common, sessionRefs: [prefix] });
+  assert.equal(targeted.getSession(prefix)?.id, ownerId);
+  assert.ok(targeted.listSessionRelatedWork(ownerId).some((entry) =>
+    entry.relation_kind === "automation_run" && entry.direction === "outbound",
+  ));
+  assert.deepEqual(targeted.projectionIssues, []);
 });
 
 test("Lite context-light Claude scanning assembles parent and subagent files before projection", async () => {
@@ -1690,6 +1739,17 @@ function createBlankRefTurn(session: SessionProjection): UserTurnProjection {
       blob_refs: [],
     },
   };
+}
+
+function uniqueCanonicalSessionPrefix(sessionId: string, allIds: readonly string[]): string {
+  const platformPrefix = sessionId.match(/^sess:[^:]+:/u)?.[0];
+  assert.ok(platformPrefix);
+  const native = sessionId.slice(platformPrefix.length);
+  for (let length = Math.min(8, native.length); length <= native.length; length += 1) {
+    const candidate = `${platformPrefix}${native.slice(0, length)}`;
+    if (allIds.filter((id) => id.startsWith(candidate)).length === 1) return candidate;
+  }
+  return sessionId;
 }
 
 function sortById<T extends { id: string }>(values: T[]): T[] {

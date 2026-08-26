@@ -370,6 +370,8 @@ function counts(payload: Record<string, unknown>): Record<string, unknown> {
   return {
     total: payload.total,
     ...(payload.shown === undefined ? {} : { shown: payload.shown }),
+    ...(payload.sampled === undefined ? {} : { sampled: payload.sampled }),
+    ...(payload.sample_per_source === undefined ? {} : { sample_per_source: payload.sample_per_source }),
   };
 }
 

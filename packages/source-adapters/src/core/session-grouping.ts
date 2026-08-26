@@ -91,10 +91,16 @@ export async function deriveSourceFileLogicalSessionKey(
  * match a canonical directory scope. An uncertain cwd is omitted so callers
  * conservatively retain the file for the full probe.
  */
+export interface LogicalSessionMetadataOptions {
+  includeWorkspaceMetadata?: boolean;
+  /** Codex `--dir` preflight: first session_meta/turn_context cwd only. */
+  workspaceScan?: "first" | "full";
+}
+
 export async function inspectSourceFileLogicalSessionMetadata(
   platform: SourcePlatform,
   filePath: string,
-  options: { includeWorkspaceMetadata?: boolean } = {},
+  options: LogicalSessionMetadataOptions = {},
 ): Promise<SourceFileLogicalSessionMetadata> {
   if (platform !== "codex" && platform !== "claude_code") {
     return {
@@ -123,6 +129,7 @@ export async function inspectSourceFileLogicalSessionMetadata(
         }
         if (line.oversized) inspectOversizedWorkspaceMetadataLine(platform, line.buffer, workspaceState);
         else inspectWorkspaceMetadataLine(platform, line.buffer, workspaceState);
+        if (options.workspaceScan === "first") break;
       }
     } finally {
       input.destroy();
@@ -187,7 +194,7 @@ function firstString(...values: unknown[]): string | undefined {
 export async function inspectSourceFilesLogicalSessionMetadata(
   platform: SourcePlatform,
   filePaths: readonly string[],
-  options: { includeWorkspaceMetadata?: boolean } = {},
+  options: LogicalSessionMetadataOptions = {},
 ): Promise<SourceFileLogicalSessionMetadata[]> {
   if (filePaths.length < 16) {
     const results: SourceFileLogicalSessionMetadata[] = [];

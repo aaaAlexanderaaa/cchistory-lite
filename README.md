@@ -133,6 +133,7 @@ cchistory-lite <command> [options]
 | `sources` | List resolved adapters with sync status, session/turn counts, and root |
 | `ls [projects\|sessions\|families\|sources]` | Flat list of one collection, newest/most active first (default `projects`, 20 rows). `families` lists parent sessions with delegated subagents, heaviest combined native storage first |
 | `latest [sessions\|turns] [N]` | Show the newest session activity or UserTurns (default `sessions 20`; sessions include aggregate turns/models/tokens) |
+| `sample [N]` | Bounded latest-shaped preview: at most N top-level sessions per source (default 50); delegated children are shown via their parent |
 | `tree [projects\|project <ref>\|session <ref>]` | Hierarchical view including Related Work |
 | `search <query>` | Search sessions by title, user-authored turn text, and paths |
 | `show project\|session\|turn\|source <ref>` | Full detail for exactly one object |
@@ -155,7 +156,7 @@ cchistory-lite <command> [options]
 | `--json=canonical` | Full canonical evidence output, schema `cchistory-lite-canonical/v1` |
 | `--request <file\|->` | Read a `query` request from a file or stdin (`-`) |
 | `--project <ref>` | Scope to one project (`search`, `stats`) |
-| `--dir <path>` | Keep sessions under a working directory (`latest`, supported `ls` views, `search`, `stats`, `tree projects`, `query`, `shell`) |
+| `--dir <path>` | Keep sessions under a working directory (`latest`, `sample`, supported `ls` views, `search`, `stats`, `tree projects`, `query`, `shell`) |
 | `--no-dir` | Do not apply a directory scope (overrides the JSON/query/shell cwd default) |
 | `--limit <n>` | Row limit (`ls`, default 20; `search`, default 50 sessions) |
 | `--all` | Disable the default `ls` limit; mutually exclusive with `--limit` |
@@ -174,9 +175,13 @@ segment boundary (`/work/app` does not match `/work/apple`). It is case-insensit
 Windows. Sessions without a working directory are excluded; projects match either their own path
 or a contained matching session.
 
-For Codex and Claude Code, `--dir` performs a lightweight metadata preflight and avoids fully
-parsing logical sessions with a resolved non-matching working directory. Grok skips sessions
-whose encoded cwd path is known not to match. Uncertain metadata and other adapters retain the
+For Codex, `--dir` reads the first `session_meta` cwd and skips the rest of the file when that
+cwd cannot match. Claude Code and Factory skip project folders whose sanitized names cannot
+match `--dir` (relative to the adapter `base_dir`, including `--source-root`). Cursor
+`agent-transcripts` skip non-matching project slugs; sqlite chat DBs stay uncertain.
+Grok skips sessions whose encoded cwd path is known not to match.
+`show session sess:<platform>:<id>` (or a unique prefix of that id) probes that session
+without a prior whole-source scan. Uncertain metadata and other adapters retain the
 full read-only probe followed by the same canonical filter. `--json`, `query`, and `shell`
 default to the current working directory; pass `--no-dir` to read every selected source.
 Human-readable CLI without `--json` still defaults to the whole machine.

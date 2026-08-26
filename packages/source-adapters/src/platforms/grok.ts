@@ -151,6 +151,75 @@ export async function listGrokCompanionEvidencePaths(_baseDir: string, filePath:
   return [...companions];
 }
 
+export async function inspectGrokChatHistoryCatalog(filePath: string): Promise<{
+  sessionId?: string;
+  lastActiveAt?: string;
+  sessionKind?: string;
+  parentSessionId?: string;
+  isDelegatedChild: boolean;
+}> {
+  const layout = parseGrokSessionLayout(filePath);
+  const sessionDir = layout?.sessionDir ?? path.dirname(filePath);
+  const sessionId = layout?.sessionId ?? path.basename(sessionDir);
+  try {
+    const parsed = JSON.parse(await fs.readFile(path.join(sessionDir, "summary.json"), "utf8")) as {
+      session_kind?: unknown;
+      parent_session_id?: unknown;
+      last_active_at?: unknown;
+      updated_at?: unknown;
+      info?: { parent_session_id?: unknown };
+    };
+    const sessionKind = typeof parsed.session_kind === "string" ? parsed.session_kind : undefined;
+    const lastActiveAt =
+      (typeof parsed.last_active_at === "string" ? parsed.last_active_at : undefined) ??
+      (typeof parsed.updated_at === "string" ? parsed.updated_at : undefined);
+    const isDelegatedChild = sessionKind !== undefined && GROK_DELEGATED_SESSION_KINDS.has(sessionKind);
+    let parentSessionId =
+      (typeof parsed.parent_session_id === "string" ? parsed.parent_session_id : undefined) ??
+      (typeof parsed.info?.parent_session_id === "string" ? parsed.info.parent_session_id : undefined);
+    if (isDelegatedChild && !parentSessionId) {
+      parentSessionId = await findGrokParentSessionIdFromSiblingMeta(sessionDir, sessionId);
+    }
+    return {
+      sessionId,
+      lastActiveAt,
+      sessionKind,
+      parentSessionId,
+      isDelegatedChild,
+    };
+  } catch {
+    return { sessionId, isDelegatedChild: false };
+  }
+}
+
+async function findGrokParentSessionIdFromSiblingMeta(sessionDir: string, sessionId: string): Promise<string | undefined> {
+  const cwdDir = path.dirname(sessionDir);
+  try {
+    for (const entry of await fs.readdir(cwdDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === sessionId) continue;
+      try {
+        const parsed = JSON.parse(
+          await fs.readFile(path.join(cwdDir, entry.name, "subagents", sessionId, "meta.json"), "utf8"),
+        ) as { parent_session_id?: unknown };
+        if (typeof parsed.parent_session_id === "string" && parsed.parent_session_id.length > 0) {
+          return parsed.parent_session_id;
+        }
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+export function resolveGrokSiblingSessionChatHistory(filePath: string, sessionId: string): string | undefined {
+  const sessionDir = resolveGrokSessionDir(filePath);
+  if (!sessionDir) return undefined;
+  return path.join(path.dirname(sessionDir), sessionId, CHAT_HISTORY_FILE);
+}
+
 export async function listGrokRecordSidecarPaths(
   filePath: string,
 ): Promise<Array<{ filePath: string; pointer: string }>> {
@@ -161,6 +230,7 @@ export async function listGrokRecordSidecarPaths(
 
   const sidecars: Array<{ filePath: string; pointer: string }> = [
     { filePath: path.join(sessionDir, "summary.json"), pointer: "summary" },
+    { filePath: path.join(sessionDir, "updates.jsonl"), pointer: "updates" },
   ];
   const sessionId = path.basename(sessionDir);
   const seen = new Set<string>([sidecars[0]!.filePath]);

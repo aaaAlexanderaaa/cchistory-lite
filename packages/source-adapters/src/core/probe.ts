@@ -1051,10 +1051,28 @@ function stripCanonicalSessionPrefix(ref: string, platform: SourcePlatform): str
   return ref.startsWith(prefix) ? ref.slice(prefix.length) : ref;
 }
 
+function isCanonicalSessionPrefix(ref: string): boolean {
+  return /^sess:[^:]+:./u.test(ref);
+}
+
 function targetRefMatchesSession(ref: string, sessionId: string, sourceSessionId?: string): boolean {
+  if (!ref) return false;
   if (ref === sessionId || ref === sourceSessionId) return true;
-  const prefixMatch = sessionId.match(/^sess:([^:]+):(.+)$/u);
-  return Boolean(prefixMatch?.[2] && ref === prefixMatch[2]);
+  const sessionNative = sessionId.match(/^sess:[^:]+:(.+)$/u)?.[1];
+  if (sessionNative && ref === sessionNative) return true;
+  if (isCanonicalSessionPrefix(ref) && sessionId.startsWith(ref)) return true;
+  if (!ref.startsWith("sess:") && (sessionNative?.startsWith(ref) || sourceSessionId?.startsWith(ref))) {
+    return true;
+  }
+  if (!isCanonicalSessionPrefix(ref) || !sessionNative) return false;
+  const refPlatform = ref.match(/^sess:([^:]+):/u)?.[1];
+  const sessionPlatform = sessionId.match(/^sess:([^:]+):/u)?.[1];
+  const refNative = ref.match(/^sess:[^:]+:(.+)$/u)?.[1];
+  return Boolean(
+    refNative &&
+    refPlatform === sessionPlatform &&
+    (sessionNative.startsWith(refNative) || sourceSessionId?.startsWith(refNative)),
+  );
 }
 
 function mergeAdapterBlobResult(

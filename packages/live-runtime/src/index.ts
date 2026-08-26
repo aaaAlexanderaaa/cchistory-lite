@@ -1,4 +1,4 @@
-import { access, realpath } from "node:fs/promises";
+import { access, realpath, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -106,6 +106,7 @@ export interface ScanLiteHistoryOptions extends ResolveLiteSourcesOptions {
   contextTargets?: readonly LiteContextTarget[];
   sessionRefs?: readonly string[];
   directoryScope?: string;
+  sample?: { perSource: number };
   onProgress?: (event: SourceProbeProgressEvent) => void;
 }
 
@@ -579,7 +580,10 @@ export async function scanLiteHistory(options: ScanLiteHistoryOptions = {}): Pro
             (filePaths, includeWorkspaceMetadata) => sourceAdapters.inspectSourceFilesLogicalSessionMetadata(
               source.platform,
               filePaths,
-              { includeWorkspaceMetadata },
+              {
+                includeWorkspaceMetadata,
+                workspaceScan: source.platform === "codex" && scanOptions.directoryScope ? "first" : "full",
+              },
             ),
           )
         : await scanSourceWithCollector(source, scanOptions, contextMode, sourceAdapters);
@@ -606,12 +610,14 @@ export async function scanLiteHistory(options: ScanLiteHistoryOptions = {}): Pro
   }
 
   const combined = buildLiveSnapshot({ host, sources: payloads });
-  for (const ref of requestedSessionRefs) {
-    if (!combined.getSession(ref)) throw new Error(`Lite scan did not find requested session ${ref}.`);
-  }
+  const resolvedSessionRefs = requestedSessionRefs.map((ref) => {
+    const session = combined.getSession(ref);
+    if (!session) throw new Error(`Lite scan did not find requested session ${ref}.`);
+    return session.id;
+  });
   return buildLiveSnapshot({
     host,
-    sources: payloads.map((payload) => filterLiveSourcePayloadBySessions(payload, requestedSessionRefs)),
+    sources: payloads.map((payload) => filterLiveSourcePayloadBySessions(payload, resolvedSessionRefs)),
   });
 }
 
@@ -673,13 +679,19 @@ async function scanSourceWithCollector(
 ): Promise<{ host: Host; payload: LiveSourcePayload }> {
   let scopedFiles = sourceFiles;
   const directoryScope = options.directoryScope;
-  if (directoryScope && scopedFiles === undefined) {
+  if (scopedFiles === undefined) {
     const listed = await sourceAdapters.listSourceFiles(source.platform, source.base_dir, options.limitFiles);
-    scopedFiles = listed.filter((filePath) => {
-      const preview = sourceAdapters.previewSourceFileWorkingDirectory(source.platform, filePath);
-      if (preview.state !== "known" || !preview.workingDirectory) return true;
-      return pathMatchesDirectoryScope(preview.workingDirectory, directoryScope);
-    });
+    scopedFiles = directoryScope
+      ? listed.filter((filePath) => sourceFileMayBeInDirectoryScope(
+        sourceAdapters,
+        source,
+        filePath,
+        directoryScope,
+      ))
+      : listed;
+  }
+  if (options.sample && scopedFiles) {
+    scopedFiles = await selectSampleSourceFiles(source, scopedFiles, options.sample.perSource, sourceAdapters);
   }
   const probe = await sourceAdapters.runSourceProbe(
     {
@@ -711,9 +723,20 @@ async function scanLogicalSessionGroups(
     includeWorkspaceMetadata: boolean,
   ) => Promise<import("@cchistory/source-adapters").SourceFileLogicalSessionMetadata[]>,
 ): Promise<{ host: Host; payload: LiveSourcePayload }> {
-  const files = await sourceAdapters.listSourceFiles(source.platform, source.base_dir, options.limitFiles);
+  const listedFiles = await sourceAdapters.listSourceFiles(source.platform, source.base_dir, options.limitFiles);
+  let files = options.directoryScope
+    ? listedFiles.filter((filePath) => sourceFileMayBeInDirectoryScope(
+      sourceAdapters,
+      source,
+      filePath,
+      options.directoryScope!,
+    ))
+    : listedFiles;
+  if (options.sample) {
+    files = await selectSampleSourceFiles(source, files, options.sample.perSource, sourceAdapters);
+  }
   if (files.length === 0) {
-    return scanSourceWithCollector(source, options, contextMode, sourceAdapters);
+    return scanSourceWithCollector(source, options, contextMode, sourceAdapters, []);
   }
 
   const filesByGroup = new Map<string, {
@@ -924,6 +947,95 @@ async function scanLogicalSessionGroups(
   };
 }
 
+async function selectSampleSourceFiles(
+  source: SourceDefinition,
+  files: readonly string[],
+  perSource: number,
+  sourceAdapters: typeof import("@cchistory/source-adapters"),
+): Promise<string[]> {
+  const ranked = await Promise.all(files.map(async (filePath) => {
+    const rank = await cheapSampleRank(source.platform, filePath, sourceAdapters);
+    const parentPath = await cheapSampleParentPath(source.platform, filePath, files, sourceAdapters);
+    return { filePath, rank, parentPath };
+  }));
+  ranked.sort((left, right) => right.rank.localeCompare(left.rank) || left.filePath.localeCompare(right.filePath));
+  const selected: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of ranked) {
+    const target = entry.parentPath ?? entry.filePath;
+    if (seen.has(target)) continue;
+    seen.add(target);
+    selected.push(target);
+    if (selected.length >= perSource) break;
+  }
+  return selected;
+}
+
+async function cheapSampleRank(
+  platform: SourcePlatform,
+  filePath: string,
+  sourceAdapters: typeof import("@cchistory/source-adapters"),
+): Promise<string> {
+  if (platform === "grok") {
+    const catalog = await sourceAdapters.inspectGrokChatHistoryCatalog(filePath);
+    if (catalog.lastActiveAt) return catalog.lastActiveAt;
+  }
+  try {
+    return (await stat(filePath)).mtime.toISOString();
+  } catch {
+    return "1970-01-01T00:00:00.000Z";
+  }
+}
+
+async function cheapSampleParentPath(
+  platform: SourcePlatform,
+  filePath: string,
+  files: readonly string[],
+  sourceAdapters: typeof import("@cchistory/source-adapters"),
+): Promise<string | undefined> {
+  if (platform === "grok") {
+    const catalog = await sourceAdapters.inspectGrokChatHistoryCatalog(filePath);
+    if (!catalog.isDelegatedChild || !catalog.parentSessionId) return undefined;
+    const parentPath = sourceAdapters.resolveGrokSiblingSessionChatHistory(filePath, catalog.parentSessionId);
+    return parentPath && files.includes(parentPath) ? parentPath : undefined;
+  }
+  const normalized = filePath.replace(/\\/gu, "/");
+  const subagentMatch = normalized.match(/^(.*)\/([^/]+)\/subagents\/[^/]+\.jsonl$/u);
+  if (platform === "claude_code" && subagentMatch) {
+    const parentPath = `${subagentMatch[1]}/${subagentMatch[2]}.jsonl`;
+    return files.includes(parentPath) ? parentPath : undefined;
+  }
+  if (platform === "codex") {
+    const metadata = await sourceAdapters.inspectSourceFileLogicalSessionMetadata(platform, filePath, {
+      includeWorkspaceMetadata: false,
+    });
+    const parentRef = metadata.relatedSessionRefs?.[0];
+    if (!parentRef) return undefined;
+    const native = parentRef.replace(/^sess:codex:/u, "").toLowerCase();
+    return files.find((candidate) => candidate.replace(/\\/gu, "/").toLowerCase().includes(native));
+  }
+  return undefined;
+}
+
+function sourceFileMayBeInDirectoryScope(
+  sourceAdapters: typeof import("@cchistory/source-adapters"),
+  source: SourceDefinition,
+  filePath: string,
+  directoryScope: string,
+): boolean {
+  const layout = sourceAdapters.sourceFileMayMatchDirectoryScope({
+    platform: source.platform,
+    baseDir: source.base_dir,
+    filePath,
+    directoryScope,
+  });
+  if (layout === "no") return false;
+  if (layout === "yes") return true;
+  const preview = sourceAdapters.previewSourceFileWorkingDirectory(source.platform, filePath);
+  if (preview.state !== "known" || !preview.workingDirectory) return true;
+  return pathMatchesDirectoryScope(preview.workingDirectory, directoryScope);
+}
+
 function buildProbeOptions(
   source: SourceDefinition,
   options: ScanLiteHistoryOptions,
@@ -1077,9 +1189,7 @@ function filterLiveSourcePayloadBySessions(
 ): LiveSourcePayload {
   const selectedIds = new Set(
     payload.sessions
-      .filter((session) =>
-        sessionRefs.some((ref) => ref === session.id || ref === session.source_session_id),
-      )
+      .filter((session) => sessionRefs.some((ref) => sessionMatchesRequestedRef(session, ref)))
       .map((session) => session.id),
   );
   const familySessionIds = expandDelegatedFamilySessionIds(payload, selectedIds);
@@ -1112,9 +1222,7 @@ function missingDelegatedChildSessionRefs(
   for (const payload of payloads) {
     const selectedIds = new Set(
       payload.sessions
-        .filter((session) =>
-          sessionRefs.some((ref) => ref === session.id || ref === session.source_session_id),
-        )
+        .filter((session) => sessionRefs.some((ref) => sessionMatchesRequestedRef(session, ref)))
         .map((session) => session.id),
     );
     for (const ref of expandDelegatedFamilySessionIds(payload, selectedIds)) {
@@ -1157,13 +1265,41 @@ function expandDelegatedFamilySessionIds(
   return familySessionIds;
 }
 
-function sessionRefMatchesGroup(ref: string, groupKey: string, source: SourceDefinition): boolean {
-  return (
-    ref === groupKey ||
-    ref === `sess:${source.platform}:${groupKey}` ||
-    ref.endsWith(`:${groupKey}`) ||
-    groupKey.endsWith(`:${ref}`)
+function sessionMatchesRequestedRef(
+  session: { id: string; source_session_id?: string },
+  ref: string,
+): boolean {
+  if (!ref) return false;
+  if (ref === session.id || ref === session.source_session_id) return true;
+  if (/^sess:[^:]+:./u.test(ref) && session.id.startsWith(ref)) return true;
+  if (ref.startsWith("sess:")) return false;
+  return Boolean(
+    session.source_session_id?.startsWith(ref) ||
+    session.id.startsWith(ref) ||
+    session.id.endsWith(`:${ref}`),
   );
+}
+
+function sessionRefMatchesGroup(ref: string, groupKey: string, source: SourceDefinition): boolean {
+  const expected = `sess:${source.platform}:`;
+  const canonicalGroup = groupKey.startsWith(expected) ? groupKey : `${expected}${groupKey}`;
+  const nativeGroup = canonicalGroup.startsWith(expected) ? canonicalGroup.slice(expected.length) : groupKey;
+  if (
+    ref === groupKey ||
+    ref === canonicalGroup ||
+    ref === nativeGroup ||
+    ref.endsWith(`:${groupKey}`) ||
+    ref.endsWith(`:${nativeGroup}`) ||
+    groupKey.endsWith(`:${ref}`)
+  ) {
+    return true;
+  }
+  if (ref.startsWith("sess:")) {
+    if (!ref.startsWith(expected) || ref.length <= expected.length) return false;
+    const nativeRef = ref.slice(expected.length);
+    return canonicalGroup.startsWith(ref) || nativeGroup.startsWith(nativeRef);
+  }
+  return ref.length > 0 && (nativeGroup.startsWith(ref) || groupKey.startsWith(ref));
 }
 
 function materializeRelatedWork(payload: LiveSourcePayload): SessionRelatedWorkProjection[] {
