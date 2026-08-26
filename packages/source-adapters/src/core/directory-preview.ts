@@ -1,6 +1,9 @@
 import path from "node:path";
 import { normalizeLocalPathIdentity, type SourcePlatform } from "@cchistory/domain";
-import { normalizePathSeparators } from "./path-utils.js";
+
+function normalizePathSeparators(value: string): string {
+  return value.replace(/\\/g, "/");
+}
 
 export type DirectoryScopeMatch = "yes" | "no" | "uncertain";
 
