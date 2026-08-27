@@ -43,7 +43,7 @@ import {
 } from "./query.js";
 import { runLiteShell } from "./shell.js";
 
-const VERSION = "0.4.0";
+const VERSION = "0.4.1";
 const EXPORT_SCHEMA = "cchistory-lite-export/v1";
 const JSON_SCHEMA = CANONICAL_JSON_SCHEMA;
 const ANSI = {

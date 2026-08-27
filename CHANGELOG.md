@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-28
+
 ### Added
 
 - `cchistory-lite sample [N]` previews at most N top-level sessions per source
@@ -82,6 +84,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The Node `ExperimentalWarning` for built-in `node:sqlite` is documented in
   the README and suppressed before adapters load. Lite still does not create a
   SQLite store; Cursor / Antigravity / ZCode native databases stay read-only.
+- `FORCE_COLOR=0` no longer forces TUI color. Only a non-zero `FORCE_COLOR`
+  value forces ANSI.
+- Cursor Agent `store.db` recovery no longer treats binary blob-graph nodes as
+  the user turn. Readable JSON `user_query` messages (or protobuf-style prompt
+  fragments when JSON is absent) are projected instead, sibling `meta.json`
+  supplies cwd, and the native agent id is shared with matching
+  `agent-transcripts` so a default scan does not emit a duplicate garbage
+  session. Transcript recency now follows file mtime instead of scan time.
+- Delegated child sessions are no longer a Codex-only collection rule. Any
+  resolved inbound `delegated_session` whose parent is present in the snapshot
+  is kept addressable under that parent and omitted from top-level lists and
+  project-browser session rows. Child turns stay on the child and remain
+  visible in the parent project bucket. A bare `parent_session_id` on an
+  ordinary Grok session is not treated as lineage.
+- GitHub Actions governance job sets `package-manager-cache: false` so
+  setup-node v5 does not fail when that job never installs pnpm packages.
 
 ### Changed
 
@@ -104,23 +122,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Grok `<user_info>` / `<skill_information>` / `<user_query>` envelopes keep
   only the inner query as user-authored text. Session titles participate in
   search matching. Query requests/results are `cchistory-lite-query/v2`.
-
-### Fixed
-
-- `FORCE_COLOR=0` no longer forces TUI color. Only a non-zero `FORCE_COLOR`
-  value forces ANSI.
-- Cursor Agent `store.db` recovery no longer treats binary blob-graph nodes as
-  the user turn. Readable JSON `user_query` messages (or protobuf-style prompt
-  fragments when JSON is absent) are projected instead, sibling `meta.json`
-  supplies cwd, and the native agent id is shared with matching
-  `agent-transcripts` so a default scan does not emit a duplicate garbage
-  session. Transcript recency now follows file mtime instead of scan time.
-- Delegated child sessions are no longer a Codex-only collection rule. Any
-  resolved inbound `delegated_session` whose parent is present in the snapshot
-  is kept addressable under that parent and omitted from top-level lists and
-  project-browser session rows. Child turns stay on the child and remain
-  visible in the parent project bucket. A bare `parent_session_id` on an
-  ordinary Grok session is not treated as lineage.
 
 ## [0.4.0] - 2026-08-11
 
