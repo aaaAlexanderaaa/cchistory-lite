@@ -1727,6 +1727,8 @@ working directory are excluded when a directory scope is present. --dir applies 
 collection views, search, stats, tree projects, query, shell, and sample. query, shell, and --json
 collection/search/stats commands default to the current working directory; pass --no-dir for
 the whole machine. Human-readable CLI without --json still defaults to every source.
+--dir does not open parent project folders or later Codex cwd lines; if a subdirectory
+listing is empty, retry --dir at the repository root or --no-dir.
 search returns one row per top-level session; --limit/--offset/--total count sessions, not turns.
 ls families lists parent sessions that have delegated subagents, heaviest combined
 native storage first. It is an inventory for manual cleanup, not a GC command.

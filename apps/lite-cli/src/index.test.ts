@@ -1129,6 +1129,7 @@ test("Lite CLI help documents latest, limits, and directory scope", async () => 
   assert.match(help, /sessions with 0 turns are omitted/);
   assert.match(help, /last real message activity/);
   assert.match(help, /Sessions without a\nworking directory are excluded/);
+  assert.match(help, /does not open parent project folders or later Codex cwd lines/);
 });
 
 test("Lite CLI colorizes semantic human-readable fields", () => {

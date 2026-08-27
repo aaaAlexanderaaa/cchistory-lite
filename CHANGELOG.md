@@ -41,11 +41,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   transcripts already merged by stable `cursor`.
 - Experimental `grok` adapter reads official Grok CLI sessions from
   `~/.grok/sessions/<encoded-cwd>/<session-id>/chat_history.jsonl`, using
-  `summary.json` for title/model/cwd and keeping updates, signals, and
-  subagent meta as companion evidence. Sibling subagent sessions are
-  linked through `parent/subagents/*/meta.json` (and a `session_kind` of
-  `subagent` / `subagent_resume` / `subagent_fork` only when that summary
-  also names the parent). Synthetic user rows
+  `summary.json` for title/model/cwd. `signals.json` and subagent
+  `meta.json` stay companion evidence; `updates.jsonl` is streamed for
+  `turn_completed` usage/clocks and is not captured as a whole-file blob.
+  Sibling subagent sessions are linked through `parent/subagents/*/meta.json`
+  (and a `session_kind` of `subagent` / `subagent_resume` / `subagent_fork`
+  only when that summary also names the parent). Synthetic user rows
   (`project_instructions`, `system_reminder`, …) stay out of UserTurns.
 
 ### Fixed

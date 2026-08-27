@@ -133,7 +133,7 @@ cchistory-lite <command> [options]
 | `sources` | List resolved adapters with sync status, session/turn counts, and root |
 | `ls [projects\|sessions\|families\|sources]` | Flat list of one collection, newest/most active first (default `projects`, 20 rows). `families` lists parent sessions with delegated subagents, heaviest combined native storage first |
 | `latest [sessions\|turns] [N]` | Show the newest session activity or UserTurns (default `sessions 20`; sessions include aggregate turns/models/tokens) |
-| `sample [N]` | Bounded latest-shaped preview: at most N top-level sessions per source (default 50); delegated children are shown via their parent |
+| `sample [N]` | Bounded latest-shaped preview: at most N top-level sessions per source (default 50); delegated children are shown via their parent. Unlike other `--json` commands, `sample --json` does not default to `--dir=$PWD` |
 | `tree [projects\|project <ref>\|session <ref>]` | Hierarchical view including Related Work |
 | `search <query>` | Search sessions by title, user-authored turn text, and paths |
 | `show project\|session\|turn\|source <ref>` | Full detail for exactly one object |
