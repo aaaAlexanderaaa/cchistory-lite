@@ -1,4 +1,6 @@
+import { createReadStream } from "node:fs";
 import type { LossAuditRecord, RawRecord, SourceFragment } from "@cchistory/domain";
+import { forEachNonEmptyTrimmedLineStreaming } from "../../core/jsonl-records.js";
 import type {
   CommonParseRuntimeHelpers,
   FragmentBuildContextLike,
@@ -98,29 +100,52 @@ export function grokUnixToIso(value: number | undefined): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
-export function expandGrokUpdateSidecarRecords(records: RawRecord[]): RawRecord[] {
-  const expanded: RawRecord[] = [];
-  for (const record of records) {
-    if (record.record_path_or_offset !== "updates") {
-      expanded.push(record);
-      continue;
-    }
-    const lines = record.raw_json.split(/\r?\n/u).filter((line) => line.trim().length > 0);
-    if (lines.length <= 1) {
-      expanded.push({ ...record, record_path_or_offset: lines.length === 1 ? "updates:0" : record.record_path_or_offset });
-      continue;
-    }
-    for (const [index, line] of lines.entries()) {
-      expanded.push({
-        ...record,
-        id: `${record.id}:${index}`,
-        ordinal: record.ordinal + index,
-        record_path_or_offset: `updates:${index}`,
+export async function collectGrokTurnCompletedUpdateRecords(input: {
+  filePath: string;
+  identity: { sourceId: string; blobId: string; sessionId: string };
+  startOrdinal: number;
+  createRecordId: (ordinal: number, pointer: string) => string;
+  nowIso: () => string;
+}): Promise<RawRecord[]> {
+  const records: RawRecord[] = [];
+  const stream = createReadStream(input.filePath);
+  try {
+    await forEachNonEmptyTrimmedLineStreaming(stream, (line, lineIndex) => {
+      if (!line.includes("turn_completed")) return;
+      let sessionUpdate: unknown;
+      let timestamp: number | undefined;
+      try {
+        const parsed = JSON.parse(line) as {
+          timestamp?: unknown;
+          params?: { update?: { sessionUpdate?: unknown } };
+        };
+        sessionUpdate = parsed.params?.update?.sessionUpdate;
+        timestamp = typeof parsed.timestamp === "number" ? parsed.timestamp : undefined;
+      } catch {
+        return;
+      }
+      if (sessionUpdate !== "turn_completed") return;
+      const pointer = `updates:${lineIndex}`;
+      const ordinal = input.startOrdinal + records.length;
+      records.push({
+        id: input.createRecordId(ordinal, pointer),
+        source_id: input.identity.sourceId,
+        blob_id: input.identity.blobId,
+        session_ref: input.identity.sessionId,
+        ordinal,
+        record_path_or_offset: pointer,
+        observed_at: grokUnixToIso(timestamp) ?? input.nowIso(),
+        parseable: true,
         raw_json: line,
       });
-    }
+    });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  } finally {
+    stream.destroy();
   }
-  return expanded;
+  return records;
 }
 
 export function interleaveGrokTurnCompletedRecords(records: RawRecord[]): RawRecord[] {

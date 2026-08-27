@@ -22,10 +22,13 @@ handoff.
 
 ## Agent path
 
-`--json`, `query`, and `shell` default to `--dir=$PWD`. Pass `--no-dir` only
-when the session is not under the current workspace. Agents always pass
-`--json` (or use `query` / `shell`). Human CLI without `--json` still scans
-every selected source.
+`--json`, `query`, and `shell` default to `--dir=$PWD`. That scope does not
+walk parent project folders and Codex preflight uses only the first cwd line.
+If the listing is empty and the session was started at the repository root,
+retry with `--dir` at that root or pass `--no-dir`. Pass `--no-dir` when the
+session is not under the current workspace. Agents always pass `--json` (or
+use `query` / `shell`). Human CLI without `--json` still scans every selected
+source.
 
 Search returns one row per top-level session. `total` and `--limit` count
 sessions, not turns. Delegated children are omitted from those rows; open the

@@ -19,6 +19,7 @@ import {
   resolveLiteSources,
   scanLiteHistory,
 } from "./index.js";
+import { SAMPLE_RANK_CONCURRENCY, mapPool } from "./async-pool.js";
 import { settleLauncherExit } from "./bootstrap.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -38,6 +39,41 @@ const fixtureRoots = {
   cursor_agent: "fixtures/cursor-agent",
   grok: "fixtures/grok-cli",
 } as const;
+
+test("mapPool never runs more than the requested number of tasks at once", async () => {
+  assert.equal(SAMPLE_RANK_CONCURRENCY, 4);
+  const releases: Array<() => void> = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let launched = 0;
+  const waitUntil = async (predicate: () => boolean): Promise<void> => {
+    while (!predicate()) {
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+    }
+  };
+  const done = mapPool(Array.from({ length: 6 }, (_, index) => index), 2, async (value) => {
+    launched += 1;
+    inFlight += 1;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    await new Promise<void>((resolve) => {
+      releases.push(resolve);
+    });
+    inFlight -= 1;
+    return value * 2;
+  });
+  await waitUntil(() => launched === 2);
+  assert.equal(maxInFlight, 2);
+  assert.equal(inFlight, 2);
+  for (const release of releases.splice(0)) release();
+  await waitUntil(() => launched === 4);
+  assert.equal(maxInFlight, 2);
+  for (const release of releases.splice(0)) release();
+  await waitUntil(() => launched === 6);
+  assert.equal(maxInFlight, 2);
+  for (const release of releases.splice(0)) release();
+  assert.deepEqual(await done, [0, 2, 4, 6, 8, 10]);
+  assert.equal(inFlight, 0);
+});
 
 test("Lite Node heap policy uses half host memory capped at 4 GiB", () => {
   assert.equal(calculateAdaptiveOldSpaceMiB(3 * 1024 ** 3), 1536);
@@ -886,6 +922,125 @@ test("Lite --dir uses Codex first-line cwd and still probes split-file sessions 
   }
 });
 
+test("Lite sample --dir keeps older Codex sessions inside the scope instead of the newest files", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-sample-dir-"));
+  const codexRoot = path.join(tempHome, "codex-sessions");
+  try {
+    await mkdir(codexRoot, { recursive: true });
+    const writeSession = async (
+      fileName: string,
+      sessionId: string,
+      cwd: string,
+      mtime: Date,
+    ): Promise<void> => {
+      const filePath = path.join(codexRoot, fileName);
+      await writeFile(
+        filePath,
+        [
+          {
+            timestamp: "2026-07-01T00:00:00.000Z",
+            type: "session_meta",
+            payload: { id: sessionId, cwd },
+          },
+          {
+            timestamp: "2026-07-01T00:00:02.000Z",
+            type: "response_item",
+            payload: {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text: `Question for ${sessionId}` }],
+            },
+          },
+          {
+            timestamp: "2026-07-01T00:00:03.000Z",
+            type: "response_item",
+            payload: {
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: `Answer for ${sessionId}` }],
+            },
+          },
+        ].map((row) => JSON.stringify(row)).join("\n"),
+        "utf8",
+      );
+      await utimes(filePath, mtime, mtime);
+    };
+    await writeSession("inside-old.jsonl", "sample-inside", "/workspace/app", new Date("2020-01-01T00:00:00.000Z"));
+    await writeSession("outside-new.jsonl", "sample-outside-new", "/workspace/other", new Date("2026-01-01T00:00:00.000Z"));
+    await writeSession("outside-newer.jsonl", "sample-outside-newer", "/workspace/other", new Date("2026-06-01T00:00:00.000Z"));
+
+    const parsedFiles: string[] = [];
+    const sampled = await scanLiteHistory({
+      homeDir: tempHome,
+      hostname: "cchistory-lite-sample-dir-host",
+      sourceRefs: ["codex"],
+      sourceRoots: [{ sourceRef: "codex", baseDir: codexRoot }],
+      safeMode: true,
+      contextMode: "none",
+      directoryScope: "/workspace/app",
+      sample: { perSource: 1 },
+      onProgress: (event) => {
+        if (event.stage === "file_start" && event.file_path) parsedFiles.push(path.basename(event.file_path));
+      },
+    });
+
+    const sampledIds = sampled.listTopLevelSessions({ directoryScope: "/workspace/app" })
+      .filter((session) => session.turn_count > 0)
+      .map((session) => session.source_session_id);
+    assert.deepEqual(sampledIds, ["sample-inside"]);
+    assert.ok(parsedFiles.includes("inside-old.jsonl"));
+    assert.equal(parsedFiles.includes("outside-new.jsonl"), false);
+    assert.equal(parsedFiles.includes("outside-newer.jsonl"), false);
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("Lite sample perSource below 1 selects no files", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-sample-zero-"));
+  const codexRoot = path.join(tempHome, "codex-sessions");
+  try {
+    await mkdir(codexRoot, { recursive: true });
+    await writeFile(
+      path.join(codexRoot, "keep.jsonl"),
+      [
+        {
+          timestamp: "2026-07-01T00:00:00.000Z",
+          type: "session_meta",
+          payload: { id: "sample-zero", cwd: "/workspace/app" },
+        },
+        {
+          timestamp: "2026-07-01T00:00:02.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Should not be sampled." }],
+          },
+        },
+      ].map((row) => JSON.stringify(row)).join("\n"),
+      "utf8",
+    );
+    const parsedFiles: string[] = [];
+    const sampled = await scanLiteHistory({
+      homeDir: tempHome,
+      hostname: "cchistory-lite-sample-zero-host",
+      sourceRefs: ["codex"],
+      sourceRoots: [{ sourceRef: "codex", baseDir: codexRoot }],
+      safeMode: true,
+      contextMode: "none",
+      sample: { perSource: 0 },
+      onProgress: (event) => {
+        if (event.stage === "file_start" && event.file_path) parsedFiles.push(path.basename(event.file_path));
+      },
+    });
+    assert.equal(sampled.listTopLevelSessions().length, 0);
+    assert.deepEqual(parsedFiles, []);
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
 test("Lite matching-context scans retain only contexts needed by the requested ref", async () => {
   const scanOptions = {
     homeDir: path.join(mockDataRoot, "empty-home"),
@@ -1650,6 +1805,63 @@ test("Lite directory scope skips Grok sessions whose encoded cwd is known not to
     assert.deepEqual(scoped.listResolvedSessions().map((session) => session.source_session_id), [keepId]);
     assert.equal(scoped.search({ query: "Skip this Grok" }).total, 0);
     assert.equal(scoped.searchSessions({ query: "Keep this Grok" }).total, 1);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Lite targeted Grok show probes only the matching session file", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-grok-show-"));
+  try {
+    const grokRoot = path.join(tempRoot, ".grok");
+    const keepId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee20";
+    const skipId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee21";
+    const keepDir = path.join(grokRoot, "sessions", "%2Fworkspace%2Fkeep", keepId);
+    const skipDir = path.join(grokRoot, "sessions", "%2Fworkspace%2Fskip", skipId);
+    await mkdir(keepDir, { recursive: true });
+    await mkdir(skipDir, { recursive: true });
+    for (const [sessionDir, sessionId, cwd, prompt] of [
+      [keepDir, keepId, "/workspace/keep", "Keep this Grok session for show."],
+      [skipDir, skipId, "/workspace/skip", "Do not open this Grok session."],
+    ] as const) {
+      await writeFile(
+        path.join(sessionDir, "chat_history.jsonl"),
+        `${JSON.stringify({ type: "user", content: [{ type: "text", text: prompt }], timestamp: "2026-03-09T06:01:00.000Z" })}\n`,
+        "utf8",
+      );
+      await writeFile(
+        path.join(sessionDir, "summary.json"),
+        JSON.stringify({
+          info: { id: sessionId, cwd },
+          generated_title: prompt,
+          created_at: "2026-03-09T06:00:00.000Z",
+          updated_at: "2026-03-09T06:10:00.000Z",
+        }),
+        "utf8",
+      );
+    }
+
+    const parsedFiles: string[] = [];
+    const targeted = await scanLiteHistory({
+      homeDir: tempRoot,
+      hostname: "cchistory-lite-grok-show-host",
+      sourceRefs: ["grok"],
+      sourceRoots: [{ sourceRef: "grok", baseDir: grokRoot }],
+      safeMode: true,
+      contextMode: "full",
+      sessionRefs: [`sess:grok:${keepId}`],
+      onProgress: (event) => {
+        if (event.stage === "file_start" && event.file_path) parsedFiles.push(event.file_path);
+      },
+    });
+
+    assert.equal(targeted.getSession(`sess:grok:${keepId}`)?.source_session_id, keepId);
+    assert.equal(
+      targeted.listResolvedSessions().some((session) => session.source_session_id === skipId),
+      false,
+    );
+    assert.ok(parsedFiles.some((filePath) => filePath.includes(keepId) && filePath.endsWith("chat_history.jsonl")));
+    assert.equal(parsedFiles.some((filePath) => filePath.includes(skipId)), false);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -175,11 +175,14 @@ segment boundary (`/work/app` does not match `/work/apple`). It is case-insensit
 Windows. Sessions without a working directory are excluded; projects match either their own path
 or a contained matching session.
 
-For Codex, `--dir` reads the first `session_meta` cwd and skips the rest of the file when that
-cwd cannot match. Claude Code and Factory skip project folders whose sanitized names cannot
-match `--dir` (relative to the adapter `base_dir`, including `--source-root`). Cursor
-`agent-transcripts` skip non-matching project slugs; sqlite chat DBs stay uncertain.
-Grok skips sessions whose encoded cwd path is known not to match.
+For Codex, `--dir` reads the first `session_meta` / `turn_context` cwd and skips the rest of
+the file when that line cannot match. Claude Code and Factory skip a project folder unless
+its sanitized name equals `--dir` or is a child of it. Cursor `agent-transcripts` skip
+non-matching project slugs; sqlite chat DBs stay uncertain. Grok skips sessions whose
+encoded cwd path is known not to match. Lite does **not** open parent project folders
+or rescan later Codex cwd lines: that would turn a subdirectory `--dir` into a near-host
+scan on Unix (`/root` prefixes almost every project folder). If a package-directory
+`--json` listing is empty, retry `--dir` at the repository root or pass `--no-dir`.
 `show session sess:<platform>:<id>` (or a unique prefix of that id) probes that session
 without a prior whole-source scan. Uncertain metadata and other adapters retain the
 full read-only probe followed by the same canonical filter. `--json`, `query`, and `shell`

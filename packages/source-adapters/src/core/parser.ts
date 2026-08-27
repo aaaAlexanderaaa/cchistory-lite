@@ -24,7 +24,7 @@ import { parseCodexRecord as parseCodexRuntimeRecord } from "../platforms/codex/
 import { resolveCursorTranscriptWorkspacePath } from "../platforms/cursor/runtime.js";
 import { applyGrokWorkspaceFromPath, listGrokRecordSidecarPaths } from "../platforms/grok.js";
 import {
-  expandGrokUpdateSidecarRecords,
+  collectGrokTurnCompletedUpdateRecords,
   interleaveGrokTurnCompletedRecords,
   parseGrokRecord as parseGrokRuntimeRecord,
 } from "../platforms/grok/runtime.js";
@@ -241,7 +241,7 @@ export async function extractRecords(
                 },
               ]
           : context.source.platform === "grok"
-            ? grokSidecars
+            ? grokSidecars?.filter((sidecar) => sidecar.pointer !== "updates")
           : context.source.platform === "accio"
             ? [
                 {
@@ -266,15 +266,29 @@ export async function extractRecords(
     return normalizeFactoryRecordObservedTimes(collected, fallbackObservedAt);
   }
   if (context.source.platform === "grok") {
-    const expanded = expandGrokUpdateSidecarRecords(collected);
+    const updatesSidecar = grokSidecars?.find((sidecar) => sidecar.pointer === "updates");
+    if (updatesSidecar) {
+      collected.push(
+        ...await collectGrokTurnCompletedUpdateRecords({
+          filePath: updatesSidecar.filePath,
+          identity: {
+            sourceId: context.source.id,
+            blobId,
+            sessionId: context.sessionId,
+          },
+          startOrdinal: collected.length,
+          createRecordId: baseRecordId,
+          nowIso,
+        }),
+      );
+    }
     const ordered = applyJsonlOrdinalObservedTimes(
-      expanded,
+      collected,
       fallbackObservedAt,
-      expanded
+      collected
         .map((record) => record.record_path_or_offset)
         .filter((pointer) =>
           pointer === "summary" ||
-          pointer === "updates" ||
           pointer.startsWith("subagent_meta") ||
           pointer.startsWith("updates:")
         ),

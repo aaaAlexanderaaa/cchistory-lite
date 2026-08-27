@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { getDefaultSourcesForHost, listSourceFiles, runSourceProbe } from "../index.js";
 import { createSourceDefinition } from "../test-helpers.js";
 import { decodeGrokEncodedCwd, parseGrokSessionLayout, previewSourceFileWorkingDirectory } from "./grok.js";
-import { interleaveGrokTurnCompletedRecords } from "./grok/runtime.js";
+import { collectGrokTurnCompletedUpdateRecords, interleaveGrokTurnCompletedRecords } from "./grok/runtime.js";
 import type { RawRecord } from "@cchistory/domain";
 
 const SESSION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -45,6 +45,148 @@ test("interleaveGrokTurnCompletedRecords places each turn_completed after its us
   assert.deepEqual(ordered.map((record) => record.record_path_or_offset), ["0", "1", "2", "3"]);
   assert.equal(JSON.parse(ordered[1]!.raw_json).usage.totalTokens, 120);
   assert.equal(JSON.parse(ordered[3]!.raw_json).usage.totalTokens, 58);
+});
+
+test("collectGrokTurnCompletedUpdateRecords keeps only turn_completed lines from a noisy sidecar", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-grok-updates-"));
+  try {
+    const updatesPath = path.join(tempRoot, "updates.jsonl");
+    const noise = Array.from({ length: 80 }, (_, index) => ({
+      method: "session/update",
+      timestamp: 1_773_000_000 + index,
+      params: {
+        sessionId: SESSION_ID,
+        update: {
+          sessionUpdate: index % 3 === 0 ? "agent_thought" : "tool_call",
+          text: `noise-${index}`,
+        },
+      },
+    }));
+    const completed = [
+      {
+        method: "session/update",
+        timestamp: 1_773_000_183,
+        params: {
+          sessionId: SESSION_ID,
+          update: {
+            sessionUpdate: "turn_completed",
+            usage: { totalTokens: 120 },
+          },
+        },
+      },
+      {
+        method: "session/update",
+        timestamp: 1_773_000_300,
+        params: {
+          sessionId: SESSION_ID,
+          update: {
+            sessionUpdate: "turn_completed",
+            usage: { totalTokens: 58 },
+          },
+        },
+      },
+    ];
+    await writeFile(
+      updatesPath,
+      [...noise.slice(0, 40), completed[0], ...noise.slice(40), completed[1]]
+        .map((row) => JSON.stringify(row))
+        .join("\n"),
+      "utf8",
+    );
+
+    const records = await collectGrokTurnCompletedUpdateRecords({
+      filePath: updatesPath,
+      identity: { sourceId: "src-grok", blobId: "blob", sessionId: `sess:grok:${SESSION_ID}` },
+      startOrdinal: 10,
+      createRecordId: (ordinal, pointer) => `${ordinal}:${pointer}`,
+      nowIso: () => "2026-03-09T06:00:00.000Z",
+    });
+
+    assert.equal(records.length, 2);
+    assert.deepEqual(
+      records.map((record) => record.record_path_or_offset),
+      ["updates:40", "updates:81"],
+    );
+    assert.equal(JSON.parse(records[0]!.raw_json).params.update.usage.totalTokens, 120);
+    assert.equal(JSON.parse(records[1]!.raw_json).params.update.usage.totalTokens, 58);
+    assert.ok(records.every((record) => !record.raw_json.includes("agent_thought")));
+    assert.ok(records.every((record) => record.raw_json.length < 400));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("[grok] probe does not materialize thought/tool update events as raw records", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-grok-noisy-updates-"));
+  try {
+    const grokRoot = path.join(tempRoot, ".grok");
+    const sessionDir = path.join(grokRoot, "sessions", "%2Fworkspace%2Fgrok-fixture", SESSION_ID);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      path.join(sessionDir, "chat_history.jsonl"),
+      [
+        { type: "user", content: [{ type: "text", text: "Count the tokens." }], timestamp: "2026-03-09T06:01:00.000Z" },
+        { type: "assistant", content: [{ type: "text", text: "Counted." }], timestamp: "2026-03-09T06:01:01.000Z" },
+      ].map((row) => JSON.stringify(row)).join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(sessionDir, "summary.json"),
+      JSON.stringify({
+        info: { id: SESSION_ID, cwd: "/workspace/grok-fixture" },
+        generated_title: "Noisy updates",
+        created_at: "2026-03-09T06:00:00.000Z",
+        updated_at: "2026-03-09T06:10:00.000Z",
+        current_model_id: "grok-4.6",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(sessionDir, "updates.jsonl"),
+      [
+        {
+          method: "session/update",
+          timestamp: 1_773_000_100,
+          params: { update: { sessionUpdate: "agent_thought", text: "thinking" } },
+        },
+        {
+          method: "session/update",
+          timestamp: 1_773_000_110,
+          params: { update: { sessionUpdate: "tool_call", name: "grep" } },
+        },
+        {
+          method: "session/update",
+          timestamp: 1_773_000_183,
+          params: {
+            update: {
+              sessionUpdate: "turn_completed",
+              usage: { inputTokens: 11, outputTokens: 2, totalTokens: 13 },
+            },
+          },
+        },
+      ].map((row) => JSON.stringify(row)).join("\n"),
+      "utf8",
+    );
+    const source = createSourceDefinition("src-grok", "grok", grokRoot);
+    const [payload] = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources;
+    assert.ok(payload);
+    assert.equal(
+      payload.records.some((record) =>
+        record.raw_json.includes("agent_thought") || record.raw_json.includes('"tool_call"')
+      ),
+      false,
+    );
+    assert.equal(
+      payload.fragments.filter((fragment) => fragment.fragment_kind === "token_usage_signal").length,
+      1,
+    );
+    assert.equal(
+      payload.contexts[0]?.assistant_replies[0]?.token_usage?.total_tokens,
+      13,
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("previewSourceFileWorkingDirectory reads Grok cwd from the encoded path without opening files", () => {
@@ -355,7 +497,7 @@ test("[grok] chat_history sessions produce user turns and keep synthetic rows as
     assert.ok(blobPaths.has(chatPath));
     assert.ok(blobPaths.has(path.join(sessionDir, "summary.json")));
     assert.ok(blobPaths.has(path.join(sessionDir, "signals.json")));
-    assert.ok(blobPaths.has(path.join(sessionDir, "updates.jsonl")));
+    assert.equal(blobPaths.has(path.join(sessionDir, "updates.jsonl")), false);
     assert.ok(blobPaths.has(path.join(subagentDir, "meta.json")));
 
     const [targeted] = (

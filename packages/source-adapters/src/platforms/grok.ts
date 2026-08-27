@@ -8,7 +8,6 @@ const SESSION_COMPANION_FILES = [
   "summary.json",
   "signals.json",
   "prompt_context.json",
-  "updates.jsonl",
   "plan.json",
 ] as const;
 
@@ -135,6 +134,7 @@ export async function listGrokCompanionEvidencePaths(_baseDir: string, filePath:
   );
 
   for (const sidecar of await listGrokRecordSidecarPaths(filePath)) {
+    if (sidecar.pointer === "updates") continue;
     companions.add(sidecar.filePath);
   }
 

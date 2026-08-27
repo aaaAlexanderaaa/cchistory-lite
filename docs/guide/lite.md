@@ -115,6 +115,9 @@ defaults to the 20 newest sessions and takes its count positionally, for example
 `latest 50` or `latest turns 50`. `sample` is a bounded latest-shaped preview
 (default 50 top-level sessions per source) for checking what Lite will show on
 this machine without a full scan. `sample --json` does not default to `--dir=$PWD`.
+Cheap ranking inspects at most four listed files at a time; it still fully
+parses only the selected files. Grok `updates.jsonl` contributes usage by
+streaming `turn_completed` events only.
 
 `latest sessions` emits one timeline block per session, ordered by the session's
 last real message activity. Each block includes aggregate turn count, model
@@ -131,11 +134,25 @@ resolves relative paths from the current directory, and matches lexical path
 segments. Sessions without `working_directory` are excluded. It applies to
 `latest`, `sample`, `ls projects`, `ls sessions`, `search`, `stats`, and
 `tree projects`; the latter keeps projects as containers but removes non-matching
-sessions, turns, and empty projects. Codex first-line cwd, Claude/Factory project
-folders, Cursor transcript slugs, and Grok encoded cwd can reject files before
-the conversation body is parsed; uncertain metadata falls back to the full
-read-only probe. Use `--source-root <slot>=<path>` when the native history
-itself is in a non-default location.
+sessions, turns, and empty projects. Use `--source-root <slot>=<path>` when the
+native history itself is in a non-default location.
+
+`--dir` preflight is a cheap reject, not a parent-directory search. A file is
+skipped only when its layout cannot match; uncertain metadata still takes the
+full read-only probe and the canonical cwd filter. Claude Code / Factory skip a
+project folder unless its sanitized name equals `--dir` or is a child of it
+(the folder name is longer). Cursor `agent-transcripts` slugs and Grok
+encoded-cwd trees follow the same direction. Codex reads the first
+`session_meta` / `turn_context` cwd and skips the rest of that JSONL when that
+line cannot match.
+
+That is intentional. Native files almost always live in the folder named after
+the launch cwd, and Codex almost never changes cwd inside one JSONL. Opening
+every encoding-prefix ancestor would, on a Unix home layout, degrade `--dir`
+in a package into a scan of `/root`. If a subdirectory JSON listing is empty,
+retry with `--dir` at the repository root or `--no-dir`. Do not expect Lite to
+walk parents for you. A Codex session that later `cd`s into `--dir` is the
+same class of miss; the expensive alternative is streaming the whole file.
 
 For large archives, ordinary read commands materialize one
 canonical logical session at a time and release full assistant/tool context

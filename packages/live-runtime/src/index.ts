@@ -63,6 +63,7 @@ import {
   type UsageFilters,
 } from "@cchistory/canonical";
 import { applyMaskTemplates, type SourceProbeProgressEvent } from "@cchistory/source-adapters";
+import { SAMPLE_RANK_CONCURRENCY, mapPool } from "./async-pool.js";
 
 export {
   buildAdaptiveNodeExecArgv,
@@ -679,7 +680,7 @@ async function scanSourceWithCollector(
 ): Promise<{ host: Host; payload: LiveSourcePayload }> {
   let scopedFiles = sourceFiles;
   const directoryScope = options.directoryScope;
-  if (scopedFiles === undefined) {
+  if (scopedFiles === undefined && (directoryScope || options.sample)) {
     const listed = await sourceAdapters.listSourceFiles(source.platform, source.base_dir, options.limitFiles);
     scopedFiles = directoryScope
       ? listed.filter((filePath) => sourceFileMayBeInDirectoryScope(
@@ -733,6 +734,14 @@ async function scanLogicalSessionGroups(
     ))
     : listedFiles;
   if (options.sample) {
+    if (options.directoryScope && files.length > 0) {
+      const inspected = await inspectGroupFiles(files, true);
+      files = files.filter((_filePath, index) => {
+        const metadata = inspected[index]!;
+        if (metadata.workingDirectoryState !== "known" || !metadata.workingDirectory) return true;
+        return pathMatchesDirectoryScope(metadata.workingDirectory, options.directoryScope!);
+      });
+    }
     files = await selectSampleSourceFiles(source, files, options.sample.perSource, sourceAdapters);
   }
   if (files.length === 0) {
@@ -751,7 +760,7 @@ async function scanLogicalSessionGroups(
     Boolean(options.directoryScope || requestedSessionRefs.length > 0),
   );
   if (inspectedFiles.some((metadata) => metadata.sessionKeyState === "uncertain")) {
-    return scanSourceWithCollector(source, options, contextMode, sourceAdapters);
+    return scanSourceWithCollector(source, options, contextMode, sourceAdapters, files);
   }
   for (const [fileIndex, filePath] of files.entries()) {
     const metadata = inspectedFiles[fileIndex]!;
@@ -895,7 +904,7 @@ async function scanLogicalSessionGroups(
   }
 
   if (requiresSourceCollector) {
-    return scanSourceWithCollector(source, options, contextMode, sourceAdapters);
+    return scanSourceWithCollector(source, options, contextMode, sourceAdapters, files);
   }
   if (!host) {
     throw new Error(`Lite logical-session scan produced no host for ${source.display_name}.`);
@@ -953,11 +962,22 @@ async function selectSampleSourceFiles(
   perSource: number,
   sourceAdapters: typeof import("@cchistory/source-adapters"),
 ): Promise<string[]> {
-  const ranked = await Promise.all(files.map(async (filePath) => {
-    const rank = await cheapSampleRank(source.platform, filePath, sourceAdapters);
-    const parentPath = await cheapSampleParentPath(source.platform, filePath, files, sourceAdapters);
-    return { filePath, rank, parentPath };
-  }));
+  if (!Number.isInteger(perSource) || perSource < 1) return [];
+  const ranked = await mapPool(files, SAMPLE_RANK_CONCURRENCY, async (filePath) => {
+    if (source.platform === "grok") {
+      const catalog = await sourceAdapters.inspectGrokChatHistoryCatalog(filePath);
+      return {
+        filePath,
+        rank: catalog.lastActiveAt ?? await fileModifiedAt(filePath),
+        parentPath: grokSampleParentPath(filePath, files, catalog, sourceAdapters),
+      };
+    }
+    return {
+      filePath,
+      rank: await fileModifiedAt(filePath),
+      parentPath: await cheapSampleParentPath(source.platform, filePath, files, sourceAdapters),
+    };
+  });
   ranked.sort((left, right) => right.rank.localeCompare(left.rank) || left.filePath.localeCompare(right.filePath));
   const selected: string[] = [];
   const seen = new Set<string>();
@@ -971,20 +991,23 @@ async function selectSampleSourceFiles(
   return selected;
 }
 
-async function cheapSampleRank(
-  platform: SourcePlatform,
-  filePath: string,
-  sourceAdapters: typeof import("@cchistory/source-adapters"),
-): Promise<string> {
-  if (platform === "grok") {
-    const catalog = await sourceAdapters.inspectGrokChatHistoryCatalog(filePath);
-    if (catalog.lastActiveAt) return catalog.lastActiveAt;
-  }
+async function fileModifiedAt(filePath: string): Promise<string> {
   try {
     return (await stat(filePath)).mtime.toISOString();
   } catch {
     return "1970-01-01T00:00:00.000Z";
   }
+}
+
+function grokSampleParentPath(
+  filePath: string,
+  files: readonly string[],
+  catalog: { isDelegatedChild: boolean; parentSessionId?: string },
+  sourceAdapters: typeof import("@cchistory/source-adapters"),
+): string | undefined {
+  if (!catalog.isDelegatedChild || !catalog.parentSessionId) return undefined;
+  const parentPath = sourceAdapters.resolveGrokSiblingSessionChatHistory(filePath, catalog.parentSessionId);
+  return parentPath && files.includes(parentPath) ? parentPath : undefined;
 }
 
 async function cheapSampleParentPath(
@@ -993,12 +1016,6 @@ async function cheapSampleParentPath(
   files: readonly string[],
   sourceAdapters: typeof import("@cchistory/source-adapters"),
 ): Promise<string | undefined> {
-  if (platform === "grok") {
-    const catalog = await sourceAdapters.inspectGrokChatHistoryCatalog(filePath);
-    if (!catalog.isDelegatedChild || !catalog.parentSessionId) return undefined;
-    const parentPath = sourceAdapters.resolveGrokSiblingSessionChatHistory(filePath, catalog.parentSessionId);
-    return parentPath && files.includes(parentPath) ? parentPath : undefined;
-  }
   const normalized = filePath.replace(/\\/gu, "/");
   const subagentMatch = normalized.match(/^(.*)\/([^/]+)\/subagents\/[^/]+\.jsonl$/u);
   if (platform === "claude_code" && subagentMatch) {

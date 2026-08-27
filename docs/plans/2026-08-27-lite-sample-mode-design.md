@@ -53,7 +53,9 @@ For each selected source:
 2. Cheap `--dir` rejection without opening conversation bodies, when the layout allows it
    (Grok URI-encoded cwd; Claude/Factory sanitized project folder; Cursor transcript slug).
    Uncertain encodings are kept. Codex has no cwd in the path: read the first `session_meta`
-   line only.
+   line only. Do not open parent project folders or later Codex cwd lines; a miss is
+   recovered by `--dir` at the repo root or `--no-dir`. Ranking inspects at most four
+   files at a time and reads each Grok `summary.json` once.
 3. Cheap rank that tracks **conversation activity**, not protocol noise:
    - Grok: `summary.json` `last_active_at` (session envelope clock). Do not use
      `updates.jsonl` / `events.jsonl` / `signals.json` mtime.

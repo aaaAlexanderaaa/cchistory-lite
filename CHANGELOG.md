@@ -15,7 +15,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   host scan and does not change `latest` recency.
 - Grok `updates.jsonl` `turn_completed.usage` is parsed into turn token totals
   (including `cachedReadTokens` / `reasoningTokens`). Chat-history lines still
-  have no native timestamp; turn clocks come from those update events.
+  have no native timestamp; turn clocks come from those update events. The
+  sidecar is streamed; thought/tool/status events are never materialized as
+  raw records.
 - Read-only delegated-session family inventory: `ls families`, compact session
   rows with `storage_bytes` / `delegated_child_count` / `family_storage_bytes`,
   and `show session` / `query` family blocks with per-child input/output
@@ -48,6 +50,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Targeted `show session sess:…` on source-boundary adapters (Grok, Factory,
+  Cursor, OpenClaw, …) probes matching files again instead of parsing the
+  whole source. `sample --dir` on Codex applies the first-line cwd preflight
+  before the per-source cap, so older in-scope sessions are not dropped in
+  favor of newer files outside the directory.
+- `sample` ranking inspects at most four candidate files at a time and reads
+  each Grok `summary.json` once. `perSource < 1` selects nothing.
+- Grok `updates.jsonl` no longer loads the whole event stream into one string
+  and then one raw record per line before dropping non-usage events. It is
+  also omitted from whole-file companion blob capture; usage still comes from
+  the streamed `turn_completed` records.
 - Compact family `input_preview` / `output_preview` mask the full spawn text
   before the 240-character cut, so secrets that straddle that cut still match
   the compact templates.
@@ -74,7 +87,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `--dir` rejects Claude / Factory project folders, Cursor `agent-transcripts`
   slugs, and Grok encoded-cwd trees from the path (relative to each adapter
   root) before opening conversation bodies. Codex `--dir` preflight uses the
-  first session cwd line instead of streaming the whole JSONL.
+  first session cwd line instead of streaming the whole JSONL. Parent project
+  folders and later Codex cwd lines are not opened: retry `--dir` at the repo
+  root or `--no-dir` if a subdirectory listing is empty.
   `show session sess:…` (including a unique id prefix) no longer does a
   whole-source resolution scan first.
 - CLI / `--json` / `query` search now returns one row per top-level session
