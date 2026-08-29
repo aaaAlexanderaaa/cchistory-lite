@@ -54,6 +54,25 @@ That is Node marking `node:sqlite` experimental. It is not Lite writing a store.
 
 ## Install
 
+Requires Node.js >= 22.
+
+```bash
+npx @cchistory/lite --help
+npm install -g @cchistory/lite
+cchistory-lite sources
+```
+
+`npx @cchistory/lite` runs the `lite` bin (same CLI as `cchistory-lite`).
+A global install also links `cchistory-lite-tui`.
+
+Agents looking up local history should follow
+[`skills/using-cchistory-lite/SKILL.md`](skills/using-cchistory-lite/SKILL.md)
+(copy-paste recipes in [`docs/guide/lite.md`](docs/guide/lite.md)). That skill
+is vendor-neutral; copy or symlink it into the host agent’s skill path if the
+host auto-loads from there.
+
+### From source
+
 ```bash
 git clone <this-repo> cchistory-lite
 cd cchistory-lite
@@ -68,12 +87,6 @@ pnpm run lite:link       # cchistory-lite
 pnpm run lite:tui:link   # cchistory-lite-tui
 ```
 
-Agents looking up local history should follow
-[`skills/using-cchistory-lite/SKILL.md`](skills/using-cchistory-lite/SKILL.md)
-(copy-paste recipes in [`docs/guide/lite.md`](docs/guide/lite.md)). That skill
-is vendor-neutral; copy or symlink it into the host agent’s skill path if the
-host auto-loads from there.
-
 Or run them straight out of the workspace without linking:
 
 ```bash
@@ -85,8 +98,9 @@ pnpm lite:tui
 
 `pnpm run lite:artifact` produces a self-contained closure under `dist/lite-artifacts/` —
 both binaries plus every workspace package they need, with no `workspace:*` specifiers and no
-pnpm workspace required at runtime. Extract the tarball anywhere and run `bin/cchistory-lite`
-(or `bin\cchistory-lite.cmd` on Windows).
+pnpm workspace required at runtime. Extract `cchistory-lite-<version>.tgz` anywhere and run
+`bin/cchistory-lite` (or `bin\cchistory-lite.cmd` on Windows). The same directory is what
+`npm publish` uploads as `@cchistory/lite`.
 
 ## Supported sources
 

@@ -15,6 +15,15 @@ loads; the CLI/TUI suppress it unless `CCHISTORY_SHOW_RUNTIME_WARNINGS=1`.
 
 ## Build And Run
 
+Published install (no repository checkout):
+
+```bash
+npx @cchistory/lite --help
+npm install -g @cchistory/lite
+```
+
+`npx @cchistory/lite` is the `lite` alias of `cchistory-lite`.
+
 ```bash
 pnpm --filter @cchistory/lite-cli build
 pnpm --filter @cchistory/lite-tui build
@@ -52,7 +61,7 @@ pnpm run lite:artifact
 pnpm run verify:lite-artifact
 ```
 
-Extract `dist/lite-artifacts/cchistory-lite-standalone-<version>.tgz` and run
+Extract `dist/lite-artifacts/cchistory-lite-<version>.tgz` and run
 `bin/cchistory-lite` or `bin/cchistory-lite-tui`. The artifact vendors the
 complete Lite runtime dependency closure.
 
