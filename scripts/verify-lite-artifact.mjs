@@ -28,6 +28,9 @@ async function main() {
     await mkdir(extractRoot, { recursive: true });
     await execFile('tar', ['-xzf', manifest.tarball_path, '-C', extractRoot]);
     const installedRoot = path.join(extractRoot, path.basename(manifest.artifact_dir));
+    if (path.basename(manifest.artifact_dir) !== `cchistory-lite-${manifest.version}`) {
+      throw new Error(`Artifact directory stem is ${path.basename(manifest.artifact_dir)}, expected cchistory-lite-${manifest.version}`);
+    }
 
     await assertNoWorkspaceSpecs(installedRoot);
     const cli = path.join(installedRoot, 'bin', 'cchistory-lite');
@@ -102,11 +105,105 @@ async function main() {
     ) {
       throw new Error(`Installed Lite CLI fixture query failed: ${query.stdout}`);
     }
+    await assertPublishableNpmPackage(installedRoot, tempRoot, expectedVersion);
     console.log('[cchistory] standalone Lite artifact verification passed');
     console.log(`[cchistory] verified binaries: ${cli}, ${tui}`);
   } finally {
     if (keepTemp) console.log(`[cchistory] kept verification directory: ${tempRoot}`);
     else await rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+const PUBLISHED_PACKAGE_NAME = '@cchistory/lite';
+const BUNDLED_PACKAGES = [
+  '@cchistory/domain',
+  '@cchistory/canonical',
+  '@cchistory/source-adapters',
+  '@cchistory/live-runtime',
+];
+
+async function assertPublishableNpmPackage(installedRoot, tempRoot, expectedVersion) {
+  const artifactPackage = JSON.parse(await readFile(path.join(installedRoot, 'package.json'), 'utf8'));
+  if (artifactPackage.name !== PUBLISHED_PACKAGE_NAME) {
+    throw new Error(`Artifact package name is ${artifactPackage.name}, expected ${PUBLISHED_PACKAGE_NAME}`);
+  }
+  if (artifactPackage.bin?.lite !== './bin/cchistory-lite.mjs') {
+    throw new Error(`Artifact is missing the lite bin alias: ${JSON.stringify(artifactPackage.bin)}`);
+  }
+  if (artifactPackage.bin?.['cchistory-lite'] !== './bin/cchistory-lite.mjs') {
+    throw new Error(`Artifact is missing the cchistory-lite bin: ${JSON.stringify(artifactPackage.bin)}`);
+  }
+  if (artifactPackage.bin?.['cchistory-lite-tui'] !== './bin/cchistory-lite-tui.mjs') {
+    throw new Error(`Artifact is missing the cchistory-lite-tui bin: ${JSON.stringify(artifactPackage.bin)}`);
+  }
+  if (artifactPackage.publishConfig?.access !== 'public') {
+    throw new Error(`Artifact publishConfig.access is ${artifactPackage.publishConfig?.access}, expected public`);
+  }
+  const bundled = artifactPackage.bundleDependencies ?? artifactPackage.bundledDependencies;
+  for (const packageName of BUNDLED_PACKAGES) {
+    if (!Array.isArray(bundled) || !bundled.includes(packageName)) {
+      throw new Error(`Artifact bundleDependencies missing ${packageName}: ${JSON.stringify(bundled)}`);
+    }
+    if (artifactPackage.dependencies?.[packageName] !== expectedVersion && artifactPackage.dependencies?.[packageName] !== artifactPackage.version) {
+      // During verify, artifact version is 0.0.0-verify while baked CLI version is the workspace version.
+      // Dependency versions must copy the vendored workspace package versions, not a hard-coded 0.4.2.
+      if (typeof artifactPackage.dependencies?.[packageName] !== 'string' || artifactPackage.dependencies[packageName].includes('workspace:')) {
+        throw new Error(`Artifact dependency ${packageName} is ${artifactPackage.dependencies?.[packageName]}`);
+      }
+    }
+  }
+
+  const packDir = path.join(tempRoot, 'npm-pack');
+  await mkdir(packDir, { recursive: true });
+  const packed = await execFile('npm', ['pack', '--json', '--pack-destination', packDir], { cwd: installedRoot });
+  const packedListing = JSON.parse(packed.stdout);
+  const packedFileName = packedListing[0]?.filename ?? packedListing[0]?.id;
+  if (!packedFileName) {
+    throw new Error(`npm pack did not report a filename: ${packed.stdout}`);
+  }
+  const packedTarball = path.join(packDir, path.basename(packedFileName));
+  const listing = await execFile('tar', ['-tzf', packedTarball]);
+  const names = listing.stdout.split('\n');
+  const requiredPrefixes = [
+    'package/bin/cchistory-lite.mjs',
+    'package/apps/lite-cli/dist/',
+    'package/apps/lite-tui/dist/',
+    'package/schemas/',
+    'package/node_modules/@cchistory/domain/',
+    'package/node_modules/@cchistory/canonical/',
+    'package/node_modules/@cchistory/source-adapters/',
+    'package/node_modules/@cchistory/live-runtime/',
+    'package/README.md',
+    'package/LICENSE',
+  ];
+  for (const required of requiredPrefixes) {
+    if (!names.some((entry) => entry === required || entry.startsWith(required))) {
+      throw new Error(`npm pack tarball missing ${required}`);
+    }
+  }
+
+  const npmPrefix = path.join(tempRoot, 'npm-prefix');
+  await mkdir(npmPrefix, { recursive: true });
+  await execFile('npm', ['install', '--prefix', npmPrefix, packedTarball]);
+  const npmLite = path.join(npmPrefix, 'node_modules', '.bin', 'lite');
+  const npmCli = path.join(npmPrefix, 'node_modules', '.bin', 'cchistory-lite');
+  const help = await execFile(npmLite, ['--help']);
+  if (!/cchistory-lite/u.test(help.stdout)) {
+    throw new Error(`Prefix-installed lite --help failed: ${help.stdout}`);
+  }
+  const npmVersion = await execFile(npmCli, ['--version']);
+  if (npmVersion.stdout.trim() !== expectedVersion) {
+    throw new Error(`Prefix-installed cchistory-lite --version is ${npmVersion.stdout.trim()} (expected ${expectedVersion})`);
+  }
+
+  const fixtureRoot = path.join(repoRoot, 'mock_data', '.codex', 'sessions');
+  const launchedTui = await execFile(
+    npmCli,
+    ['tui', '--source-root', `codex=${fixtureRoot}`, '--source', 'codex', '--safe', '--limit-files', '1'],
+    { cwd: npmPrefix, maxBuffer: 8 * 1024 * 1024 },
+  );
+  if (!/CC History Lite TUI/u.test(launchedTui.stdout) || !/Ephemeral live snapshot/u.test(launchedTui.stdout)) {
+    throw new Error(`Prefix-installed CLI could not launch the sibling TUI: ${launchedTui.stdout}`);
   }
 }
 
