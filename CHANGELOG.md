@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-29
+
+### Added
+
+- `@cchistory/lite` is the public npm package for this release closure.
+  `npx @cchistory/lite` and `npm install -g @cchistory/lite` install the same
+  CLI/TUI as the extract-and-run tarball. Workspace packages stay private.
+  The `lite` bin is an alias of `cchistory-lite`.
+
+### Changed
+
+- The standalone tarball stem is `cchistory-lite-<version>.tgz` (no
+  `standalone` suffix). Extract-and-run launchers are unchanged.
+
 ## [0.4.1] - 2026-08-28
 
 ### Added
