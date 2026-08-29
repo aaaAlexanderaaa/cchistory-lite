@@ -10,7 +10,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultRepoRoot = path.resolve(scriptDir, '..');
 const defaultOutputRootRelative = path.join('dist', 'lite-artifacts');
-const artifactPackageName = 'cchistory-lite-standalone';
+const publishedPackageName = '@cchistory/lite';
+const artifactStem = 'cchistory-lite';
 const appPackages = [
   { sourceDir: path.join('apps', 'lite-cli'), artifactDir: path.join('apps', 'lite-cli') },
   { sourceDir: path.join('apps', 'lite-tui'), artifactDir: path.join('apps', 'lite-tui') },
@@ -36,7 +37,7 @@ export async function buildLiteArtifact(options = {}) {
     throw new Error(`Lite CLI/TUI versions differ: ${cliPackage.version} vs ${tuiPackage.version}.`);
   }
   const version = versionOverride ?? cliPackage.version;
-  const artifactName = `${artifactPackageName}-${version}`;
+  const artifactName = `${artifactStem}-${version}`;
   const artifactDir = path.join(outputRoot, artifactName);
   const tarballPath = path.join(outputRoot, `${artifactName}.tgz`);
 
@@ -78,16 +79,25 @@ export async function buildLiteArtifact(options = {}) {
   }
   await writeLauncherFiles(artifactDir);
 
+  const vendoredVersions = Object.fromEntries(
+    includedPackages.map((entry) => [entry.package_name, entry.version]),
+  );
   const artifactPackage = {
-    name: artifactPackageName,
+    name: publishedPackageName,
     version,
     type: 'module',
-    license: cliPackage.license ?? rootPackage.license ?? 'UNLICENSED',
+    license: cliPackage.license ?? rootPackage.license ?? 'MIT',
+    description: 'Zero-store, read-only CLI and TUI for local AI coding-agent history.',
     bin: {
+      lite: './bin/cchistory-lite.mjs',
       'cchistory-lite': './bin/cchistory-lite.mjs',
       'cchistory-lite-tui': './bin/cchistory-lite-tui.mjs',
     },
+    files: ['bin', 'apps', 'schemas', 'INSTALL.md', 'README.md', 'LICENSE'],
+    dependencies: vendoredVersions,
+    bundleDependencies: vendoredPackages.map((entry) => entry.packageName),
     engines: { node: rootPackage.engines?.node ?? '>=22' },
+    publishConfig: { access: 'public' },
   };
   await writeFile(path.join(artifactDir, 'package.json'), `${JSON.stringify(artifactPackage, null, 2)}\n`, 'utf8');
   await writeFile(
@@ -96,6 +106,8 @@ export async function buildLiteArtifact(options = {}) {
       '# Standalone CC History Lite Artifact',
       '',
       `Version: ${version}`,
+      '',
+      'Install from npm: `npx @cchistory/lite --help` or `npm install -g @cchistory/lite`.',
       '',
       'This directory is a self-contained Lite release closure. It carries both',
       'Lite binaries and every private workspace package required at runtime.',
@@ -108,10 +120,34 @@ export async function buildLiteArtifact(options = {}) {
     ].join('\n'),
     'utf8',
   );
+  await cp(path.join(repoRoot, 'LICENSE'), path.join(artifactDir, 'LICENSE'));
+  await writeFile(
+    path.join(artifactDir, 'README.md'),
+    [
+      '# @cchistory/lite',
+      '',
+      'Zero-store, read-only CLI and TUI that reads local AI coding-agent history',
+      'in place. Requires Node.js >= 22.',
+      '',
+      '```bash',
+      'npx @cchistory/lite --help',
+      'npm install -g @cchistory/lite',
+      'cchistory-lite sources',
+      '```',
+      '',
+      'This package scans native history on disk and keeps the snapshot in memory.',
+      'It does not create `~/.cchistory`.',
+      '',
+      'The `lite` bin is an alias of `cchistory-lite` so `npx @cchistory/lite` works.',
+      'A global install also links `cchistory-lite` and `cchistory-lite-tui`.',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
 
   const manifest = {
     kind: 'cchistory-lite-artifact',
-    package_name: artifactPackageName,
+    package_name: publishedPackageName,
     version,
     created_at: new Date().toISOString(),
     artifact_dir: artifactDir,
