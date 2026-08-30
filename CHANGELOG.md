@@ -7,6 +7,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-30
+
+### Added
+
+- `@cchistory/lite` is the public npm package for this release closure.
+  `npx @cchistory/lite` and `npm install -g @cchistory/lite` install the same
+  CLI/TUI as the extract-and-run tarball. Workspace packages stay private.
+  The `lite` bin is an alias of `cchistory-lite`.
+
+### Changed
+
+- The standalone tarball stem is `cchistory-lite-<version>.tgz` (no
+  `standalone` suffix). Extract-and-run launchers are unchanged.
+- Human-readable CLI collections replace the bold-title/all-gray cards with
+  semantic field colors: the title is the only bold field and carries green
+  on the identity line after the model; the identity line shows the source
+  tool in blue with the model in magenta; working directories are white,
+  including the `cd` target inside a resume command; counts, timestamps,
+  session references, and the rest of a resume command stay gray. Cursor
+  prompt-history fallback sessions omit the truncated `session prompt-h…`
+  id and `tokens n/a`. The renderers emit styles directly instead of the old
+  regex post-painter, and non-TTY / `NO_COLOR=1` output remains pure text.
+
 ### Fixed
 
 - Container sources (zcode, lobechat, and the SQLite parts of hybrid sources)
@@ -28,32 +51,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   turn. That envelope is classified as injected scaffolding, same as
   AGENTS.md and `<environment_context>`, so the card title is the actual
   request.
-
-### Changed
-
-- Human-readable CLI collections replace the bold-title/all-gray cards with
-  semantic field colors: the title is the only bold field and carries green
-  on the identity line after the model; the identity line shows the source
-  tool in blue with the model in magenta; working directories are white,
-  including the `cd` target inside a resume command; counts, timestamps,
-  session references, and the rest of a resume command stay gray. Cursor
-  prompt-history fallback sessions omit the truncated `session prompt-h…`
-  id and `tokens n/a`. The renderers emit styles directly instead of the old
-  regex post-painter, and non-TTY / `NO_COLOR=1` output remains pure text.
-
-## [0.4.2] - 2026-08-29
-
-### Added
-
-- `@cchistory/lite` is the public npm package for this release closure.
-  `npx @cchistory/lite` and `npm install -g @cchistory/lite` install the same
-  CLI/TUI as the extract-and-run tarball. Workspace packages stay private.
-  The `lite` bin is an alias of `cchistory-lite`.
-
-### Changed
-
-- The standalone tarball stem is `cchistory-lite-<version>.tgz` (no
-  `standalone` suffix). Extract-and-run launchers are unchanged.
 
 ## [0.4.1] - 2026-08-28
 
