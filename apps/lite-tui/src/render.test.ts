@@ -6,6 +6,7 @@ import { LiveHistorySnapshot, scanLiteHistory } from "@cchistory/live-runtime";
 import { configureColorPolicy, stripAnsi } from "./colors.js";
 import { LiteBrowserModel } from "./model.js";
 import { BANNER_SUBTITLE, BANNER_TITLE, renderLiteFrame, renderScrollablePane, type LiteScrollReconciliation } from "./render.js";
+import { VERSION } from "./version.js";
 import {
   createLiteBrowserState,
   getVisibleTurns,
@@ -247,7 +248,7 @@ test("the banner lines release verifiers grep for are byte-identical", async () 
   const lines = frame(model, createLiteBrowserState(model)).split("\n");
   assert.equal(lines[0], BANNER_TITLE);
   assert.equal(lines[1], BANNER_SUBTITLE);
-  assert.equal(BANNER_TITLE, "CC History Lite TUI 0.4.2");
+  assert.equal(BANNER_TITLE, `CC History Lite TUI ${VERSION}`);
   assert.equal(BANNER_SUBTITLE, "Ephemeral live snapshot · single machine · no Full store");
 });
 
