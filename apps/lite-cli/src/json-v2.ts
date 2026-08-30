@@ -147,7 +147,7 @@ export function projectSummary(project: ProjectIdentity | Record<string, unknown
     source_platforms: value.source_platforms ?? [],
     session_count: value.session_count,
     turn_count: value.committed_turn_count + value.candidate_turn_count,
-    last_activity_at: value.project_last_activity_at ?? value.updated_at,
+    last_activity_at: value.project_last_activity_at ?? null,
   };
 }
 

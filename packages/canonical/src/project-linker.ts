@@ -170,7 +170,9 @@ export function deriveProjectLinkSnapshot(input: {
   const projects = [...projectById.values()]
     .map((project) => {
       const counts = projectTurnCounts.get(project.project_id);
-      const projectLastActivityAt = maxIso(project.project_last_activity_at, counts?.last_activity_at);
+      // Same clock as session recency: last real message, not observation
+      // observed_at / file metadata / nowIso() from empty stub sessions.
+      const projectLastActivityAt = counts?.last_activity_at;
       const hasManualOverride = overrides.some((override) => override.project_id === project.project_id);
       return {
         ...project,
@@ -571,7 +573,8 @@ function buildProjectIdentity(group: ProjectGroup): ProjectIdentity {
     committed_turn_count: 0,
     candidate_turn_count: 0,
     session_count: 0,
-    project_last_activity_at: updatedAt,
+    // Last activity is filled from linked turns later. Observation
+    // observed_at can be scan time or file mtime and must not rank a project.
     created_at: createdAt,
     updated_at: updatedAt,
   };

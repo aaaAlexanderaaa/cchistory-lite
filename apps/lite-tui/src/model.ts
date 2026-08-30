@@ -93,16 +93,23 @@ export class LiteBrowserModel {
     this.sessionsById = new Map(resolvedSessions.map((session) => [session.id, session]));
     this.projects = buildProjectEntries(snapshot, this.sessionsById);
     const sourceNames = new Map(snapshot.listSources().map((source) => [source.id, source.display_name]));
-    this.sessions = sessions.map((session) => ({
-      session,
-      sourceName: sourceNames.get(session.source_id) ?? session.source_platform,
-      turns: snapshot.listSessionTurns(session.id).map((turn) => ({ turn, session })),
-      relatedWorkCount: snapshot.listSessionRelatedWork(session.id).length,
-    }));
+    const paneSessions: LiteSessionEntry[] = [];
+    for (const session of sessions) {
+      const relatedWorkCount = snapshot.listSessionRelatedWork(session.id).length;
+      const requested = options.includeSessionRefs?.some((ref) => snapshot.getSession(ref)?.id === session.id);
+      if (session.turn_count === 0 && relatedWorkCount === 0 && !requested) continue;
+      paneSessions.push({
+        session,
+        sourceName: sourceNames.get(session.source_id) ?? session.source_platform,
+        turns: snapshot.listSessionTurns(session.id).map((turn) => ({ turn, session })),
+        relatedWorkCount,
+      });
+    }
+    this.sessions = paneSessions;
     this.counts = {
       sources: snapshot.listSources().length,
       projects: this.projects.filter((entry) => entry.project).length,
-      sessions: sessions.length,
+      sessions: paneSessions.length,
       turns: snapshot.listResolvedTurns().length,
     };
     this.sourceHealth = buildSourceHealth(snapshot.listSources());
@@ -185,7 +192,7 @@ function buildProjectEntries(
       workspacePath: project.primary_workspace_path ?? project.repo_root,
       sessionCount: new Set(turns.map((turn) => turn.session_id)).size,
       turnCount: turns.length,
-      lastActivityAt: project.project_last_activity_at ?? project.updated_at,
+      lastActivityAt: project.project_last_activity_at,
       turns: turns.map((turn) => ({ turn, session: sessionsById.get(turn.session_id) })),
     });
   }

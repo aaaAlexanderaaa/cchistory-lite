@@ -30,7 +30,8 @@ export interface ProjectionAuditIssue {
   | "sessions-not-recency-ordered"
   | "turns-not-recency-ordered"
   | "projected-unlinked-turn"
-  | "turn-usage-total-mismatch";
+  | "turn-usage-total-mismatch"
+  | "project-last-activity";
   entity: "source" | "project" | "session" | "turn" | "context" | "snapshot";
   id: string;
   detail: string;
@@ -188,6 +189,20 @@ export function auditProjectionConsistency(input: ProjectionAuditInput): Project
         id: project.project_id,
         detail: `declares ${project.session_count} sessions but projects ${sessionCount}`,
       });
+    }
+    if (projectTurns.length > 0) {
+      const expectedLastActivity = projectTurns.reduce<string | undefined>(
+        (latest, turn) => (latest && latest >= turn.last_context_activity_at ? latest : turn.last_context_activity_at),
+        undefined,
+      );
+      if (project.project_last_activity_at !== expectedLastActivity) {
+        issues.push({
+          code: "project-last-activity",
+          entity: "project",
+          id: project.project_id,
+          detail: `declares last activity ${project.project_last_activity_at ?? "<none>"} but linked turns end at ${expectedLastActivity}`,
+        });
+      }
     }
   }
 

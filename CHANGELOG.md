@@ -7,6 +7,62 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `cchistory-lite agent` prints the versioned machine-readable contract
+  (`cchistory-lite-agent/v1`): every command's flags, enums, and defaults, exit
+  codes, environment variables, output schemas, the trust model, the
+  cannot-do list, and the cost model — with the scan-guard numbers imported
+  from the runtime so documentation cannot drift from implementation.
+  `agent skill` / `agent guide` print the bundled agent docs. New long-form
+  manual `docs/guide/for-agents.md` (data flow, cost model, concurrency
+  discipline, error taxonomy, recipes); the guide and the agent skill now
+  ship inside the npm package, and `--help` points agents at the contract.
+- Scan guard: full scans now fail fast instead of pushing the host into
+  swap-death. The V8 old-space ceiling derives from *available* memory (half,
+  capped at 4 GiB, floored at 512 MiB, falling back to the old total/2 when
+  availability is unknown); an advisory lock in `$XDG_RUNTIME_DIR` serializes
+  full scans (30s bounded wait; `sample` and exact-id `show session` bypass);
+  a watchdog aborts a scan when available memory drops below
+  max(512 MiB, 5% of total); and a pre-flight estimate refuses scans whose
+  conservative peak exceeds 75% of available memory (warning above 50%).
+  Refusals exit 1 with `scan_guard_refused` / `scan_guard_aborted` in JSON
+  mode and teach `--source` / `--dir` / `--limit-files` / `sample` /
+  `shell` / `query`. `CCHISTORY_SCAN_GUARD=0` disables the lock, estimate,
+  and watchdog.
+- Releases are cut by the manually-dispatched Release GitHub Actions
+  workflow: `scripts/release-prepare.mjs` validates the version (strict
+  semver, strictly greater, no existing tag, non-empty Unreleased), bumps all
+  7 package.json files and the baked CLI/TUI VERSION literals, and folds the
+  changelog; the workflow runs the four gates, publishes with
+  `npm publish --provenance`, then commits, tags,
+  pushes, and creates a GitHub Release with the tarball. `RELEASING.md`
+  documents the process, and the artifact package.json now carries
+  `repository` / `homepage` / `bugs` so provenance links back to this repo.
+
+### Changed
+
+- README install and usage now lead with the published
+  [`@cchistory/lite`](https://www.npmjs.com/package/@cchistory/lite) package
+  (`npx` / `npm install -g`) now that 0.4.2 is on npm.
+
+### Fixed
+
+- Markdown `export` used the full-scan memory estimate (×8) even though it
+  discards turn context after projection. It now uses the light profile (×4),
+  matching the actual scan; JSON/JSONL export still uses the full estimate.
+
+- `cchistory-lite --help` now documents `--offset`, `--project`, `--by`,
+  `--format` / `--out`, and `help [command]`, and no longer mentions a
+  nonexistent `--total` flag. A two-way test audits documented flags against
+  the real parser in both directions.
+
+- Project last-activity clocks follow the last real turn, not scan-time
+  empty-session observations. The TUI and CLI share one relative-time
+  formatter; turn-group headers count the contiguous run instead of repeating
+  the session-wide total; and the session pane hides 0-turn stubs that have
+  no related work.
+
 ## [0.4.2] - 2026-08-30
 
 ### Added

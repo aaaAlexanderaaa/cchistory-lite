@@ -72,7 +72,7 @@ Reading full assistant/tool context for every turn is the expensive path, so it 
 
 | Caller | Context mode |
 | --- | --- |
-| `sources`, `ls`, `latest`, `tree`, `search`, `show project`, `show source`, `stats`, `shell` startup, TUI startup | `none` — context dropped after deriving turns |
+| `sources`, `ls`, `latest`, `tree`, `search`, `show project`, `show source`, `stats`, markdown `export`, `shell` startup, TUI startup | `none` — context dropped after deriving turns |
 | `show session <complete-canonical-id>` | targeted `full` scan of that one logical session |
 | `show session <fuzzy-ref>`, `show turn <ref>` | one `matching` scan; context retained only for possible resolver matches |
 | JSON/JSONL `export` | `full` |

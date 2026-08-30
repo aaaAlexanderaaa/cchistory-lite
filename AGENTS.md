@@ -43,6 +43,8 @@ pnpm run verify:governance     # architecture rule manifest + its harness
 pnpm run verify:lite-artifact  # release closure builds, extracts, and runs
 ```
 
+Releases are cut by the CI Release workflow — see [RELEASING.md](RELEASING.md); never `npm publish` from a dirty tree.
+
 `pnpm test` is the gate. It runs every package's tests and then
 `scripts/verify-lite-boundaries.mjs`, which walks the production dependency graph and rejects
 forbidden dependencies at both manifest and import level.
@@ -80,6 +82,8 @@ or a CLI/TUI view must preserve the canonical projection contract. The contract 
 - declared session/project counts equal the rows projected into those buckets;
 - snapshot sessions retain canonical last-real-message recency order, while turns retain canonical
   submission recency order;
+- a project's `project_last_activity_at` is the latest `last_context_activity_at` among turns
+  linked to that project, not observation `observed_at`, file mtime, or scan time;
 - a turn cannot point at a project while claiming to be unlinked;
 - structured turn token totals agree with their legacy context-summary total when both are present;
 - every usage surface resolves option-B totals through the canonical usage projection;

@@ -4,6 +4,7 @@
  * Held as a constant rather than read from `package.json` at runtime: the
  * standalone release artifact ships only `apps/lite-tui/dist`, so there is no
  * manifest beside the entrypoint to read. `index.test.ts` asserts this value
- * matches the package manifest so the two cannot drift.
+ * matches the package manifest so the two cannot drift; `release-prepare.mjs`
+ * rewrites this literal when cutting a release.
  */
 export const VERSION = "0.4.2";

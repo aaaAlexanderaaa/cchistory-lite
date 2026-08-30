@@ -8,6 +8,7 @@ import {
   getLocalPathBasename,
   isLegacySourceInstanceId,
   localPathIdentitiesMatch,
+  formatRelativeTime,
   maxIso,
   minIso,
   normalizeLocalPathIdentity,
@@ -599,5 +600,25 @@ describe("maxIso", () => {
   test("returns either when both are equal", () => {
     const ts = "2024-06-01T00:00:00Z";
     assert.equal(maxIso(ts, ts), ts);
+  });
+});
+
+describe("formatRelativeTime", () => {
+  const now = Date.parse("2026-08-30T08:17:00.000Z");
+
+  test("treats the last minute, including small future clock skew, as just now", () => {
+    assert.equal(formatRelativeTime("2026-08-30T08:16:30.000Z", now), "just now");
+    assert.equal(formatRelativeTime("2026-08-30T08:17:05.000Z", now), "just now");
+  });
+
+  test("uses the same day and year buckets for CLI and TUI labels", () => {
+    assert.equal(formatRelativeTime("2026-08-30T07:17:00.000Z", now), "1h ago");
+    assert.equal(formatRelativeTime("2026-08-27T16:59:11.110Z", now), "2d ago");
+    assert.equal(formatRelativeTime("2025-08-30T08:17:00.000Z", now), "1y ago");
+  });
+
+  test("does not render an empty or unparseable value as recent activity", () => {
+    assert.equal(formatRelativeTime(undefined, now), "");
+    assert.equal(formatRelativeTime("not-a-date", now), "not-a-date".slice(0, 10));
   });
 });

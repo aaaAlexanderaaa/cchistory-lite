@@ -158,6 +158,7 @@ test("projection audit covers duplicate identities, references, counts, order, a
     "sessions-not-recency-ordered",
     "turns-not-recency-ordered",
     "projected-unlinked-turn",
+    "project-last-activity",
   ]));
 });
 
@@ -210,6 +211,55 @@ test("shared canonical helpers link, search, and aggregate one live turn", () =>
   });
   assert.equal(overview.total_turns, 1);
   assert.equal(overview.total_tokens, 15);
+});
+
+test("project last activity follows the last real turn, not a scan-time empty-session observation", () => {
+  const source = createSource();
+  const realSession = { ...createSession(source), id: "session-real", turn_count: 1 };
+  const stubSession = {
+    ...createSession(source),
+    id: "session-stub",
+    title: undefined,
+    turn_count: 0,
+    created_at: "2026-08-30T08:17:51.260Z",
+    updated_at: "2026-08-30T08:17:51.260Z",
+  };
+  const turn = {
+    ...createTurn(source, realSession),
+    id: "turn-real",
+    turn_id: "turn-real",
+    last_context_activity_at: "2026-08-27T16:59:11.110Z",
+    submission_started_at: "2026-08-27T16:56:43.033Z",
+  };
+  const observation = (session: SessionProjection, endedAt: string) => ({
+    id: `obs-${session.id}`,
+    source_id: source.id,
+    session_ref: session.id,
+    candidate_kind: "project_observation" as const,
+    input_atom_refs: [],
+    started_at: endedAt,
+    ended_at: endedAt,
+    rule_version: "test",
+    evidence: {
+      workspace_path: session.working_directory,
+      workspace_path_normalized: session.working_directory,
+      repo_root: session.working_directory,
+      confidence: 0.9,
+    },
+  });
+
+  const linked = deriveProjectLinkSnapshot({
+    sessions: [realSession, stubSession],
+    turns: [turn],
+    candidates: [
+      observation(realSession, turn.last_context_activity_at),
+      observation(stubSession, stubSession.updated_at),
+    ],
+  });
+
+  assert.equal(linked.projects.length, 1);
+  assert.equal(linked.projects[0]?.project_last_activity_at, "2026-08-27T16:59:11.110Z");
+  assert.notEqual(linked.projects[0]?.project_last_activity_at, stubSession.updated_at);
 });
 
 test("in-memory search preserves exact totals and ranking while retaining only the requested page boundary", () => {

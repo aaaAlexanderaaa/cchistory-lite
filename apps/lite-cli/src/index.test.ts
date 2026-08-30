@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -7,11 +7,23 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  FULL_SCAN_MEMORY_MULTIPLIER,
+  LIGHT_SCAN_MEMORY_MULTIPLIER,
   LiveHistorySnapshot,
+  MAX_OLD_SPACE_MIB,
+  MIN_OLD_SPACE_MIB,
+  SCAN_GUARD_REFUSE_AVAILABLE_FRACTION,
+  SCAN_GUARD_WARN_AVAILABLE_FRACTION,
+  SCAN_LOCK_WAIT_MS,
+  SCAN_WATCHDOG_MIN_FLOOR_BYTES,
+  SCAN_WATCHDOG_TOTAL_FLOOR_FRACTION,
   scanLiteHistory,
+  ScanGuardAbortedError,
+  ScanGuardRefusedError,
   type ScanLiteHistoryOptions,
 } from "@cchistory/live-runtime";
-import { formatTuiLaunchError, runLiteCli, type LiteCliIo } from "./index.js";
+import { formatTuiLaunchError, runLiteCli, VERSION, type LiteCliIo } from "./index.js";
+import { buildAgentContract } from "./agent-contract.js";
 import { compactPayload } from "./json-v2.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -1099,6 +1111,33 @@ test("Lite CLI show resolves canonical session refs before a source-wide detail 
   }
 });
 
+test("Lite CLI markdown export uses the light scan-guard profile; JSON export stays full", async () => {
+  const snapshot = await getCodexSnapshot();
+  const scanFor = async (args: string[]) => {
+    const calls: ScanLiteHistoryOptions[] = [];
+    const captured = captureIo(repoRoot, undefined, {
+      scan: async (options) => {
+        calls.push(options);
+        return snapshot;
+      },
+    });
+    assert.equal(await runLiteCli(args, captured.io), 0, captured.stderr.join(""));
+    return calls[0];
+  };
+
+  const markdown = await scanFor(["export", "--format", "markdown", "--out", "-"]);
+  assert.equal(markdown?.contextMode, "none");
+  assert.equal(markdown?.scanGuard?.profile, "light");
+
+  const json = await scanFor(["export", "--format", "json", "--out", "-"]);
+  assert.equal(json?.contextMode, "full");
+  assert.equal(json?.scanGuard?.profile, "full");
+
+  const jsonl = await scanFor(["export", "--format", "jsonl", "--out", "-"]);
+  assert.equal(jsonl?.contextMode, "full");
+  assert.equal(jsonl?.scanGuard?.profile, "full");
+});
+
 test("Lite CLI sample is a bounded latest-shaped preview", async () => {
   const snapshot = await getCodexSnapshot();
   const scanOptions: ScanLiteHistoryOptions[] = [];
@@ -1121,6 +1160,16 @@ test("Lite CLI sample is a bounded latest-shaped preview", async () => {
   assert.equal(payload.sample_per_source, 3);
 });
 
+test("the CLI version matches the package manifest", async () => {
+  const manifest = JSON.parse(
+    await readFile(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"),
+  ) as { version: string };
+  assert.equal(VERSION, manifest.version);
+  const captured = captureIo(repoRoot);
+  assert.equal(await runLiteCli(["--version"], captured.io), 0);
+  assert.equal(captured.stdout.join(""), `${VERSION}\n`);
+});
+
 test("Lite CLI help documents latest, limits, and directory scope", async () => {
   const captured = captureIo(repoRoot);
   assert.equal(await runLiteCli(["help"], captured.io), 0);
@@ -1136,6 +1185,42 @@ test("Lite CLI help documents latest, limits, and directory scope", async () => 
   assert.match(help, /last real message activity/);
   assert.match(help, /Sessions without a\nworking directory are excluded/);
   assert.match(help, /does not open parent project folders or later Codex cwd lines/);
+  assert.match(help, /--offset <n>/);
+  assert.match(help, /--project <ref>/);
+  assert.match(help, /--by <dimension>/);
+  assert.match(help, /--format jsonl\|json\|markdown/);
+  assert.match(help, /--out <file\|->/);
+  assert.match(help, /cchistory-lite help \[command\]/);
+  // store/db appear only in the closing line that documents their absence.
+  const knownFlags = new Set([
+    "source-root",
+    "source",
+    "limit-files",
+    "limit",
+    "offset",
+    "project",
+    "by",
+    "format",
+    "out",
+    "dir",
+    "request",
+    "safe",
+    "json",
+    "help",
+    "version",
+    "all",
+    "no-dir",
+    "store",
+    "db",
+  ]);
+  const documentedFlags = new Set([...help.matchAll(/--([a-z][a-z-]*)/gu)].map((match) => match[1]!));
+  for (const flag of documentedFlags) {
+    assert.ok(knownFlags.has(flag), `help documents unknown option --${flag}`);
+  }
+  for (const flag of knownFlags) {
+    if (flag === "store" || flag === "db") continue;
+    assert.ok(documentedFlags.has(flag), `help omits accepted option --${flag}`);
+  }
 });
 
 
@@ -1511,6 +1596,403 @@ test("Lite shell JSON-lines keeps the snapshot when refresh fails and uses struc
   const startupError = JSON.parse(startup.stderr.join("")) as { schema: string; error: { code: string } };
   assert.equal(startupError.schema, "cchistory-lite-error/v1");
   assert.equal(startupError.error.code, "scan_failed");
+});
+
+test("Lite CLI scan guard refuses a scan whose estimate risks the machine, teaches the bounds, and bends to the kill-switch", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-guard-cli-"));
+  const hugeRoot = path.join(tempHome, "huge-codex");
+  try {
+    await cp(codexRoot, hugeRoot, { recursive: true });
+    // Sparse: reports 256 GiB without allocating real bytes.
+    const hugeFile = path.join(hugeRoot, "huge.bin");
+    await writeFile(hugeFile, "");
+    await truncate(hugeFile, 256 * 1024 ** 3);
+    const sourceArgs = ["--source-root", `codex=${hugeRoot}`, "--source", "codex", "--safe"];
+
+    const refused = captureIo(tempHome);
+    assert.equal(await runLiteCli(["sources", ...sourceArgs], refused.io), 1);
+    assert.equal(refused.stdout.join(""), "");
+    const message = refused.stderr.join("");
+    assert.match(message, /Refusing to scan/);
+    assert.match(message, /--source/);
+    assert.match(message, /--dir/);
+    assert.match(message, /--limit-files/);
+    assert.match(message, /sample/);
+    assert.match(message, /shell/);
+    assert.match(message, /query/);
+    assert.match(message, /CCHISTORY_SCAN_GUARD=0/);
+
+    const refusedJson = captureIo(tempHome);
+    assert.equal(await runLiteCli(["sources", "--json", ...sourceArgs], refusedJson.io), 1);
+    assert.equal(refusedJson.stdout.join(""), "");
+    const errorPayload = JSON.parse(refusedJson.stderr.join("")) as {
+      schema: string;
+      error: { code: string; message: string };
+    };
+    assert.equal(errorPayload.schema, "cchistory-lite-error/v1");
+    assert.equal(errorPayload.error.code, "scan_guard_refused");
+    assert.match(errorPayload.error.message, /Refusing to scan/);
+
+    // Bounded probes bypass the lock and the estimate even on the same root.
+    const sampled = captureIo(tempHome);
+    assert.equal(await runLiteCli(["sample", "1", ...sourceArgs], sampled.io), 0, sampled.stderr.join(""));
+    const shown = captureIo(tempHome);
+    assert.equal(
+      await runLiteCli(
+        ["show", "session", "sess:codex:019ce4fd-8290-7501-afc4-0e9486733614", ...sourceArgs],
+        shown.io,
+      ),
+      0,
+      shown.stderr.join(""),
+    );
+
+    process.env.CCHISTORY_SCAN_GUARD = "0";
+    try {
+      const allowed = captureIo(tempHome);
+      assert.equal(await runLiteCli(["sources", ...sourceArgs], allowed.io), 0, allowed.stderr.join(""));
+    } finally {
+      delete process.env.CCHISTORY_SCAN_GUARD;
+    }
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("Lite CLI maps scan guard refusals and aborts to exit 1 with distinct structured codes", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-guard-errors-"));
+  try {
+    const aborted = captureIo(tempHome, undefined, {
+      scan: async () => {
+        throw new ScanGuardAbortedError({ availableBytes: 300 * 1024 ** 2, floorBytes: 512 * 1024 ** 2 });
+      },
+    });
+    assert.equal(await runLiteCli(["sources", "--json"], aborted.io), 1);
+    assert.equal(aborted.stdout.join(""), "");
+    const abortPayload = JSON.parse(aborted.stderr.join("")) as { schema: string; error: { code: string } };
+    assert.equal(abortPayload.schema, "cchistory-lite-error/v1");
+    assert.equal(abortPayload.error.code, "scan_guard_aborted");
+
+    const refused = captureIo(tempHome, undefined, {
+      scan: async () => {
+        throw new ScanGuardRefusedError({
+          reason: "scan_in_progress",
+          holder: { pid: 4321, startedAt: "2026-08-30T00:00:00.000Z" },
+          waitedMs: 30_000,
+        });
+      },
+    });
+    assert.equal(await runLiteCli(["latest", "--json"], refused.io), 1);
+    assert.equal(refused.stdout.join(""), "");
+    const refusalPayload = JSON.parse(refused.stderr.join("")) as { error: { code: string; message: string } };
+    assert.equal(refusalPayload.error.code, "scan_guard_refused");
+    assert.match(refusalPayload.error.message, /another cchistory-lite scan/);
+
+    // Human mode prints the plain message, not the JSON envelope.
+    const human = captureIo(tempHome, undefined, {
+      scan: async () => {
+        throw new ScanGuardRefusedError({ reason: "scan_in_progress", holder: { pid: 4321 }, waitedMs: 30_000 });
+      },
+    });
+    assert.equal(await runLiteCli(["sources"], human.io), 1);
+    assert.match(human.stderr.join(""), /Refusing to scan/);
+    assert.throws(() => JSON.parse(human.stderr.join("")));
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("Lite CLI prints a one-line scan guard warning on stderr and proceeds", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-guard-warn-"));
+  try {
+    const warned = captureIo(tempHome, undefined, {
+      scan: async (options: ScanLiteHistoryOptions) => {
+        options.onScanGuardEvent?.({
+          type: "warn",
+          assessment: {
+            status: "warn",
+            profile: "light",
+            estimatedBytes: 600,
+            availableBytes: 1000,
+            scannedBytes: 150,
+            detail: "synthetic",
+          },
+        });
+        return getCodexSnapshot();
+      },
+    });
+    assert.equal(await runLiteCli(["sources", "--json"], warned.io), 0);
+    assert.match(warned.stderr.join(""), /Scan guard warning/);
+    assert.match(warned.stderr.join(""), /CCHISTORY_SCAN_GUARD=0/);
+    assert.equal((JSON.parse(warned.stdout.join("")) as { kind: string }).kind, "sources");
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("Lite CLI agent prints the machine-readable contract without scanning", async () => {
+  const captured = captureIo(repoRoot, undefined, {
+    scan: async () => {
+      throw new Error("agent must not scan");
+    },
+  });
+  assert.equal(await runLiteCli(["agent"], captured.io), 0);
+  assert.equal(captured.stderr.join(""), "");
+  const contract = JSON.parse(captured.stdout.join("")) as {
+    schema: string;
+    kind: string;
+    cli: { name: string; version: string };
+    commands: Record<string, { name: string; summary: string; usage: string; flags: unknown[] }>;
+    global_flags: Array<{ name: string }>;
+    exit_codes: Array<{ code: number; meaning: string }>;
+    env: Array<{ name: string }>;
+    output_schemas: Array<{ id: string; file: string | null }>;
+    trust_model: { content_trust: string };
+    guardrails: string[];
+    cost_model: {
+      heap_ceiling: { min_old_space_mib: number; max_old_space_mib: number };
+      scan_guard: {
+        kill_switch: { env: string; value: string };
+        light_scan_memory_multiplier: number;
+        full_scan_memory_multiplier: number;
+        warn_available_fraction: number;
+        refuse_available_fraction: number;
+        lock_wait_ms: number;
+        watchdog_floor: { min_floor_bytes: number; total_floor_fraction: number };
+        error_codes: string[];
+      };
+    };
+    docs: { agent_guide: string; cli_guide: string; skill: string };
+  };
+  assert.equal(contract.schema, "cchistory-lite-agent/v1");
+  assert.equal(contract.kind, "agent_contract");
+  assert.equal(contract.cli.name, "cchistory-lite");
+  assert.match(contract.cli.version, /^\d+\.\d+\.\d+/u);
+
+  const commandNames = ["sources", "ls", "latest", "sample", "tree", "search", "show", "stats", "query", "shell", "export", "tui", "help", "agent"];
+  assert.deepEqual(Object.keys(contract.commands).sort(), [...commandNames].sort());
+  for (const name of commandNames) {
+    const command = contract.commands[name]!;
+    assert.equal(command.name, name);
+    assert.ok(command.summary.length > 0, `${name} is missing a summary`);
+    assert.ok(command.usage.startsWith(`cchistory-lite ${name}`), `${name} usage must start with the command line`);
+    assert.ok(Array.isArray(command.flags), `${name} flags must be an array`);
+  }
+
+  assert.deepEqual(contract.exit_codes.map((entry) => entry.code).sort(), [0, 1, 2]);
+  const envNames = contract.env.map((entry) => entry.name);
+  for (const name of ["NO_COLOR", "FORCE_COLOR", "CCHISTORY_SHOW_RUNTIME_WARNINGS", "CCHISTORY_SCAN_GUARD"]) {
+    assert.ok(envNames.includes(name), `contract env omits ${name}`);
+  }
+
+  // The documented guard numbers are the runtime constants, not copies.
+  const guard = contract.cost_model.scan_guard;
+  assert.equal(guard.light_scan_memory_multiplier, LIGHT_SCAN_MEMORY_MULTIPLIER);
+  assert.equal(guard.full_scan_memory_multiplier, FULL_SCAN_MEMORY_MULTIPLIER);
+  assert.equal(guard.warn_available_fraction, SCAN_GUARD_WARN_AVAILABLE_FRACTION);
+  assert.equal(guard.refuse_available_fraction, SCAN_GUARD_REFUSE_AVAILABLE_FRACTION);
+  assert.equal(guard.lock_wait_ms, SCAN_LOCK_WAIT_MS);
+  assert.equal(guard.watchdog_floor.min_floor_bytes, SCAN_WATCHDOG_MIN_FLOOR_BYTES);
+  assert.equal(guard.watchdog_floor.total_floor_fraction, SCAN_WATCHDOG_TOTAL_FLOOR_FRACTION);
+  assert.deepEqual(guard.kill_switch, { env: "CCHISTORY_SCAN_GUARD", value: "0" });
+  assert.deepEqual([...guard.error_codes].sort(), ["scan_guard_aborted", "scan_guard_refused"]);
+  assert.equal(contract.cost_model.heap_ceiling.min_old_space_mib, MIN_OLD_SPACE_MIB);
+  assert.equal(contract.cost_model.heap_ceiling.max_old_space_mib, MAX_OLD_SPACE_MIB);
+
+  assert.equal(contract.trust_model.content_trust, "untrusted_history");
+  const schemaIds = contract.output_schemas.map((entry) => entry.id);
+  for (const id of [
+    "cchistory-lite/v2",
+    "cchistory-lite-canonical/v1",
+    "cchistory-lite-query/v2",
+    "cchistory-lite-query-result/v2",
+    "cchistory-lite-error/v1",
+    "cchistory-lite-export/v1",
+    "cchistory-lite-agent/v1",
+  ]) {
+    assert.ok(schemaIds.includes(id), `contract output_schemas omits ${id}`);
+  }
+  assert.equal(contract.docs.agent_guide, "docs/guide/for-agents.md");
+  assert.equal(contract.docs.cli_guide, "docs/guide/lite.md");
+  assert.equal(contract.docs.skill, "skills/using-cchistory-lite/SKILL.md");
+});
+
+test("Lite CLI agent contract satisfies its shipped JSON schema structurally", async () => {
+  const captured = captureIo(repoRoot, undefined, {
+    scan: async () => {
+      throw new Error("agent must not scan");
+    },
+  });
+  assert.equal(await runLiteCli(["agent"], captured.io), 0);
+  const contract = JSON.parse(captured.stdout.join("")) as Record<string, unknown>;
+  const schema = JSON.parse(
+    await readFile(path.join(repoRoot, "schemas", "cchistory-lite-agent-v1.schema.json"), "utf8"),
+  ) as {
+    required: string[];
+    properties: Record<string, any>;
+    $defs: { command: { required: string[] }; flag: { properties: { kind: { enum: string[] } } } };
+  };
+  for (const key of schema.required) {
+    assert.ok(key in contract, `contract is missing required key ${key}`);
+  }
+  assert.equal(contract.schema, schema.properties.schema.const);
+  assert.equal(contract.kind, schema.properties.kind.const);
+  const commands = contract.commands as Record<string, Record<string, unknown> & { flags: Array<{ kind: string }> }>;
+  assert.deepEqual(
+    Object.keys(commands).sort(),
+    [...(schema.properties.commands.required as string[])].sort(),
+  );
+  for (const [name, command] of Object.entries(commands)) {
+    for (const key of schema.$defs.command.required) {
+      assert.ok(key in command, `command ${name} is missing ${key}`);
+    }
+    for (const flag of command.flags) {
+      assert.ok(
+        schema.$defs.flag.properties.kind.enum.includes(flag.kind),
+        `command ${name} has a flag with unknown kind ${flag.kind}`,
+      );
+    }
+  }
+  const exitCodes = (contract.exit_codes as Array<{ code: number }>).map((entry) => entry.code);
+  const allowedCodes = schema.properties.exit_codes.items.properties.code.enum as number[];
+  assert.deepEqual(exitCodes.sort(), [...allowedCodes].sort());
+  assert.equal(
+    (contract.trust_model as { content_trust: string }).content_trust,
+    schema.properties.trust_model.properties.content_trust.const,
+  );
+  const docs = contract.docs as Record<string, string>;
+  assert.equal(docs.agent_guide, schema.properties.docs.properties.agent_guide.const);
+  assert.equal(docs.cli_guide, schema.properties.docs.properties.cli_guide.const);
+  assert.equal(docs.skill, schema.properties.docs.properties.skill.const);
+});
+
+test("Lite CLI agent contract flags match the parser in both directions", async () => {
+  const snapshot = await getCodexSnapshot();
+  const project = snapshot.listProjects()[0];
+  const session = snapshot.listResolvedSessions()[0];
+  assert.ok(project && session);
+  const contract = buildAgentContract("0.0.0-test");
+  const globalFlags = new Set(contract.global_flags.map((flag) => flag.name));
+  const universe = new Set<string>(globalFlags);
+  for (const command of Object.values(contract.commands)) {
+    for (const flag of command.flags) universe.add(flag.name);
+  }
+  // The parser's full flag vocabulary; like the help test's knownFlags, drift
+  // here must be reflected in the contract before this audit can pass.
+  const parserFlags = [
+    "--source-root", "--source", "--limit-files", "--limit", "--offset", "--project", "--by",
+    "--format", "--out", "--dir", "--request", "--safe", "--json", "--all", "--no-dir",
+    "--help", "--version",
+  ];
+  assert.deepEqual([...universe].sort(), [...parserFlags].sort());
+
+  const tails: Record<string, string[]> = {
+    sources: [],
+    ls: ["sessions"],
+    latest: ["sessions", "1"],
+    sample: ["1"],
+    tree: ["projects"],
+    search: ["mock"],
+    show: ["session", session.id],
+    stats: [],
+    query: ["--request", "-"],
+    shell: [],
+    export: ["--format", "jsonl", "--out", "-"],
+    tui: [],
+    help: [],
+    agent: [],
+  };
+  const flagArgs = (name: string): string[] => {
+    switch (name) {
+      case "--source-root": return [name, `codex=${codexRoot}`];
+      case "--source": return [name, "codex"];
+      case "--limit-files": return [name, "4"];
+      case "--limit": return [name, "1"];
+      case "--offset": return [name, "0"];
+      case "--project": return [name, project.project_id];
+      case "--by": return [name, "source"];
+      case "--format": return [name, "jsonl"];
+      case "--out": return [name, "-"];
+      case "--dir": return [name, repoRoot];
+      case "--request": return [name, "-"];
+      default: return [name];
+    }
+  };
+  const run = async (argv: string[]): Promise<number> => {
+    const captured = captureIo(repoRoot, async () => 0, {
+      scan: async () => snapshot,
+      readStdin: async () => `${JSON.stringify({
+        schema: "cchistory-lite-query/v2",
+        operations: [{ id: "s", kind: "list", collection: "sessions", limit: 1 }],
+      })}\n`,
+      readLine: async () => null,
+    });
+    return runLiteCli(argv, captured.io);
+  };
+
+  for (const [name, command] of Object.entries(contract.commands)) {
+    const tail = tails[name]!;
+    if (name === "help") {
+      // help renders before option validation, so every known flag is accepted
+      // and ignored; the rejection direction does not apply to it.
+      for (const flag of universe) {
+        assert.equal(await run([name, ...tail, ...flagArgs(flag)]), 0, `help must accept ${flag}`);
+      }
+      assert.equal(await run([name, ...tail, "--json=canonical"]), 0, "help must accept --json=canonical");
+      continue;
+    }
+    const accepted = new Set([...globalFlags, ...command.flags.map((flag) => flag.name)]);
+    for (const flag of universe) {
+      const argv = tail.includes(flag) ? [name, ...tail] : [name, ...tail, ...flagArgs(flag)];
+      const code = await run(argv);
+      if (accepted.has(flag)) {
+        assert.equal(code, 0, `${name} must accept ${flag} (argv: ${argv.join(" ")})`);
+      } else {
+        assert.equal(code, 2, `${name} must reject ${flag} (argv: ${argv.join(" ")})`);
+      }
+    }
+    const canonicalAccepted = command.flags.some((flag) => flag.name === "--json" && flag.values?.includes("canonical"));
+    const canonicalArgv = [name, ...tail, "--json=canonical"];
+    assert.equal(
+      await run(canonicalArgv),
+      canonicalAccepted ? 0 : 2,
+      `${name} ${canonicalAccepted ? "must accept" : "must reject"} --json=canonical`,
+    );
+  }
+});
+
+test("Lite CLI agent skill and guide print the shipped docs", async () => {
+  const noScan: Partial<LiteCliIo> = {
+    scan: async () => {
+      throw new Error("agent must not scan");
+    },
+  };
+  const skill = captureIo(repoRoot, undefined, noScan);
+  assert.equal(await runLiteCli(["agent", "skill"], skill.io), 0);
+  const skillDoc = await readFile(path.join(repoRoot, "skills", "using-cchistory-lite", "SKILL.md"), "utf8");
+  assert.equal(skill.stdout.join(""), skillDoc);
+
+  const guide = captureIo(repoRoot, undefined, noScan);
+  assert.equal(await runLiteCli(["agent", "guide"], guide.io), 0);
+  const guideDoc = await readFile(path.join(repoRoot, "docs", "guide", "for-agents.md"), "utf8");
+  assert.equal(guide.stdout.join(""), guideDoc);
+
+  const unknown = captureIo(repoRoot, undefined, noScan);
+  assert.equal(await runLiteCli(["agent", "bogus"], unknown.io), 2);
+  const unknownError = JSON.parse(unknown.stderr.join("")) as { schema: string; error: { code: string } };
+  assert.equal(unknownError.schema, "cchistory-lite-error/v1");
+  assert.equal(unknownError.error.code, "invalid_usage");
+
+  const extra = captureIo(repoRoot, undefined, noScan);
+  assert.equal(await runLiteCli(["agent", "skill", "extra"], extra.io), 2);
+});
+
+test("Lite CLI help points agents at the agent contract and docs", async () => {
+  const captured = captureIo(repoRoot);
+  assert.equal(await runLiteCli(["help"], captured.io), 0);
+  const help = captured.stdout.join("");
+  assert.match(help, /cchistory-lite agent/);
+  assert.match(help, /agent skill/);
+  assert.match(help, /agent guide/);
 });
 
 function captureIo(

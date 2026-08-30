@@ -1337,6 +1337,25 @@ export function maxIso(left: string | undefined, right: string | undefined): str
 }
 
 /**
+ * Compact age label shared by the CLI and TUI. Future timestamps within a
+ * minute are clock skew, not "just now" activity from a scan; they still
+ * collapse to `just now` so a 5-second NTP wobble does not render as a
+ * negative age. Empty or unparseable values never look recent.
+ */
+export function formatRelativeTime(isoDate: string | undefined, now: number): string {
+  if (!isoDate) return "";
+  const timestamp = Date.parse(isoDate);
+  if (!Number.isFinite(timestamp)) return isoDate.slice(0, 10);
+  const elapsed = Math.max(0, now - timestamp);
+  if (!Number.isFinite(elapsed)) return "";
+  if (elapsed < 60_000) return "just now";
+  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m ago`;
+  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h ago`;
+  if (elapsed < 31_536_000_000) return `${Math.floor(elapsed / 86_400_000)}d ago`;
+  return `${Math.floor(elapsed / 31_536_000_000)}y ago`;
+}
+
+/**
  * Decode percent-encoded segments in a URI path.  Returns the original
  * string when no encoded sequences are detected or decoding fails.
  */

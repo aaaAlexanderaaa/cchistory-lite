@@ -6,7 +6,7 @@
 > `PIPELINE.md`, `packages/storage`, `packages/api-client`, and validation commands such as
 > `pnpm run test:e2e`, `verify:cli-tui-read-side`, `verify:support-status`, and
 > `verify:runtime-inventory` — point at that monorepo and have no counterpart here. The commands
-> that do exist in this repository are listed in [README.md](../../README.md#development); the
+> that do exist in this repository are listed in [AGENTS.md](../../AGENTS.md); the
 > boundaries this document argues for are enforced by `architecture-rules.json` and
 > `scripts/verify-lite-boundaries.mjs`. For the current shape of the code, see
 > [ARCHITECTURE.md](../../ARCHITECTURE.md).

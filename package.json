@@ -4,6 +4,12 @@
   "private": true,
   "description": "Zero-store, read-only CLI and TUI that materializes AI coding-agent history straight from on-disk sources.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aaaAlexanderaaa/cchistory-lite.git"
+  },
+  "homepage": "https://github.com/aaaAlexanderaaa/cchistory-lite#readme",
+  "bugs": "https://github.com/aaaAlexanderaaa/cchistory-lite/issues",
   "packageManager": "pnpm@10.30.3",
   "engines": {
     "node": ">=22",
@@ -22,10 +28,11 @@
     "verify:lite": "pnpm --filter @cchistory/domain test && pnpm --filter @cchistory/canonical test && pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/live-runtime test && pnpm --filter @cchistory/lite-cli test && pnpm --filter @cchistory/lite-tui test && node scripts/verify-lite-boundaries.mjs",
     "verify:lite-artifact": "node scripts/verify-lite-artifact.mjs",
     "verify:architecture-boundaries": "node scripts/verify-architecture-boundaries.mjs",
-    "test:governance": "node --test scripts/verify-architecture-boundaries.test.mjs",
+    "test:governance": "node --test scripts/verify-architecture-boundaries.test.mjs scripts/release-prepare.test.mjs",
     "verify:governance": "pnpm run test:governance && pnpm run verify:architecture-boundaries",
     "mock-data:validate": "python3 scripts/validate_mock_data.py",
-    "release:lite": "pnpm run verify:lite-artifact"
+    "release:lite": "node scripts/release-prepare.mjs",
+    "release:prepare": "node scripts/release-prepare.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.2.0",

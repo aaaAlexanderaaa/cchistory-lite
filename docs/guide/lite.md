@@ -15,14 +15,16 @@ loads; the CLI/TUI suppress it unless `CCHISTORY_SHOW_RUNTIME_WARNINGS=1`.
 
 ## Build And Run
 
-Published install (no repository checkout):
+Published package (no repository checkout): [`@cchistory/lite`](https://www.npmjs.com/package/@cchistory/lite).
 
 ```bash
 npx @cchistory/lite --help
+npx @cchistory/lite sources
 npm install -g @cchistory/lite
 ```
 
-`npx @cchistory/lite` is the `lite` alias of `cchistory-lite`.
+`npx @cchistory/lite` is the `lite` alias of `cchistory-lite`. After a global
+install, `cchistory-lite` and `cchistory-lite-tui` are on `PATH`.
 
 ```bash
 pnpm --filter @cchistory/lite-cli build
@@ -98,13 +100,14 @@ ls [projects|sessions|families|sources] [--limit <n>|--all] [--dir <path>]
 latest [sessions|turns] [N] [--dir <path>]
 sample [N] [--dir <path>] [--no-dir]
 tree [projects|project <ref>|session <ref>] [--dir <path>]
-search <query> [--project <ref>] [--source <ref>] [--dir <path>] [--no-dir] [--limit <n>]
+search <query> [--project <ref>] [--source <ref>] [--dir <path>] [--no-dir] [--limit <n>] [--offset <n>]
 show project|session|turn|source <ref>
-stats [--by source|project|model|day] [--dir <path>] [--no-dir]
+stats [--by source|project|model|day] [--project <ref>] [--dir <path>] [--no-dir]
 query --request <file|-> [--dir <path>] [--no-dir]
 shell [--dir <path>] [--no-dir]
 export --format jsonl|json|markdown [--out <file>|-]
 tui
+help [command]
 ```
 
 Use `--json` for compact `cchistory-lite/v2` read output, or
@@ -192,7 +195,9 @@ Agents looking up local history should follow
 `skills/using-cchistory-lite/SKILL.md`. Use `--json` (or `query` / `shell`).
 Those entry points default to `--dir=$PWD`; pass `--no-dir` for an unscoped
 scan. Search rows are top-level sessions; `total` counts sessions. Compact
-JSON is `untrusted_history`.
+JSON is `untrusted_history`. Run `cchistory-lite agent` for the versioned
+machine-readable contract (commands, flags, exit codes, output schemas, cost
+model) and `cchistory-lite agent guide` for the long-form agent manual.
 
 ```bash
 cchistory-lite search "parser regression" --json

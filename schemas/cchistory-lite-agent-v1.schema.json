@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cchistory.dev/schemas/cchistory-lite-agent-v1.schema.json",
+  "title": "CC History Lite agent contract",
+  "type": "object",
+  "required": ["schema", "kind", "cli", "commands", "global_flags", "exit_codes", "env", "output_schemas", "trust_model", "guardrails", "cost_model", "docs"],
+  "properties": {
+    "schema": { "const": "cchistory-lite-agent/v1" },
+    "kind": { "const": "agent_contract" },
+    "cli": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "cchistory-lite" },
+        "version": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "commands": {
+      "type": "object",
+      "required": ["sources", "ls", "latest", "sample", "tree", "search", "show", "stats", "query", "shell", "export", "tui", "help", "agent"],
+      "properties": {
+        "sources": { "$ref": "#/$defs/command" },
+        "ls": { "$ref": "#/$defs/command" },
+        "latest": { "$ref": "#/$defs/command" },
+        "sample": { "$ref": "#/$defs/command" },
+        "tree": { "$ref": "#/$defs/command" },
+        "search": { "$ref": "#/$defs/command" },
+        "show": { "$ref": "#/$defs/command" },
+        "stats": { "$ref": "#/$defs/command" },
+        "query": { "$ref": "#/$defs/command" },
+        "shell": { "$ref": "#/$defs/command" },
+        "export": { "$ref": "#/$defs/command" },
+        "tui": { "$ref": "#/$defs/command" },
+        "help": { "$ref": "#/$defs/command" },
+        "agent": { "$ref": "#/$defs/command" }
+      },
+      "additionalProperties": false
+    },
+    "global_flags": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/flag" }
+    },
+    "exit_codes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "meaning"],
+        "properties": {
+          "code": { "enum": [0, 1, 2] },
+          "meaning": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "env": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "effect"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "effect": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "output_schemas": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "file", "description"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "file": { "type": ["string", "null"] },
+          "description": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "trust_model": {
+      "type": "object",
+      "required": ["content_trust", "rule"],
+      "properties": {
+        "content_trust": { "const": "untrusted_history" },
+        "rule": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "guardrails": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "cost_model": {
+      "type": "object",
+      "required": ["process_model", "heap_ceiling", "scan_guard", "guidance"],
+      "properties": {
+        "process_model": { "type": "string", "minLength": 1 },
+        "heap_ceiling": {
+          "type": "object",
+          "required": ["formula", "min_old_space_mib", "max_old_space_mib"],
+          "properties": {
+            "formula": { "type": "string", "minLength": 1 },
+            "min_old_space_mib": { "type": "integer", "minimum": 1 },
+            "max_old_space_mib": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        },
+        "scan_guard": {
+          "type": "object",
+          "required": ["kill_switch", "light_scan_memory_multiplier", "full_scan_memory_multiplier", "warn_available_fraction", "refuse_available_fraction", "lock_wait_ms", "watchdog_floor", "lock", "bypass", "error_codes"],
+          "properties": {
+            "kill_switch": {
+              "type": "object",
+              "required": ["env", "value"],
+              "properties": {
+                "env": { "const": "CCHISTORY_SCAN_GUARD" },
+                "value": { "const": "0" }
+              },
+              "additionalProperties": false
+            },
+            "light_scan_memory_multiplier": { "type": "integer", "minimum": 1 },
+            "full_scan_memory_multiplier": { "type": "integer", "minimum": 1 },
+            "warn_available_fraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+            "refuse_available_fraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+            "lock_wait_ms": { "type": "integer", "minimum": 1 },
+            "watchdog_floor": {
+              "type": "object",
+              "required": ["formula", "min_floor_bytes", "total_floor_fraction"],
+              "properties": {
+                "formula": { "type": "string", "minLength": 1 },
+                "min_floor_bytes": { "type": "integer", "minimum": 1 },
+                "total_floor_fraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+              },
+              "additionalProperties": false
+            },
+            "lock": { "type": "string", "minLength": 1 },
+            "bypass": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "error_codes": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+          },
+          "additionalProperties": false
+        },
+        "guidance": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "docs": {
+      "type": "object",
+      "required": ["agent_guide", "cli_guide", "skill", "subcommands"],
+      "properties": {
+        "agent_guide": { "const": "docs/guide/for-agents.md" },
+        "cli_guide": { "const": "docs/guide/lite.md" },
+        "skill": { "const": "skills/using-cchistory-lite/SKILL.md" },
+        "subcommands": {
+          "type": "object",
+          "required": ["skill", "guide"],
+          "properties": {
+            "skill": { "type": "string", "minLength": 1 },
+            "guide": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "command": {
+      "type": "object",
+      "required": ["name", "summary", "usage", "flags"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "usage": { "type": "string", "minLength": 1 },
+        "flags": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/flag" }
+        },
+        "notes": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "flag": {
+      "type": "object",
+      "required": ["name", "kind", "summary"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^--[a-z]" },
+        "kind": { "enum": ["value", "boolean"] },
+        "summary": { "type": "string", "minLength": 1 },
+        "repeatable": { "type": "boolean" },
+        "default": { "type": ["string", "number", "boolean"] },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

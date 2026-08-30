@@ -82,6 +82,7 @@ async function main() {
       'cchistory-lite-query-v2.schema.json',
       'cchistory-lite-query-result-v2.schema.json',
       'cchistory-lite-error-v1.schema.json',
+      'cchistory-lite-agent-v1.schema.json',
     ];
     for (const schemaName of schemaNames) {
       JSON.parse(await readFile(path.join(installedRoot, 'schemas', schemaName), 'utf8'));
@@ -181,6 +182,16 @@ async function assertPublishableNpmPackage(installedRoot, tempRoot, expectedVers
       throw new Error(`npm pack tarball missing ${required}`);
     }
   }
+  const requiredDocFiles = [
+    'package/docs/guide/for-agents.md',
+    'package/docs/guide/lite.md',
+    'package/skills/using-cchistory-lite/SKILL.md',
+  ];
+  for (const required of requiredDocFiles) {
+    if (!names.includes(required)) {
+      throw new Error(`npm pack tarball missing ${required}`);
+    }
+  }
 
   const npmPrefix = path.join(tempRoot, 'npm-prefix');
   await mkdir(npmPrefix, { recursive: true });
@@ -194,6 +205,16 @@ async function assertPublishableNpmPackage(installedRoot, tempRoot, expectedVers
   const npmVersion = await execFile(npmCli, ['--version']);
   if (npmVersion.stdout.trim() !== expectedVersion) {
     throw new Error(`Prefix-installed cchistory-lite --version is ${npmVersion.stdout.trim()} (expected ${expectedVersion})`);
+  }
+
+  const agent = await execFile(npmCli, ['agent']);
+  const agentContract = JSON.parse(agent.stdout);
+  if (agentContract.schema !== 'cchistory-lite-agent/v1') {
+    throw new Error(`Prefix-installed cchistory-lite agent schema is ${agentContract.schema}, expected cchistory-lite-agent/v1`);
+  }
+  const agentSkill = await execFile(npmCli, ['agent', 'skill']);
+  if (!agentSkill.stdout.includes('CC History Lite')) {
+    throw new Error('Prefix-installed cchistory-lite agent skill did not print the shipped skill doc');
   }
 
   const fixtureRoot = path.join(repoRoot, 'mock_data', '.codex', 'sessions');

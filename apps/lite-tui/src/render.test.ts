@@ -338,8 +338,34 @@ test("the browser preserves canonical session order without a surface-specific s
   const model = await buildModel();
   assert.deepEqual(
     model.sessions.map((entry) => entry.session.id),
-    model.snapshot.listTopLevelSessions().map((session) => session.id),
+    model.snapshot.listTopLevelSessions().filter((session) =>
+      session.turn_count > 0 || model.snapshot.listSessionRelatedWork(session.id).length > 0,
+    ).map((session) => session.id),
   );
+});
+
+test("the session pane omits turn-less stubs that have no related work", async () => {
+  const base = await buildModel(openclawRoot, "openclaw");
+  const stub = {
+    ...base.snapshot.data.sessions[0]!,
+    id: "sess:cursor:empty-stub",
+    source_session_id: "empty-stub",
+    title: undefined,
+    turn_count: 0,
+    created_at: "2026-08-30T08:17:51.260Z",
+    updated_at: "2026-08-30T08:17:51.260Z",
+    working_directory: "/workspace/chatgptbox",
+  };
+  const snapshot = new LiveHistorySnapshot({
+    ...base.snapshot.data,
+    sessions: [...base.snapshot.data.sessions, stub],
+  });
+  const model = new LiteBrowserModel(snapshot);
+  assert.equal(model.sessions.some((entry) => entry.session.id === stub.id), false);
+  const related = model.sessions.find((entry) => entry.session.id === "sess:openclaw:44444444-5555-4666-8777-888888888888");
+  assert.ok(related);
+  assert.equal(related.turns.length, 0);
+  assert.ok(related.relatedWorkCount > 0);
 });
 
 test("resumable session detail shows one complete green command without a duplicate workspace", async () => {
@@ -369,33 +395,34 @@ test("resumable session detail shows one complete green command without a duplic
   }
 });
 
-test("turn headers keep the full visible session count when sessions interleave", async () => {
+test("turn headers count the contiguous run and stamp last-message activity, not session created_at", async () => {
   const model = buildInterleavedModel(await buildModel());
   const state = apply(model, createLiteBrowserState(model), { type: "focus-turns" });
   const groups = buildTurnDisplayGroups(getVisibleTurns(model, state));
   assert.deepEqual(
-    groups.map((group) => [group.title, group.visibleTurnCount, group.turnIndices]),
+    groups.map((group) => [group.title, group.visibleTurnCount, group.activityAt, group.turnIndices]),
     [
-      ["Alpha session", 2, [0]],
-      ["Beta session", 2, [1]],
-      ["Alpha session", 2, [2]],
-      ["Beta session", 2, [3]],
+      ["Alpha session", 1, "2026-01-04T00:00:00.000Z", [0]],
+      ["Beta session", 1, "2026-01-03T00:00:00.000Z", [1]],
+      ["Alpha session", 1, "2026-01-02T00:00:00.000Z", [2]],
+      ["Beta session", 1, "2026-01-01T00:00:00.000Z", [3]],
     ],
   );
   const output = frame(model, state, 130, 40);
 
   assert.equal((output.match(/Session: Alpha session/g) ?? []).length, 2);
   assert.equal((output.match(/Session: Beta session/g) ?? []).length, 2);
-  assert.match(output, /Session: Alpha session 2a/);
-  assert.match(output, /Session: Beta session 2a/);
+  assert.match(output, /Session: Alpha session 1a/);
+  assert.match(output, /Session: Beta session 1a/);
+  assert.doesNotMatch(output, /Session: Alpha session 2a/);
   for (const prompt of ["Alpha first ask", "Beta first ask", "Alpha second ask", "Beta second ask"]) {
     assert.match(output, new RegExp(prompt));
   }
 
   const searchState = apply(model, createLiteBrowserState(model), { type: "open-search", query: "ask" });
   const searchOutput = frame(model, searchState, 130, 40);
-  assert.match(searchOutput, /Session: Alpha session 2a/);
-  assert.match(searchOutput, /Session: Beta session 2a/);
+  assert.match(searchOutput, /Session: Alpha session 1a/);
+  assert.match(searchOutput, /Session: Beta session 1a/);
 });
 
 test("the sessions scope disambiguates duplicate session titles with stable native refs", async () => {
@@ -472,7 +499,9 @@ test("the full adapter matrix preserves identity through every browser scope", a
 
   assert.deepEqual(
     model.sessions.map((entry) => entry.session.id),
-    model.snapshot.listTopLevelSessions().map((session) => session.id),
+    model.snapshot.listTopLevelSessions().filter((session) =>
+      session.turn_count > 0 || model.snapshot.listSessionRelatedWork(session.id).length > 0,
+    ).map((session) => session.id),
   );
   for (const childId of delegatedChildIds) {
     assert.equal(topLevelSessionIds.has(childId), false, `delegated child ${childId} leaked into the session pane`);

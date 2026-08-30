@@ -17,7 +17,7 @@
   },
   "scripts": {
     "build": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/canonical build && pnpm --filter @cchistory/source-adapters build && tsc -p tsconfig.json",
-    "test": "pnpm run build && tsc -p tsconfig.test.json && node --import ../../scripts/install-node-sqlite-warning-filter.mjs --test dist/index.test.js"
+    "test": "pnpm run build && tsc -p tsconfig.test.json && node --import ../../scripts/install-node-sqlite-warning-filter.mjs --test dist/*.test.js"
   },
   "dependencies": {
     "@cchistory/canonical": "workspace:*",

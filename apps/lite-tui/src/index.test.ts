@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   LiveHistorySnapshot,
   scanLiteHistory,
+  ScanGuardRefusedError,
   type ScanLiteHistoryOptions,
 } from "@cchistory/live-runtime";
 import { stripAnsi } from "./colors.js";
@@ -361,6 +362,110 @@ test("a failed refresh keeps the previous complete snapshot and reports it in th
   // The counts line proves the previous snapshot is still the one being browsed.
   const counts = (frame: string) => frame.split("\n")[2];
   assert.equal(counts(after), counts(before));
+
+  await session.press("q");
+  assert.equal(await session.exitCode, 0);
+});
+
+test("the scan guard refuses a TUI startup scan that risks the machine", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-guard-tui-"));
+  try {
+    // Sparse: reports 256 GiB without allocating real bytes.
+    const hugeFile = path.join(tempHome, "huge.bin");
+    await writeFile(hugeFile, "");
+    await truncate(hugeFile, 256 * 1024 ** 3);
+    const { stdout, stderr, io } = captureIo({ columns: 110, rows: 30 });
+    const exitCode = await runLiteTui(
+      ["--source-root", `codex=${tempHome}`, "--source", "codex", "--safe", "--no-color"],
+      io,
+    );
+    assert.equal(exitCode, 1);
+    // No frame is rendered when the guard refuses.
+    assert.equal(stdout.join(""), "");
+    assert.match(stderr.join(""), /Refusing to scan/);
+    assert.match(stderr.join(""), /CCHISTORY_SCAN_GUARD=0/);
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("a startup scan guard warning prints to stderr and the frame still renders", async () => {
+  const { stdout, stderr, io } = captureIo({
+    columns: 110,
+    rows: 30,
+    scan: async (options: ScanLiteHistoryOptions) => {
+      options.onScanGuardEvent?.({
+        type: "warn",
+        assessment: {
+          status: "warn",
+          profile: "light",
+          estimatedBytes: 600,
+          availableBytes: 1000,
+          scannedBytes: 150,
+          detail: "synthetic",
+        },
+      });
+      return scanLiteHistory(options);
+    },
+  });
+  assert.equal(await runLiteTui(codexArgs(), io), 0);
+  assert.match(stderr.join(""), /Scan guard warning/);
+  assert.match(stdout.join(""), /CC History Lite TUI/);
+});
+
+test("a refresh refused by the scan guard keeps the previous snapshot", async () => {
+  let scans = 0;
+  const session = startTui(codexArgs(), {
+    scan: async (options: ScanLiteHistoryOptions) => {
+      scans += 1;
+      if (scans === 2) {
+        throw new ScanGuardRefusedError({
+          reason: "scan_in_progress",
+          holder: { pid: 4321, startedAt: "2026-08-30T00:00:00.000Z" },
+          waitedMs: 30_000,
+        });
+      }
+      return scanLiteHistory(options);
+    },
+  });
+  await session.waitFor(/▸ Projects/, "projects pane");
+  const before = lastFrame(session);
+  await session.press("r");
+  await session.waitFor(/previous snapshot retained: Refusing to scan/, "guard refusal notice");
+
+  const after = lastFrame(session);
+  assert.match(after, /▸ Projects/);
+  const counts = (frame: string) => frame.split("\n")[2];
+  assert.equal(counts(after), counts(before));
+
+  await session.press("q");
+  assert.equal(await session.exitCode, 0);
+});
+
+test("a scan guard warning on refresh replaces the snapshot and warns on the status line", async () => {
+  let scans = 0;
+  const session = startTui(codexArgs(), {
+    scan: async (options: ScanLiteHistoryOptions) => {
+      scans += 1;
+      if (scans === 2) {
+        options.onScanGuardEvent?.({
+          type: "warn",
+          assessment: {
+            status: "warn",
+            profile: "light",
+            estimatedBytes: 600,
+            availableBytes: 1000,
+            scannedBytes: 150,
+            detail: "synthetic",
+          },
+        });
+      }
+      return scanLiteHistory(options);
+    },
+  });
+  await session.waitFor(/▸ Projects/, "projects pane");
+  await session.press("r");
+  await session.waitFor(/Scan guard warning/, "guard warning status");
 
   await session.press("q");
   assert.equal(await session.exitCode, 0);

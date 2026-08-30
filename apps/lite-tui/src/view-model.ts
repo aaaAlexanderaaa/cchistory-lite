@@ -5,8 +5,9 @@ import { tameBrowseMarkup } from "./text.js";
 export interface LiteTurnDisplayGroup {
   sessionId: string;
   title: string;
-  createdAt?: string;
-  /** Number of visible turns for this session in the current scope. */
+  /** Last real-message activity among the contiguous turns in this group. */
+  activityAt?: string;
+  /** Number of turns in this contiguous run, not the session-wide total. */
   visibleTurnCount: number;
   /** Original turn indexes; the view model never reorders canonical results. */
   turnIndices: number[];
@@ -49,17 +50,15 @@ export function buildSessionDisplayLabels(sessions: readonly SessionProjection[]
 }
 
 /**
- * Group only contiguous ranges for tree connectors while counting every
- * visible turn belonging to the session. This distinction is deliberate:
- * project and search scopes are canonically ordered across sessions, so a
- * session may reappear later without its turns being silently reordered.
+ * Group only contiguous ranges for tree connectors. Project and search
+ * scopes are canonically ordered across sessions, so a session may reappear
+ * later; each header describes that run's turn count and last-message time
+ * instead of repeating the session-wide totals.
  */
 export function buildTurnDisplayGroups(turns: readonly LiteTurnEntry[]): LiteTurnDisplayGroup[] {
   const sessionById = new Map<string, SessionProjection>();
-  const visibleTurnCounts = new Map<string, number>();
   for (const entry of turns) {
     if (entry.session) sessionById.set(entry.session.id, entry.session);
-    visibleTurnCounts.set(entry.turn.session_id, (visibleTurnCounts.get(entry.turn.session_id) ?? 0) + 1);
   }
   const sessionLabels = buildSessionDisplayLabels([...sessionById.values()]);
   const groups: LiteTurnDisplayGroup[] = [];
@@ -70,11 +69,15 @@ export function buildTurnDisplayGroups(turns: readonly LiteTurnEntry[]): LiteTur
     while (groupEnd < turns.length && turns[groupEnd]!.turn.session_id === sessionId) groupEnd += 1;
 
     const first = turns[groupStart]!;
+    const activityAt = turns.slice(groupStart, groupEnd).reduce<string | undefined>((latest, entry) => {
+      const at = entry.turn.last_context_activity_at ?? entry.turn.submission_started_at;
+      return latest && latest >= at ? latest : at;
+    }, undefined);
     groups.push({
       sessionId,
       title: sessionLabels.get(sessionId) ?? sessionBaseLabel(first.session, sessionId),
-      createdAt: first.session?.created_at ?? first.turn.created_at,
-      visibleTurnCount: visibleTurnCounts.get(sessionId) ?? groupEnd - groupStart,
+      activityAt,
+      visibleTurnCount: groupEnd - groupStart,
       turnIndices: Array.from({ length: groupEnd - groupStart }, (_, offset) => groupStart + offset),
     });
     groupStart = groupEnd;

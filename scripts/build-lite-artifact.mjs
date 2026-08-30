@@ -12,6 +12,14 @@ const defaultRepoRoot = path.resolve(scriptDir, '..');
 const defaultOutputRootRelative = path.join('dist', 'lite-artifacts');
 const publishedPackageName = '@cchistory/lite';
 const artifactStem = 'cchistory-lite';
+// npm provenance requires the artifact's repository field to match the
+// publishing repository; the root package.json is the source of truth.
+const defaultRepository = {
+  type: 'git',
+  url: 'git+https://github.com/aaaAlexanderaaa/cchistory-lite.git',
+};
+const defaultHomepage = 'https://github.com/aaaAlexanderaaa/cchistory-lite#readme';
+const defaultBugs = 'https://github.com/aaaAlexanderaaa/cchistory-lite/issues';
 const appPackages = [
   { sourceDir: path.join('apps', 'lite-cli'), artifactDir: path.join('apps', 'lite-cli') },
   { sourceDir: path.join('apps', 'lite-tui'), artifactDir: path.join('apps', 'lite-tui') },
@@ -67,6 +75,11 @@ export async function buildLiteArtifact(options = {}) {
   await mkdir(path.join(artifactDir, 'bin'), { recursive: true });
   await mkdir(path.join(artifactDir, 'node_modules', '@cchistory'), { recursive: true });
   await cp(path.join(repoRoot, 'schemas'), path.join(artifactDir, 'schemas'), { recursive: true });
+  // The agent command resolves docs/skills relative to the package root, so
+  // the artifact must carry the guide (not docs/design or docs/plans) and the
+  // agent skill alongside the binaries.
+  await cp(path.join(repoRoot, 'docs', 'guide'), path.join(artifactDir, 'docs', 'guide'), { recursive: true });
+  await cp(path.join(repoRoot, 'skills'), path.join(artifactDir, 'skills'), { recursive: true });
 
   for (const appPackage of appPackages) {
     const target = path.join(artifactDir, appPackage.artifactDir, 'dist');
@@ -87,13 +100,16 @@ export async function buildLiteArtifact(options = {}) {
     version,
     type: 'module',
     license: cliPackage.license ?? rootPackage.license ?? 'MIT',
+    repository: rootPackage.repository ?? defaultRepository,
+    homepage: rootPackage.homepage ?? defaultHomepage,
+    bugs: rootPackage.bugs ?? defaultBugs,
     description: 'Zero-store, read-only CLI and TUI for local AI coding-agent history.',
     bin: {
       lite: './bin/cchistory-lite.mjs',
       'cchistory-lite': './bin/cchistory-lite.mjs',
       'cchistory-lite-tui': './bin/cchistory-lite-tui.mjs',
     },
-    files: ['bin', 'apps', 'schemas', 'INSTALL.md', 'README.md', 'LICENSE'],
+    files: ['bin', 'apps', 'schemas', 'docs', 'skills', 'INSTALL.md', 'README.md', 'LICENSE'],
     dependencies: vendoredVersions,
     bundleDependencies: vendoredPackages.map((entry) => entry.packageName),
     engines: { node: rootPackage.engines?.node ?? '>=22' },
@@ -127,7 +143,9 @@ export async function buildLiteArtifact(options = {}) {
       '# @cchistory/lite',
       '',
       'Zero-store, read-only CLI and TUI that reads local AI coding-agent history',
-      'in place. Requires Node.js >= 22.',
+      'in place.',
+      '',
+      'Requirements: Node.js >= 22.',
       '',
       '```bash',
       'npx @cchistory/lite --help',
@@ -140,6 +158,13 @@ export async function buildLiteArtifact(options = {}) {
       '',
       'The `lite` bin is an alias of `cchistory-lite` so `npx @cchistory/lite` works.',
       'A global install also links `cchistory-lite` and `cchistory-lite-tui`.',
+      '',
+      'Agents: `cchistory-lite agent` prints the machine-readable contract',
+      '(commands, cost model, guardrails); `agent skill` / `agent guide` print',
+      'the bundled agent docs.',
+      '',
+      'Guide: https://github.com/aaaAlexanderaaa/cchistory-lite/blob/main/docs/guide/lite.md',
+      'npm: https://www.npmjs.com/package/@cchistory/lite',
       '',
     ].join('\n'),
     'utf8',

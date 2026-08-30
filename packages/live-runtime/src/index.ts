@@ -64,13 +64,62 @@ import {
 } from "@cchistory/canonical";
 import { applyMaskTemplates, type SourceProbeProgressEvent } from "@cchistory/source-adapters";
 import { SAMPLE_RANK_CONCURRENCY, mapPool } from "./async-pool.js";
+import {
+  acquireScanLock,
+  assessScanRisk,
+  createScanWatchdog,
+  isScanGuardEnabled,
+  ScanGuardRefusedError,
+  type ScanGuardEvent,
+  type ScanGuardProfile,
+  type ScanLockDeps,
+  type ScanLockHandle,
+  type ScanRiskAssessment,
+  type ScanWatchdogDeps,
+} from "./scan-guard.js";
 
 export {
   buildAdaptiveNodeExecArgv,
   calculateAdaptiveOldSpaceMiB,
   isAdaptiveNodeMemoryApplied,
+  MAX_OLD_SPACE_MIB,
+  MIN_OLD_SPACE_MIB,
   runWithAdaptiveNodeMemory,
 } from "./node-memory.js";
+
+export {
+  acquireScanLock,
+  assessScanRisk,
+  createScanWatchdog,
+  defaultScanLockPath,
+  formatScanGuardBytes,
+  formatScanGuardWarning,
+  FULL_SCAN_MEMORY_MULTIPLIER,
+  isScanGuardEnabled,
+  LIGHT_SCAN_MEMORY_MULTIPLIER,
+  SCAN_GUARD_REFUSE_AVAILABLE_FRACTION,
+  SCAN_GUARD_WARN_AVAILABLE_FRACTION,
+  SCAN_LOCK_WAIT_MS,
+  SCAN_WATCHDOG_MIN_FLOOR_BYTES,
+  SCAN_WATCHDOG_TOTAL_FLOOR_FRACTION,
+  ScanGuardAbortedError,
+  ScanGuardRefusedError,
+} from "./scan-guard.js";
+export type {
+  AssessScanRiskDeps,
+  AssessScanRiskInput,
+  ScanGuardEvent,
+  ScanGuardProfile,
+  ScanLockAcquisition,
+  ScanLockDeps,
+  ScanLockHandle,
+  ScanLockHolder,
+  ScanRiskAssessment,
+  ScanWatchdog,
+  ScanWatchdogDeps,
+} from "./scan-guard.js";
+export { readAvailableMemoryBytes } from "./system-memory.js";
+export type { SystemMemoryDeps } from "./system-memory.js";
 
 installRuntimeWarningFilter();
 
@@ -109,6 +158,33 @@ export interface ScanLiteHistoryOptions extends ResolveLiteSourcesOptions {
   directoryScope?: string;
   sample?: { perSource: number };
   onProgress?: (event: SourceProbeProgressEvent) => void;
+  /**
+   * Pre-flight / in-flight memory guard. Absent means unguarded: library
+   * callers opt in, and the Lite surfaces always do. CCHISTORY_SCAN_GUARD=0
+   * (or "false") disables the guard layer for a scan that requests it.
+   */
+  scanGuard?: ScanGuardRequest;
+  onScanGuardEvent?: (event: ScanGuardEvent) => void;
+  /** Test injection for the guard; production callers leave this unset. */
+  scanGuardDeps?: ScanGuardRuntimeDeps;
+}
+
+export interface ScanGuardRequest {
+  /** light scans release context after projection; full scans (export, full-context show) retain it. */
+  profile: ScanGuardProfile;
+  /**
+   * Bounded probes (sample, targeted exact-id show) skip the advisory lock and
+   * the pre-flight estimate so they never queue behind — or get blocked by — a
+   * whole-machine scan. The watchdog still applies.
+   */
+  bypass?: boolean;
+}
+
+export interface ScanGuardRuntimeDeps {
+  lock?: ScanLockDeps;
+  watchdog?: ScanWatchdogDeps;
+  walkRootBytes?: (root: string, limitFiles?: number) => Promise<number>;
+  readAvailableBytes?: () => number | undefined;
 }
 
 export type LiteContextMode = "full" | "none" | "matching";
@@ -560,6 +636,101 @@ export async function scanLiteHistory(options: ScanLiteHistoryOptions = {}): Pro
       throw new Error(`No selected Lite source can resolve requested session ${options.sessionRefs?.join(", ")}.`);
     }
   }
+  const scanGuard = await beginScanGuard(options, sources);
+  try {
+    return await scanResolvedSources(scanGuard.guardedOptions(options), sources, scanGuard);
+  } finally {
+    await scanGuard.release();
+  }
+}
+
+interface ActiveScanGuard {
+  guardedOptions(options: ScanLiteHistoryOptions): ScanLiteHistoryOptions;
+  assertHealthy(): void;
+  release(): Promise<void>;
+}
+
+/**
+ * Runs the guard layer around a scan: serialize full scans on this machine,
+ * refuse when the conservative peak estimate risks swap-death, and arm the
+ * watchdog that aborts the scan if available memory collapses mid-probe. The
+ * kill-switch env is read here — the live-runtime entry — so the guard module
+ * and its tests stay explicit about behavior.
+ */
+async function beginScanGuard(
+  options: ScanLiteHistoryOptions,
+  sources: readonly SourceDefinition[],
+): Promise<ActiveScanGuard> {
+  const request = options.scanGuard;
+  if (!request || !isScanGuardEnabled(process.env.CCHISTORY_SCAN_GUARD)) {
+    return {
+      guardedOptions: (scanOptions) => scanOptions,
+      assertHealthy: () => {},
+      release: async () => {},
+    };
+  }
+  const deps = options.scanGuardDeps ?? {};
+
+  let lockHandle: ScanLockHandle | undefined;
+  if (!request.bypass) {
+    const lock = await acquireScanLock({ ...deps.lock });
+    if (!lock.acquired) {
+      throw new ScanGuardRefusedError({
+        reason: "scan_in_progress",
+        holder: lock.holder,
+        waitedMs: lock.waitedMs,
+      });
+    }
+    lockHandle = lock.handle;
+  }
+
+  try {
+    if (!request.bypass) {
+      const assessment = await assessScanRisk(
+        {
+          roots: sources.map((source) => source.base_dir),
+          limitFiles: options.limitFiles,
+          profile: request.profile,
+        },
+        { walkRootBytes: deps.walkRootBytes, readAvailableBytes: deps.readAvailableBytes },
+      );
+      if (assessment.status === "refuse") {
+        throw new ScanGuardRefusedError({ reason: "estimated_memory", assessment });
+      }
+      if (assessment.status === "warn") {
+        options.onScanGuardEvent?.({ type: "warn", assessment });
+      }
+    }
+  } catch (error) {
+    // A refused scan must not keep siblings queued behind a lock it no longer needs.
+    await lockHandle?.release();
+    throw error;
+  }
+
+  const watchdog = createScanWatchdog({
+    ...deps.watchdog,
+    readAvailableBytes: deps.watchdog?.readAvailableBytes ?? deps.readAvailableBytes,
+  });
+  return {
+    guardedOptions: (scanOptions) => ({
+      ...scanOptions,
+      onProgress: (event) => {
+        watchdog.observeProgress(event);
+        scanOptions.onProgress?.(event);
+      },
+    }),
+    assertHealthy: () => watchdog.assertHealthy(),
+    release: async () => {
+      await lockHandle?.release();
+    },
+  };
+}
+
+async function scanResolvedSources(
+  options: ScanLiteHistoryOptions,
+  sources: readonly SourceDefinition[],
+  scanGuard: ActiveScanGuard,
+): Promise<LiveHistorySnapshot> {
   const sourceAdapters = await import("@cchistory/source-adapters");
   const contextMode = options.contextMode ?? "full";
 
@@ -590,6 +761,10 @@ export async function scanLiteHistory(options: ScanLiteHistoryOptions = {}): Pro
         : await scanSourceWithCollector(source, scanOptions, contextMode, sourceAdapters);
       nextHost ??= result.host;
       nextPayloads.push(result.payload);
+      // Watchdog backstop: breaches recorded inside adapter progress callbacks
+      // (where a throw can be swallowed as a per-file error) surface here at
+      // the latest, before the next source starts.
+      scanGuard.assertHealthy();
     }
     if (!nextHost) {
       const emptyProbe = await sourceAdapters.runSourceProbe({}, []);

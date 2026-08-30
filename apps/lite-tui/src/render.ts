@@ -369,7 +369,7 @@ function buildTurnDisplayItems(
   const items: TurnDisplayItem[] = [];
   const groups = buildTurnDisplayGroups(turns);
   for (const group of groups) {
-    const meta = [`${group.visibleTurnCount}a`, formatRelativeTime(group.createdAt, now)]
+    const meta = [`${group.visibleTurnCount}a`, formatRelativeTime(group.activityAt, now)]
       .filter(Boolean)
       .join(" · ");
     items.push({

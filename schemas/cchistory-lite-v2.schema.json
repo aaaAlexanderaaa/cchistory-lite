@@ -67,7 +67,7 @@
         "source_platforms": { "type": "array", "items": { "type": "string" } },
         "session_count": { "type": "integer", "minimum": 0 },
         "turn_count": { "type": "integer", "minimum": 0 },
-        "last_activity_at": { "type": "string" }
+        "last_activity_at": { "$ref": "#/$defs/nullableString" }
       },
       "additionalProperties": false
     },

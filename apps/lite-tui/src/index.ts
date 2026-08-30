@@ -5,6 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import {
+  formatScanGuardWarning,
   runWithAdaptiveNodeMemory,
   scanLiteHistory,
   type LiteSourceRoot,
@@ -105,6 +106,12 @@ export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): P
       safeMode: parsed.safeMode,
       limitFiles: parsed.limitFiles,
       contextMode: "none",
+      scanGuard: { profile: "light" },
+      // Startup warnings land on stderr before the alternate screen is entered;
+      // the refresh path overrides this to report on the status line instead.
+      onScanGuardEvent: (event) => {
+        if (event.type === "warn") io.stderr(`${formatScanGuardWarning(event.assessment)}\n`);
+      },
       onProgress: io.isInteractiveTerminal
         ? (event) => io.stderr(formatProgress(event))
         : undefined,
@@ -207,13 +214,24 @@ async function runInteractive(options: InteractiveOptions): Promise<number> {
     if (busy) return;
     busy = true;
     dispatch({ type: "set-status", status: { kind: "busy", text: "Refreshing from native source data…" } });
+    const refreshWarnings: string[] = [];
     try {
-      const replacement = await scan({ ...scanOptions, onProgress: undefined });
+      const replacement = await scan({
+        ...scanOptions,
+        onProgress: undefined,
+        onScanGuardEvent: (event) => {
+          if (event.type === "warn") refreshWarnings.push(formatScanGuardWarning(event.assessment));
+        },
+      });
       // Assign only after the rescan resolves: a failed refresh must leave the
-      // previous complete snapshot in place.
+      // previous complete snapshot in place. A scan-guard refusal rejects the
+      // same way, so it keeps the previous snapshot too.
       model = new LiteBrowserModel(replacement, { includeSessionRefs: options.includeSessionRefs });
       state = createLiteBrowserState(model);
-      dispatch({ type: "set-status", status: { kind: "info", text: "Snapshot refreshed." } });
+      dispatch({
+        type: "set-status",
+        status: { kind: "info", text: refreshWarnings[0] ?? "Snapshot refreshed." },
+      });
     } catch (error) {
       dispatch({
         type: "set-status",
@@ -251,6 +269,9 @@ async function runInteractive(options: InteractiveOptions): Promise<number> {
         sourceRefs: [source.slot_id],
         contextMode: "full",
         sessionRefs: [session.source_session_id ?? session.id],
+        // Bounded single-session probe: bypass the scan lock and the pre-flight
+        // estimate like an exact-id show.
+        scanGuard: { profile: "full", bypass: true },
         onProgress: undefined,
       });
       model.putContexts(detailed.data.contexts);

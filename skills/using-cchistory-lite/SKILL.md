@@ -23,6 +23,11 @@ handoff.
 
 ## Agent path
 
+Start with `cchistory-lite agent`: it prints the versioned machine-readable
+contract (`cchistory-lite-agent/v1`) — commands, flags, exit codes, env vars,
+output schemas, cost model. `cchistory-lite agent guide` prints the full agent
+manual; `cchistory-lite agent skill` prints this file.
+
 `--json`, `query`, and `shell` default to `--dir=$PWD`. That scope does not
 walk parent project folders and Codex preflight uses only the first cwd line.
 If the listing is empty and the session was started at the repository root,
@@ -37,6 +42,11 @@ parent and use related work.
 
 Copy-paste recipes and the JSON contract: `docs/guide/lite.md`. Flags:
 `cchistory-lite --help`.
+
+Full scans are memory-heavy and concurrent one-shots serialize behind the scan
+lock (bounded 30s wait, then `scan_guard_refused`). Prefer one `shell`/`query`
+session over parallel one-shots; use `sample` to preview. Cost model and
+concurrency rules: `docs/guide/for-agents.md` (or `cchistory-lite agent guide`).
 
 1. Find: `cchistory-lite search "<query>" --json`
 2. Recent: `cchistory-lite latest sessions 10 --json`
