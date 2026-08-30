@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import type {
   CapturedBlob,
   ConversationAtom,
@@ -84,6 +85,12 @@ export function mergeSessionFamilyInventories(
         continue;
       }
       existing.stats = addContributionStats(existing.stats, contribution.stats);
+      if (contribution.shared_storage) {
+        existing.shared_storage = {
+          estimated_bytes: (existing.shared_storage?.estimated_bytes ?? 0) + contribution.shared_storage.estimated_bytes,
+          container_bytes: (existing.shared_storage?.container_bytes ?? 0) + contribution.shared_storage.container_bytes,
+        };
+      }
     }
     for (const child of inventory.children) {
       const existing = children.get(child.id);
@@ -105,18 +112,30 @@ export function buildSessionFamilyInventory(input: SessionFamilyInput): SessionF
   const atomsByOwner = groupAtoms(input.atoms ?? [], input.fragments ?? [], input.records ?? [], attribution);
   const toolIo = collectToolIo(input.atoms ?? [], input.contexts ?? [], input.turns ?? []);
 
-  const contributions: SessionContributionProjection[] = sessions.map((session) => ({
-    session_ref: session.id,
-    source_id: session.source_id,
-    source_platform: session.source_platform,
-    stats: buildOwnerStats({
-      ownerKey: sessionOwnerKey(session.id),
-      session,
-      turns: turnsBySession.get(session.id) ?? [],
-      attribution,
-      atoms: atomsByOwner.get(sessionOwnerKey(session.id)) ?? [],
-    }),
-  }));
+  const contributions: SessionContributionProjection[] = sessions.map((session) => {
+    const ownerKey = sessionOwnerKey(session.id);
+    const sharedStorage = attribution.shared.get(ownerKey);
+    return {
+      session_ref: session.id,
+      source_id: session.source_id,
+      source_platform: session.source_platform,
+      stats: buildOwnerStats({
+        ownerKey,
+        session,
+        turns: turnsBySession.get(session.id) ?? [],
+        attribution,
+        atoms: atomsByOwner.get(ownerKey) ?? [],
+      }),
+      ...(sharedStorage
+        ? {
+            shared_storage: {
+              estimated_bytes: sharedStorage.estimatedBytes,
+              container_bytes: sharedStorage.containerBytes,
+            },
+          }
+        : {}),
+    };
+  });
 
   const children = new Map<string, DelegatedChildProjection>();
   for (const entry of relatedWork) {
@@ -377,6 +396,8 @@ interface BlobAttribution {
   ownerByBlobId: Map<string, string>;
   storage: Map<string, { bytes: number; count: number }>;
   originPaths: Map<string, string[]>;
+  /** Per-owner proportional share of container blobs (estimatedBytes) and the total size of those containers. */
+  shared: Map<string, { estimatedBytes: number; containerBytes: number }>;
   sidecarOwners: Array<[string, string]>;
 }
 
@@ -387,16 +408,35 @@ function attributeBlobs(
 ): BlobAttribution {
   const sessionsById = new Map(sessions.map((session) => [session.id, session]));
   const recordSessionsByBlob = new Map<string, string[]>();
+  const recordBytesByBlob = new Map<string, Map<string, number>>();
   for (const record of records) {
     const owners = recordSessionsByBlob.get(record.blob_id) ?? [];
     owners.push(record.session_ref);
     recordSessionsByBlob.set(record.blob_id, owners);
+    let bytesBySession = recordBytesByBlob.get(record.blob_id);
+    if (!bytesBySession) {
+      bytesBySession = new Map();
+      recordBytesByBlob.set(record.blob_id, bytesBySession);
+    }
+    bytesBySession.set(
+      record.session_ref,
+      (bytesBySession.get(record.session_ref) ?? 0) + Buffer.byteLength(record.raw_json, "utf8"),
+    );
   }
 
   const ownerByBlobId = new Map<string, string>();
   const storage = new Map<string, { bytes: number; count: number }>();
   const originPaths = new Map<string, string[]>();
+  const shared = new Map<string, { estimatedBytes: number; containerBytes: number }>();
   const sidecarOwners = new Map<string, string>();
+
+  const credit = (ownerKey: string, blob: CapturedBlob, bytes: number): void => {
+    const current = storage.get(ownerKey) ?? { bytes: 0, count: 0 };
+    current.bytes += bytes;
+    current.count += 1;
+    storage.set(ownerKey, current);
+    originPaths.set(ownerKey, uniqueStrings([...(originPaths.get(ownerKey) ?? []), blob.origin_path]));
+  };
 
   for (const blob of blobs) {
     const subagent = matchSubagentPath(blob.origin_path);
@@ -413,24 +453,57 @@ function attributeBlobs(
       }
     }
     if (!ownerKey) {
-      const sessionId = recordSessions.find((id) => sessionsById.has(id))
+      const participants = recordSessions.filter((id) => sessionsById.has(id));
+      const shareOwners = recordSessions.length > 0 ? recordSessions : participants;
+      const isContainer = shareOwners.length > 1 || isSqliteContainerPath(blob.origin_path);
+      if (isContainer && participants.length > 0) {
+        // Container blob (SQLite stores, or any blob whose records name more
+        // than one session): split bytes by raw record size. Share against
+        // every record owner so a filtered snapshot does not dump the whole
+        // file onto the remaining session. ownerByBlobId stays unset so
+        // groupAtoms buckets each atom by its own session_ref.
+        const shares = shareOwners.map((id) => recordBytesByBlob.get(blob.id)?.get(id) ?? 0);
+        const totalShare = shares.reduce((sum, value) => sum + value, 0);
+        let assigned = 0;
+        const shareByOwner = new Map<string, number>();
+        for (const [index, ownerId] of shareOwners.entries()) {
+          const isLast = index === shareOwners.length - 1;
+          const share = isLast
+            ? blob.size_bytes - assigned
+            : Math.floor(
+                totalShare > 0
+                  ? (blob.size_bytes * shares[index]!) / totalShare
+                  : blob.size_bytes / shareOwners.length,
+              );
+          assigned += share;
+          shareByOwner.set(ownerId, share);
+        }
+        for (const sessionId of participants) {
+          const share = shareByOwner.get(sessionId) ?? 0;
+          const participantKey = sessionOwnerKey(sessionId);
+          credit(participantKey, blob, share);
+          const current = shared.get(participantKey) ?? { estimatedBytes: 0, containerBytes: 0 };
+          current.estimatedBytes += share;
+          current.containerBytes += blob.size_bytes;
+          shared.set(participantKey, current);
+        }
+        continue;
+      }
+      const sessionId = participants[0]
         ?? recordSessions[0]
         ?? sessionOwningPath(blob.origin_path, sessions)?.id;
       if (sessionId) ownerKey = sessionOwnerKey(sessionId);
     }
     if (!ownerKey) continue;
     ownerByBlobId.set(blob.id, ownerKey);
-    const current = storage.get(ownerKey) ?? { bytes: 0, count: 0 };
-    current.bytes += blob.size_bytes;
-    current.count += 1;
-    storage.set(ownerKey, current);
-    originPaths.set(ownerKey, uniqueStrings([...(originPaths.get(ownerKey) ?? []), blob.origin_path]));
+    credit(ownerKey, blob, blob.size_bytes);
   }
 
   return {
     ownerByBlobId,
     storage,
     originPaths,
+    shared,
     sidecarOwners: [...sidecarOwners.entries()],
   };
 }
@@ -733,7 +806,11 @@ function preferRicherStats(
 }
 
 function cloneContribution(value: SessionContributionProjection): SessionContributionProjection {
-  return { ...value, stats: { ...value.stats } };
+  return {
+    ...value,
+    stats: { ...value.stats },
+    ...(value.shared_storage ? { shared_storage: { ...value.shared_storage } } : {}),
+  };
 }
 
 function cloneChild(value: DelegatedChildProjection): DelegatedChildProjection {
@@ -759,6 +836,12 @@ function parentIdFromSidecarOwner(ownerKey: string, nativeId: string): string | 
   const suffix = `:${nativeId}`;
   if (!ownerKey.startsWith(prefix) || !ownerKey.endsWith(suffix)) return undefined;
   return ownerKey.slice(prefix.length, ownerKey.length - suffix.length);
+}
+
+function isSqliteContainerPath(originPath: string): boolean {
+  const base = originPath.replace(/\\/gu, "/").split("/").pop() ?? "";
+  const lower = base.toLowerCase();
+  return lower === "state.vscdb" || lower === "store.db" || lower.endsWith(".sqlite");
 }
 
 function matchSubagentPath(originPath: string): { parentDirName: string; childId: string } | undefined {

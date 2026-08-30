@@ -55,6 +55,20 @@ interface CursorRuntimeHelpers {
   firstDefinedNumber(...values: Array<number | undefined>): number | undefined;
 }
 
+export function extractCursorComposerTimestamps(
+  composer: Record<string, unknown>,
+  helpers: Pick<CursorRuntimeHelpers, "asNumber" | "coerceIso" | "epochMillisToIso">,
+): { createdAt?: string; updatedAt?: string } {
+  const createdAt =
+    helpers.epochMillisToIso(helpers.asNumber(composer.createdAt)) ?? helpers.coerceIso(composer.createdAt);
+  const updatedAt =
+    helpers.epochMillisToIso(helpers.asNumber(composer.lastUpdatedAt)) ??
+    helpers.coerceIso(composer.lastUpdatedAt) ??
+    helpers.epochMillisToIso(helpers.asNumber(composer.updatedAt)) ??
+    helpers.coerceIso(composer.updatedAt);
+  return { createdAt, updatedAt };
+}
+
 export function buildCursorComposerSeed(
   platform: SourcePlatform,
   storageKey: string,
@@ -103,17 +117,26 @@ export function buildCursorComposerSeed(
     .map((message) => helpers.asString(message.record.model))
     .find((value): value is string => Boolean(value));
   const model = composerModel ?? bubbleModel;
+  const composerClock = extractCursorComposerTimestamps(composer, helpers);
+  const composerFallbackObservedAt = composerClock.updatedAt ?? composerClock.createdAt;
+  const messageHasUsage = messageRecords.some((message) =>
+    Boolean(helpers.extractTokenUsage(message.record.usage ?? message.record)),
+  );
+  const composerUsage = messageHasUsage ? undefined : helpers.extractTokenUsage(composer);
 
   const records: ExtractedSessionSeed["records"] = [];
-  if (meta.title || model || workingDirectory) {
+  if (meta.title || model || workingDirectory || composerUsage) {
     records.push({
       pointer: "meta",
-      observedAt: messageRecords[0]?.observedAt ?? helpers.nowIso(),
+      observedAt: messageRecords[0]?.observedAt ?? composerFallbackObservedAt,
       rawJson: JSON.stringify({
         id: sessionId,
         title: meta.title,
         model,
         cwd: workingDirectory,
+        usage: composerUsage,
+        createdAt: composerClock.createdAt ?? messageRecords[0]?.observedAt,
+        updatedAt: composerClock.updatedAt ?? messageRecords.at(-1)?.observedAt ?? composerClock.createdAt,
       }),
     });
   }
@@ -122,7 +145,7 @@ export function buildCursorComposerSeed(
     .forEach((message, index) => {
       records.push({
         pointer: `bubble[${index}]`,
-        observedAt: message.observedAt ?? helpers.nowIso(),
+        observedAt: message.observedAt ?? composerFallbackObservedAt,
         rawJson: JSON.stringify(message.record),
       });
     });
@@ -130,8 +153,8 @@ export function buildCursorComposerSeed(
   return {
     sessionId,
     title: meta.title,
-    createdAt: messageRecords[0]?.observedAt,
-    updatedAt: messageRecords.at(-1)?.observedAt,
+    createdAt: messageRecords[0]?.observedAt ?? composerClock.createdAt,
+    updatedAt: messageRecords.at(-1)?.observedAt ?? composerClock.updatedAt ?? composerClock.createdAt,
     model,
     workingDirectory,
     records,

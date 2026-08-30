@@ -45,6 +45,10 @@ const LEADING_INJECTED_ENVELOPES: readonly {
     malformedPrefix: "<environment_context>",
   },
   {
+    completePattern: /^<recommended_plugins>[\s\S]*?<\/recommended_plugins>\s*/u,
+    malformedPrefix: "<recommended_plugins>",
+  },
+  {
     completePattern: /^<system-reminder>[\s\S]*?<\/system-reminder>\s*/u,
     malformedPrefix: "<system-reminder>",
   },

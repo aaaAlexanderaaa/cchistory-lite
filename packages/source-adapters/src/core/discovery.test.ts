@@ -327,28 +327,38 @@ test("runSourceProbe preserves injected scaffolding as masked user-message evide
     assert.equal(payload.turns.length, 1);
 
     const turn = payload.turns[0]!;
-    assert.equal(turn.user_messages.length, 3);
+    assert.equal(payload.sessions[0]?.title, "Please review the patch plan only.");
+    assert.equal(turn.user_messages.length, 4);
     assert.equal(turn.user_messages[0]?.is_injected, true);
     assert.equal(turn.user_messages[1]?.is_injected, true);
-    assert.equal(turn.user_messages[2]?.is_injected, false);
+    assert.equal(turn.user_messages[2]?.is_injected, true);
+    assert.equal(turn.user_messages[3]?.is_injected, false);
+    assert.match(turn.raw_text, /<recommended_plugins>/u);
     assert.match(turn.raw_text, /# AGENTS\.md instructions/u);
     assert.match(turn.raw_text, /<environment_context>/u);
     assert.equal(turn.canonical_text, "Please review the patch plan only.");
+    assert.ok(turn.display_segments.some((segment) => segment.type === "masked" && segment.mask_label === "Recommended Plugins"));
     assert.ok(turn.display_segments.some((segment) => segment.type === "masked" && segment.mask_label === "Agent Instructions"));
     assert.ok(turn.display_segments.some((segment) => segment.type === "masked" && segment.mask_label === "Environment Context"));
     assert.equal(
       turn.user_messages[0]?.display_segments?.some(
-        (segment) => segment.type === "masked" && segment.mask_label === "Agent Instructions",
+        (segment) => segment.type === "masked" && segment.mask_label === "Recommended Plugins",
       ),
       true,
     );
     assert.equal(
       turn.user_messages[1]?.display_segments?.some(
+        (segment) => segment.type === "masked" && segment.mask_label === "Agent Instructions",
+      ),
+      true,
+    );
+    assert.equal(
+      turn.user_messages[2]?.display_segments?.some(
         (segment) => segment.type === "masked" && segment.mask_label === "Environment Context",
       ),
       true,
     );
-    assert.equal(turn.user_messages[2]?.display_segments?.[0]?.content, "Please review the patch plan only.");
+    assert.equal(turn.user_messages[3]?.display_segments?.[0]?.content, "Please review the patch plan only.");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

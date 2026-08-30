@@ -1185,6 +1185,7 @@ function suppressOverlappingCursorConversation(session: SessionBuildInput): void
     const composerCount = cursorUserRecordCount(session, composerBlobIds);
     const dropBlobIds = composerCount >= transcriptCount ? transcriptBlobIds : composerBlobIds;
     dropCursorConversationRecords(session, dropBlobIds, { keepMeta: dropBlobIds === composerBlobIds });
+    applyCursorComposerClockToTranscript(session);
   }
   if (storeBlobIds.size > 0) {
     const nonStoreBlobIds = new Set(
@@ -1236,6 +1237,113 @@ function dropCursorConversationRecords(
   session.atoms = session.atoms.filter((atom) => atom.fragment_refs.every((fragmentId) => keptFragmentIds.has(fragmentId)));
   const keptAtomIds = new Set(session.atoms.map((atom) => atom.id));
   session.edges = session.edges.filter((edge) => keptAtomIds.has(edge.from_atom_id) && keptAtomIds.has(edge.to_atom_id));
+  recomputeSessionDraftTimesFromRecords(session);
+}
+
+function applyCursorComposerClockToTranscript(session: SessionBuildInput): void {
+  const composerClock = readCursorComposerClock(session);
+  if (!composerClock?.updatedAt && !composerClock?.createdAt) {
+    return;
+  }
+  const transcriptRecords = session.records.filter((record) => {
+    if (record.record_path_or_offset === "meta") {
+      return false;
+    }
+    const blob = session.blobs.find((candidate) => candidate.id === record.blob_id);
+    return Boolean(blob && isCursorAgentTranscriptPath(blob.origin_path));
+  });
+  if (transcriptRecords.length === 0) {
+    return;
+  }
+  if (transcriptRecords.some((record) => rawRecordHasExplicitTimestamp(record))) {
+    return;
+  }
+  const createdAt = composerClock.createdAt ?? composerClock.updatedAt;
+  const updatedAt = composerClock.updatedAt ?? composerClock.createdAt;
+  if (!createdAt || !updatedAt) {
+    return;
+  }
+  assignObservedTimes(transcriptRecords, createdAt, updatedAt);
+  const restampedByRecordId = new Map(transcriptRecords.map((record) => [record.id, record.observed_at]));
+  for (const fragment of session.fragments) {
+    const observedAt = restampedByRecordId.get(fragment.record_id);
+    if (observedAt) {
+      fragment.time_key = observedAt;
+    }
+  }
+  for (const atom of session.atoms) {
+    const fragment = session.fragments.find((candidate) => atom.fragment_refs.includes(candidate.id));
+    const observedAt = fragment ? restampedByRecordId.get(fragment.record_id) : undefined;
+    if (observedAt) {
+      atom.time_key = observedAt;
+    }
+  }
+  recomputeSessionDraftTimesFromRecords(session);
+}
+
+function readCursorComposerClock(session: SessionBuildInput): { createdAt?: string; updatedAt?: string } | undefined {
+  for (const record of session.records) {
+    if (record.record_path_or_offset !== "meta") {
+      continue;
+    }
+    const blob = session.blobs.find((candidate) => candidate.id === record.blob_id);
+    if (!blob || path.basename(blob.origin_path) !== "state.vscdb") {
+      continue;
+    }
+    const parsed = safeJsonParse(record.raw_json);
+    if (!isObject(parsed)) {
+      continue;
+    }
+    const createdAt =
+      coerceIso(parsed.createdAt) ??
+      epochMillisToIso(asNumber(parsed.createdAt));
+    const updatedAt =
+      coerceIso(parsed.updatedAt) ??
+      coerceIso(parsed.lastUpdatedAt) ??
+      epochMillisToIso(asNumber(parsed.lastUpdatedAt)) ??
+      epochMillisToIso(asNumber(parsed.updatedAt));
+    if (createdAt || updatedAt) {
+      return { createdAt, updatedAt };
+    }
+  }
+  return undefined;
+}
+
+function rawRecordHasExplicitTimestamp(record: RawRecord): boolean {
+  const parsed = safeJsonParse(record.raw_json);
+  if (!isObject(parsed)) {
+    return false;
+  }
+  return Boolean(
+    coerceIso(parsed.timestamp) ??
+      coerceIso(parsed.createdAt) ??
+      coerceIso(parsed.updatedAt) ??
+      epochMillisToIso(asNumber(parsed.timestamp)) ??
+      epochMillisToIso(asNumber(parsed.createdAt)),
+  );
+}
+
+function assignObservedTimes(records: RawRecord[], createdAt: string, updatedAt: string): void {
+  if (records.length === 1) {
+    records[0]!.observed_at = updatedAt;
+    return;
+  }
+  const start = Date.parse(createdAt);
+  const end = Date.parse(updatedAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || records.length === 0) {
+    for (const record of records) {
+      record.observed_at = updatedAt;
+    }
+    return;
+  }
+  const span = Math.max(end - start, records.length - 1);
+  records.forEach((record, index) => {
+    const ratio = index / (records.length - 1);
+    record.observed_at = new Date(start + Math.round(span * ratio)).toISOString();
+  });
+}
+
+function recomputeSessionDraftTimesFromRecords(session: SessionBuildInput): void {
   const observedAt = session.records
     .map((record) => record.observed_at)
     .filter((value): value is string => Boolean(value));

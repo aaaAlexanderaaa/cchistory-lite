@@ -50,11 +50,12 @@ const ANSI = {
   reset: "\u001b[0m",
   bold: "\u001b[1m",
   dim: "\u001b[2m",
-  cyan: "\u001b[36m",
+  blue: "\u001b[34m",
   green: "\u001b[32m",
   magenta: "\u001b[35m",
-  yellow: "\u001b[33m",
+  white: "\u001b[37m",
 } as const;
+const ANSI_PATTERN = /\u001b\[[0-9;]*m/gu;
 const VALUE_FLAGS = new Set([
   "source-root",
   "source",
@@ -715,10 +716,10 @@ function renderSources(sources: SourceStatus[], options?: CollectionRenderOption
   const lines = [renderCollectionHeading(renderOptions, sources.length)];
   for (const source of sources) {
     lines.push(
-      `- ${source.display_name} [${source.slot_id}] ${source.sync_status} · ${source.total_sessions} sessions · ${source.total_turns} turns`,
-      `  ${singleLine(foldHome(source.base_dir, renderOptions.homeDir), Math.max(20, renderOptions.columns - 2))}`,
+      `${styleMeta("- ")}${source.display_name} [${source.slot_id}] ${source.sync_status} · ${source.total_sessions} sessions · ${source.total_turns} turns`,
+      styleMeta(`  ${singleLine(foldHome(source.base_dir, renderOptions.homeDir), Math.max(20, renderOptions.columns - 2))}`),
     );
-    if (source.error_message) lines.push(`  error: ${source.error_message}`);
+    if (source.error_message) lines.push(paint(ANSI.bold, `  error: ${source.error_message}`));
   }
   appendCollectionFooter(lines, renderOptions, sources.length);
   return `${lines.join("\n")}\n`;
@@ -729,15 +730,16 @@ function renderProjects(projects: ProjectIdentity[], options: CollectionRenderOp
   for (const project of projects) {
     const directory = foldHome(project.primary_workspace_path ?? project.repo_root ?? "-", options.homeDir);
     const activity = project.project_last_activity_at ?? project.updated_at;
+    const directoryLine = `  ${singleLine(directory, Math.max(20, options.columns - 2))}`;
     lines.push(
-      `● ${singleLine(project.display_name, Math.max(20, options.columns - 2))}`,
+      `${styleMeta("● ")}${styleCardTitle(singleLine(project.display_name, Math.max(20, options.columns - 2)))}`,
       ...wrapHumanText(
         `${formatRelativeTime(activity, options.now)} · ${project.session_count} sessions · ${project.committed_turn_count + project.candidate_turn_count} turns · ${project.linkage_state}`,
         options.columns,
         "  ",
         "    ",
-      ),
-      `  ${singleLine(directory, Math.max(20, options.columns - 2))}`,
+      ).map(styleMeta),
+      directory === "-" ? styleMeta(directoryLine) : styleDirectory(directoryLine),
     );
   }
   appendCollectionFooter(lines, options, projects.length);
@@ -758,21 +760,26 @@ function renderSessions(
     const tokens = formatTokenTotal(snapshot.getSessionUsage(session.id)?.total_tokens);
     const activityAt = snapshot.getSessionActivityAt(session.id) ?? session.updated_at;
     const sourceName = snapshot.getSource(session.source_id)?.display_name ?? session.source_platform;
+    const title = session.title ?? "Untitled session";
+    const promptHistory = isCursorPromptHistorySession(session);
     lines.push(
-      `● ${formatRelativeTime(activityAt, options.now)} · ${sourceName}`,
-      ...wrapHumanText(session.title ?? "Untitled session", options.columns, "  ", "    "),
+      ...cardIdentityWithTitle(formatRelativeTime(activityAt, options.now), sourceName, model, title, options.columns),
       ...wrapHumanText(
-        `${session.turn_count} turns · ${model} · ${tokens === "n/a" ? "tokens n/a" : `${tokens} tokens`}${formatSessionFamilyHint(snapshot, session.id)}`,
+        formatSessionStatsLine(session, snapshot, tokens, promptHistory),
         options.columns,
         "  ",
         "    ",
-      ),
-      ...wrapHumanText(`session ${sessionRef}`, options.columns, "  ", "    "),
+      ).map(styleMeta),
     );
     if (session.resume_command) {
-      lines.push(...wrapHumanText(session.resume_command, options.columns, "  ", "    "));
-    } else if (directory !== "-") {
-      lines.push(`  ${singleLine(directory, Math.max(20, options.columns - 2))}`);
+      lines.push(...renderResumeCommandLines(session.resume_command, options.columns));
+    } else {
+      if (!promptHistory) {
+        lines.push(...wrapHumanText(`session ${sessionRef}`, options.columns, "  ", "    ").map(styleMeta));
+      }
+      if (directory !== "-") {
+        lines.push(styleDirectory(`  ${singleLine(directory, Math.max(20, options.columns - 2))}`));
+      }
     }
   }
   appendCollectionFooter(lines, options, sessions.length);
@@ -814,30 +821,30 @@ function renderTurns(
       : "unknown";
     const sessionLabel = session?.title ?? "Untitled session";
     lines.push(
-      `● ${formatRelativeTime(turn.submission_started_at, options.now)} · ${sourceName}`,
-      `  ${singleLine(turn.canonical_text, Math.max(20, options.columns - 2))}`,
+      cardHeaderLine(formatRelativeTime(turn.submission_started_at, options.now), sourceName, model, options.columns),
+      styleCardTitle(`  ${singleLine(turn.canonical_text, Math.max(20, options.columns - 2))}`),
       ...wrapHumanText(
-        `${model} · ${tokens === "n/a" ? "tokens n/a" : `${tokens} tokens`} · ${singleLine(sessionLabel, 30)} · turn ${turnRef}`,
+        `${tokens === "n/a" ? "tokens n/a" : `${tokens} tokens`} · ${singleLine(sessionLabel, 30)} · turn ${turnRef}`,
         options.columns,
         "  ",
         "    ",
-      ),
+      ).map(styleMeta),
     );
   }
   appendCollectionFooter(lines, options, turns.length);
   return `${lines.join("\n")}\n`;
 }
 
-function renderCollectionHeading(options: CollectionRenderOptions, shown: number, order?: string): string {
+function renderCollectionHeading(options: CollectionRenderOptions, shown: number, order?: string, suffix?: string): string {
   const count = shown === options.total ? `${options.total}` : `${shown} of ${options.total}`;
   const qualifiers = [order, options.rowLabel ? `one record = one ${options.rowLabel}` : undefined]
     .filter((value): value is string => Boolean(value));
-  return `${options.heading} (${count}${qualifiers.length > 0 ? `, ${qualifiers.join("; ")}` : ""})`;
+  return styleMeta(`${options.heading} (${count}${qualifiers.length > 0 ? `, ${qualifiers.join("; ")}` : ""})${suffix ?? ""}`);
 }
 
 function appendCollectionFooter(lines: string[], options: CollectionRenderOptions, shown: number): void {
   const remaining = options.total - shown;
-  if (remaining > 0) lines.push(`… and ${remaining} more${options.footerHint ? ` (${options.footerHint})` : ""}`);
+  if (remaining > 0) lines.push(styleMeta(`… and ${remaining} more${options.footerHint ? ` (${options.footerHint})` : ""}`));
 }
 
 function formatRelativeTime(value: string, now: number): string {
@@ -875,7 +882,7 @@ function renderProjectDetail(
   const now = (io.now ?? Date.now)();
   const homeDir = io.homeDir ?? os.homedir();
   const lines = [
-    `Project: ${project.display_name}`,
+    styleMeta(`Project: ${project.display_name}`),
     ...renderMeta([
       ["ID", project.project_id],
       ["Linkage", `${project.linkage_state} (${Math.round(project.confidence * 100)}%, ${project.link_reason})`],
@@ -892,7 +899,7 @@ function renderProjectDetail(
     for (const node of sessions) {
       const sessionRef = snapshot.getSessionDisplayRef(node.session.id) ?? node.session.id;
       lines.push(
-        `- ${formatRelativeTime(node.session.updated_at, now)}  ${sessionRef}  ${node.session.title ?? "Untitled session"} (${node.turns.length} turns)`,
+        styleDashRow(`- ${formatRelativeTime(node.session.updated_at, now)}  ${sessionRef}  ${node.session.title ?? "Untitled session"} (${node.turns.length} turns)`),
       );
     }
   }
@@ -917,7 +924,7 @@ function renderSessionDetail(
   const project = session.primary_project_id ? snapshot.getProject(session.primary_project_id) : undefined;
   const sessionRef = snapshot.getSessionDisplayRef(session.id) ?? session.id;
   const lines = [
-    `Session: ${session.title ?? sessionRef}`,
+    styleMeta(`Session: ${session.title ?? sessionRef}`),
     ...renderMeta([
       ["Reference", sessionRef],
       ["ID", session.id],
@@ -941,8 +948,8 @@ function renderSessionDetail(
         ? `${context.assistant_replies.length} replies, ${context.tool_calls.length} tools`
         : "context unavailable";
       lines.push(
-        `- ${turn.submission_started_at}  ${turnRef}  ${tokens}  ${contextLabel}`,
-        `  ${singleLine(turn.canonical_text, Math.max(30, (io.columns ?? 100) - 2))}`,
+        styleDashRow(`- ${turn.submission_started_at}  ${turnRef}  ${tokens}  ${contextLabel}`),
+        paint(ANSI.bold, `  ${singleLine(turn.canonical_text, Math.max(30, (io.columns ?? 100) - 2))}`),
       );
     }
   }
@@ -966,7 +973,7 @@ function renderTurnDetail(
   const turnRef = snapshot.getTurnDisplayRef(turn.id) ?? turn.id;
   const sessionRef = session ? snapshot.getSessionDisplayRef(session.id) ?? session.id : turn.session_id;
   const lines = [
-    `Turn: ${turnRef}`,
+    styleMeta(`Turn: ${turnRef}`),
     ...renderMeta([
       ["ID", turn.id],
       ["Session", session ? `${session.title ?? "Untitled session"} (${sessionRef})` : sessionRef],
@@ -979,21 +986,24 @@ function renderTurnDetail(
     ]),
     "",
     "Prompt",
-    indentBlock(turn.canonical_text, "  "),
+    ...turn.canonical_text.split(/\r?\n/u).map((line) => {
+      const indented = `  ${line}`;
+      return line && !/^\s/u.test(line) ? paint(ANSI.bold, indented) : indented;
+    }),
   ];
   if (context?.assistant_replies.length) {
     lines.push("", `Assistant replies (${context.assistant_replies.length})`);
     for (const reply of context.assistant_replies) {
       lines.push(
-        `- ${reply.created_at}  ${reply.model}${reply.stop_reason ? `  ${reply.stop_reason}` : ""}`,
-        `  ${singleLine(reply.content_preview || reply.content, Math.max(30, (io.columns ?? 100) - 2))}`,
+        styleDashRow(`- ${reply.created_at}  ${reply.model}${reply.stop_reason ? `  ${reply.stop_reason}` : ""}`),
+        paint(ANSI.bold, `  ${singleLine(reply.content_preview || reply.content, Math.max(30, (io.columns ?? 100) - 2))}`),
       );
     }
   }
   if (context?.tool_calls.length) {
     lines.push("", `Tool calls (${context.tool_calls.length})`);
     for (const tool of context.tool_calls) {
-      lines.push(`- ${tool.tool_name} [${tool.status}]  ${singleLine(tool.input_summary, Math.max(24, (io.columns ?? 100) - 20))}`);
+      lines.push(styleDashRow(`- ${tool.tool_name} [${tool.status}]  ${singleLine(tool.input_summary, Math.max(24, (io.columns ?? 100) - 20))}`));
     }
   }
   return `${lines.join("\n")}\n`;
@@ -1007,7 +1017,7 @@ function renderSourceDetail(
   const { source, sessions, loss_audits: audits } = detail;
   const now = (io.now ?? Date.now)();
   const lines = [
-    `Source: ${source.display_name}`,
+    styleMeta(`Source: ${source.display_name}`),
     ...renderMeta([
       ["ID", source.id],
       ["Slot", source.slot_id],
@@ -1024,13 +1034,13 @@ function renderSourceDetail(
     lines.push("", `Sessions (${sessions.length}, newest first)`);
     for (const session of sessions) {
       const ref = snapshot.getSessionDisplayRef(session.id) ?? session.id;
-      lines.push(`- ${formatRelativeTime(session.updated_at, now)}  ${ref}  ${session.title ?? "Untitled session"} (${session.turn_count} turns)`);
+      lines.push(styleDashRow(`- ${formatRelativeTime(session.updated_at, now)}  ${ref}  ${session.title ?? "Untitled session"} (${session.turn_count} turns)`));
     }
   }
   if (audits.length > 0) {
     lines.push("", `Loss audits (${audits.length})`);
     for (const audit of audits) {
-      lines.push(`- ${audit.severity}  ${audit.diagnostic_code}  ${singleLine(audit.detail, Math.max(30, (io.columns ?? 100) - 8))}`);
+      lines.push(styleDashRow(`- ${audit.severity}  ${audit.diagnostic_code}  ${singleLine(audit.detail, Math.max(30, (io.columns ?? 100) - 8))}`));
     }
   }
   return `${lines.join("\n")}\n`;
@@ -1081,10 +1091,6 @@ function formatTokenTotal(total: number | undefined): string {
   return total === undefined ? "n/a" : formatNumber(total);
 }
 
-function indentBlock(value: string, prefix: string): string {
-  return value.split(/\r?\n/u).map((line) => `${prefix}${line}`).join("\n");
-}
-
 function sessionFamilyMeta(family: SessionFamilyProjection | undefined): Array<[string, string]> {
   if (!family || family.child_count === 0) return [];
   return [
@@ -1107,14 +1113,14 @@ function appendFamily(
       : child.agent_key ?? child.id;
     const label = child.title ?? child.agent_key ?? childRef;
     lines.push(
-      `- ${formatByteSize(child.stats.storage_bytes)}  ${child.stats.turn_count} turns  ${formatToolStats(child.stats)}  ${child.agent_key ?? child.identity_kind}  ${child.status ?? "unknown"}`,
-      `  ${singleLine(label, 100)}`,
+      styleDashRow(`- ${formatByteSize(child.stats.storage_bytes)}  ${child.stats.turn_count} turns  ${formatToolStats(child.stats)}  ${child.agent_key ?? child.identity_kind}  ${child.status ?? "unknown"}`),
+      paint(ANSI.bold, `  ${singleLine(label, 100)}`),
     );
     const inputPreview = maskCompactPreview(child.input_preview, "tool_input");
     const outputPreview = maskCompactPreview(child.output_preview, "tool_output");
-    if (inputPreview) lines.push(`  in: ${singleLine(inputPreview, 100)}`);
-    if (outputPreview) lines.push(`  out: ${singleLine(outputPreview, 100)}`);
-    lines.push(`  child ${childRef}`);
+    if (inputPreview) lines.push(paint(ANSI.bold, `  in: ${singleLine(inputPreview, 100)}`));
+    if (outputPreview) lines.push(paint(ANSI.bold, `  out: ${singleLine(outputPreview, 100)}`));
+    lines.push(paint(ANSI.bold, `  child ${childRef}`));
   }
 }
 
@@ -1131,15 +1137,15 @@ function renderFamilies(
       ? snapshot.getSource(parent.source_id)?.display_name ?? parent.source_platform
       : family.source_platform;
     lines.push(
-      `● ${formatByteSize(family.combined.storage_bytes)} combined · ${formatByteSize(family.parent.storage_bytes)} parent · ${family.child_count} subagents · ${sourceName}`,
-      ...wrapHumanText(parent?.title ?? sessionRef, options.columns, "  ", "    "),
+      `${styleMeta(`● ${formatByteSize(family.combined.storage_bytes)} combined · ${formatByteSize(family.parent.storage_bytes)} parent · ${family.child_count} subagents · `)}${styleSource(sourceName)}`,
+      ...wrapHumanText(parent?.title ?? sessionRef, options.columns, "  ", "    ").map(styleCardTitle),
       ...wrapHumanText(
         `${formatToolStats(family.combined)} · ${family.combined.total_tokens === undefined ? "tokens n/a" : `${formatNumber(family.combined.total_tokens)} tokens`}`,
         options.columns,
         "  ",
         "    ",
-      ),
-      ...wrapHumanText(`session ${sessionRef}`, options.columns, "  ", "    "),
+      ).map(styleMeta),
+      ...wrapHumanText(`session ${sessionRef}`, options.columns, "  ", "    ").map(styleMeta),
     );
     for (const child of family.children.slice(0, 8)) {
       const childRef = child.child_session_ref
@@ -1151,21 +1157,62 @@ function renderFamilies(
           options.columns,
           "  ",
           "    ",
-        ),
+        ).map(styleMeta),
       );
     }
     if (family.children.length > 8) {
-      lines.push(`  … ${family.children.length - 8} more subagents`);
+      lines.push(styleMeta(`  … ${family.children.length - 8} more subagents`));
     }
   }
   appendCollectionFooter(lines, options, families.length);
   return `${lines.join("\n")}\n`;
 }
 
-function formatSessionFamilyHint(snapshot: LiveHistorySnapshot, sessionId: string): string {
+function formatSessionStatsLine(
+  session: SessionProjection,
+  snapshot: LiveHistorySnapshot,
+  tokens: string,
+  omitUnavailableTokens: boolean,
+): string {
+  const parts = [`${session.turn_count} turns`];
+  if (tokens === "n/a") {
+    if (!omitUnavailableTokens) parts.push("tokens n/a");
+  } else {
+    parts.push(`${tokens} tokens`);
+  }
+  const storage = formatSessionStorageHint(snapshot, session.id);
+  if (storage) parts.push(storage.replace(/^ · /u, ""));
+  return parts.join(" · ");
+}
+
+function isCursorPromptHistorySession(session: SessionProjection): boolean {
+  return session.source_platform === "cursor"
+    && Boolean(session.source_session_id?.startsWith("prompt-history:"));
+}
+
+function formatSessionStorageHint(snapshot: LiveHistorySnapshot, sessionId: string): string {
   const family = snapshot.getSessionFamily(sessionId);
-  if (!family || family.child_count === 0 || family.parent_session_ref !== sessionId) return "";
-  return ` · ${family.child_count} subagents · ${formatByteSize(family.combined.storage_bytes)}`;
+  const contribution = snapshot.getSessionContribution(sessionId);
+  const familyHint = family
+    && family.child_count > 0
+    && family.parent_session_ref === sessionId
+    ? ` · ${family.child_count} subagent${family.child_count === 1 ? "" : "s"}`
+    : "";
+  const shared = contribution?.shared_storage;
+  const bytes = familyHint
+    ? family?.combined.storage_bytes ?? 0
+    : contribution?.stats.storage_bytes ?? 0;
+  let storage = "";
+  if (shared && shared.container_bytes > 0) {
+    const exclusive = familyHint
+      ? 0
+      : Math.max(0, (contribution?.stats.storage_bytes ?? 0) - shared.estimated_bytes);
+    const approx = `≈${formatByteSize(familyHint ? bytes : shared.estimated_bytes)} of ${formatByteSize(shared.container_bytes)} db`;
+    storage = exclusive > 0 ? ` · ${formatByteSize(exclusive)} · ${approx}` : ` · ${approx}`;
+  } else if (bytes > 0) {
+    storage = ` · ${formatByteSize(bytes)}`;
+  }
+  return `${familyHint}${storage}`;
 }
 
 function formatToolStats(stats: SessionContributionStats): string {
@@ -1190,7 +1237,7 @@ function appendRelatedWork(lines: string[], relatedWork: readonly SessionRelated
   if (relatedWork.length === 0) return;
   lines.push("", `Related work (${relatedWork.length})`);
   for (const related of relatedWork) {
-    lines.push(`- ${formatRelatedWorkLabel(related)}  ${related.direction ?? "unknown"}${related.status ? `  ${related.status}` : ""}`);
+    lines.push(styleDashRow(`- ${formatRelatedWorkLabel(related)}  ${related.direction ?? "unknown"}${related.status ? `  ${related.status}` : ""}`));
   }
 }
 
@@ -1213,8 +1260,10 @@ function renderSearch(
       homeDir: io.homeDir ?? os.homedir(),
     },
     shown,
+    undefined,
+    offset > 0 ? `; offset ${offset}` : undefined,
   );
-  const lines = [offset > 0 ? `${heading}; offset ${offset}` : heading];
+  const lines = [heading];
   for (const result of results) {
     const session = result.session;
     const title = session.title ?? session.canonical_title ?? session.source_session_id ?? session.id;
@@ -1222,13 +1271,13 @@ function renderSearch(
       ? title
       : result.best_turn?.canonical_text ?? title;
     lines.push(
-      `- ${session.id}`,
-      `  ${singleLine(title, 180)}`,
+      styleMeta(`- ${session.id}`),
+      styleCardTitle(`  ${singleLine(title, 180)}`),
     );
     if (result.best_turn && result.match_field !== "title") {
       lines.push(`  ${singleLine(snippetSource, 180)}`);
     } else if (result.match_field === "title") {
-      lines.push(`  title match`);
+      lines.push(styleMeta("  title match"));
     }
   }
   appendCollectionFooter(
@@ -1251,29 +1300,29 @@ function renderStats(
   rollup: ReturnType<LiveHistorySnapshot["getUsageRollup"]> | undefined,
 ): string {
   const lines = [
-    "Stats",
-    `- Turns: ${overview.total_turns}`,
-    `- Turns with token usage: ${overview.turns_with_token_usage} (${formatPercent(overview.turn_coverage_ratio)})`,
-    `- Input tokens: ${formatNumber(overview.total_input_tokens)}`,
-    `- Cached input tokens: ${formatNumber(overview.total_cached_input_tokens)}`,
-    `- Output tokens: ${formatNumber(overview.total_output_tokens)}`,
-    `- Reasoning output tokens: ${formatNumber(overview.total_reasoning_output_tokens)}`,
-    `- Total tokens: ${formatNumber(overview.total_tokens)}`,
+    styleMeta("Stats"),
+    styleDashRow(`- Turns: ${overview.total_turns}`),
+    styleDashRow(`- Turns with token usage: ${overview.turns_with_token_usage} (${formatPercent(overview.turn_coverage_ratio)})`),
+    styleDashRow(`- Input tokens: ${formatNumber(overview.total_input_tokens)}`),
+    styleDashRow(`- Cached input tokens: ${formatNumber(overview.total_cached_input_tokens)}`),
+    styleDashRow(`- Output tokens: ${formatNumber(overview.total_output_tokens)}`),
+    styleDashRow(`- Reasoning output tokens: ${formatNumber(overview.total_reasoning_output_tokens)}`),
+    styleDashRow(`- Total tokens: ${formatNumber(overview.total_tokens)}`),
   ];
   if (overview.excluded_zero_token_turns) {
-    lines.push(`- Excluded zero-token turns: ${overview.excluded_zero_token_turns} (no usage data)`);
+    lines.push(styleDashRow(`- Excluded zero-token turns: ${overview.excluded_zero_token_turns} (no usage data)`));
   }
   if (rollup) {
     lines.push("", `By ${rollup.dimension}`);
     for (const row of rollup.rows) {
-      lines.push(`- ${row.label}: ${row.turn_count} turns · ${formatNumber(row.total_tokens)} tokens`);
+      lines.push(styleDashRow(`- ${row.label}: ${row.turn_count} turns · ${formatNumber(row.total_tokens)} tokens`));
     }
   }
   return `${lines.join("\n")}\n`;
 }
 
 function renderProjectTree(tree: ReturnType<typeof buildProjectsTree>): string {
-  const lines = ["Project tree"];
+  const lines = [styleMeta("Project tree")];
   for (const node of tree.projects) {
     lines.push(`├─ ${node.project.display_name} [${node.project.linkage_state}]`);
     for (const sessionNode of node.sessions) {
@@ -1290,7 +1339,7 @@ function renderProjectTree(tree: ReturnType<typeof buildProjectsTree>): string {
 }
 
 function renderSessionTree(node: ReturnType<typeof buildSessionNode>): string {
-  return `${["Session tree", ...renderSessionTreeLines(node, "")].join("\n")}\n`;
+  return `${[styleMeta("Session tree"), ...renderSessionTreeLines(node, "")].join("\n")}\n`;
 }
 
 function renderSessionTreeLines(node: ReturnType<typeof buildSessionNode>, prefix: string): string[] {
@@ -1326,7 +1375,7 @@ function output(
 ): void {
   if (jsonMode === "none") {
     reportProjectionIssues(snapshot, io);
-    io.stdout(shouldColorize(io) ? colorizeHumanText(text) : text);
+    io.stdout(shouldColorize(io) ? text : stripAnsi(text));
     return;
   }
   const selectedPayload = jsonMode === "compact" ? compactPayload(payload, snapshot) : payload;
@@ -1347,57 +1396,110 @@ function shouldColorize(io: LiteCliIo): boolean {
   return io.isTTY && process.env.NO_COLOR === undefined && process.env.TERM !== "dumb";
 }
 
-export function colorizeHumanText(text: string): string {
-  let commandContinuation: "directory" | "command" | undefined;
-  return text.split("\n").map((line) => {
-    const commandStart = line.match(/^(\s{2}cd\s)(.*)$/u);
-    if (commandStart) {
-      const directory = colorizeResumeDirectory(commandStart[2]!);
-      commandContinuation = directory.complete ? "command" : "directory";
-      return `${paint(ANSI.dim, commandStart[1]!)}${directory.text}`;
-    }
-    if (commandContinuation && /^\s{4}\S/u.test(line)) {
-      if (commandContinuation === "command") return paint(ANSI.dim, line);
-      const continuation = line.match(/^(\s{4})(.*)$/u)!;
-      const directory = colorizeResumeDirectory(continuation[2]!);
-      commandContinuation = directory.complete ? "command" : "directory";
-      return `${paint(ANSI.dim, continuation[1]!)}${directory.text}`;
-    }
-    commandContinuation = undefined;
-    return colorizeHumanLine(line);
-  }).join("\n");
-}
-
-function colorizeResumeDirectory(value: string): { text: string; complete: boolean } {
-  const separator = value.match(/^(.*?)(\s*&&.*)$/u);
-  if (!separator) return { text: paint(ANSI.green, value), complete: false };
-  return {
-    text: `${paint(ANSI.green, separator[1]!)}${paint(ANSI.dim, separator[2]!)}`,
-    complete: true,
-  };
-}
-
-function colorizeHumanLine(line: string): string {
-  if (!line) return line;
-  if (/^(?:Latest|Sessions|Projects|Families|Sources|Stats|Search|Project tree|Session tree|Source:|Session:|Turn:)/u.test(line)) {
-    return paint(`${ANSI.bold}${ANSI.cyan}`, line);
-  }
-  const timeline = line.match(/^● (.+?)(?: · (.+))?$/u);
-  if (timeline) {
-    const marker = paint(`${ANSI.bold}${ANSI.green}`, "●");
-    if (!timeline[2]) return `${marker} ${paint(`${ANSI.bold}${ANSI.cyan}`, timeline[1]!)}`;
-    return `${marker} ${paint(ANSI.dim, timeline[1]!)}${paint(ANSI.dim, " · ")}${paint(`${ANSI.bold}${ANSI.cyan}`, timeline[2]!)}`;
-  }
-  if (/^\s+.*(?:\d+ sessions|\d+ turns| · turn )/u.test(line)) return paint(ANSI.dim, line);
-  if (/^\s+(?:~\/|\/)/u.test(line)) return paint(ANSI.cyan, line);
-  if (/^\s{2}\S/u.test(line)) return paint(ANSI.bold, line);
-  if (/^\s*… and \d+ more/u.test(line)) return paint(ANSI.dim, line);
-  if (/^\s*-\s/u.test(line)) return `${paint(ANSI.dim, line.slice(0, line.indexOf("-") + 2))}${line.slice(line.indexOf("-") + 2)}`;
-  return line;
-}
-
 function paint(style: string, value: string): string {
   return `${style}${value}${ANSI.reset}`;
+}
+
+/**
+ * Collection-card field styles. The title is the only bold line and carries
+ * green, sitting on the identity line after the model. The identity line holds
+ * the source tool in blue and the model in magenta; working directories —
+ * including the `cd` target inside a resume command — are white. Counts,
+ * timestamps, session ids, and the rest of a resume command stay gray.
+ */
+const styleCardTitle = (value: string): string => paint(`${ANSI.bold}${ANSI.green}`, value);
+const styleSource = (value: string): string => paint(ANSI.blue, value);
+const styleModel = (value: string): string => paint(ANSI.magenta, value);
+const styleDirectory = (value: string): string => paint(ANSI.white, value);
+const styleMeta = (value: string): string => paint(ANSI.dim, value);
+
+/** Detail/tree list rows keep their longtime look: gray "- " prefix, plain body. */
+function styleDashRow(line: string): string {
+  const dash = line.indexOf("-");
+  return dash === -1 ? line : `${styleMeta(line.slice(0, dash + 2))}${line.slice(dash + 2)}`;
+}
+
+interface StyledChunk {
+  text: string;
+  style?: (value: string) => string;
+}
+
+/**
+ * `● time · source · model  Title` — title sits on the identity line after the
+ * model. The model segment is omitted when unknown. Source then model shrink
+ * only when the identity prefix itself exceeds the terminal width; the title
+ * wraps onto continuation lines instead of being ellipsized.
+ */
+function cardIdentityWithTitle(
+  time: string,
+  sourceName: string,
+  model: string,
+  title: string,
+  columns: number,
+): string[] {
+  const prefix = `● ${time} · `;
+  let source = sourceName;
+  let modelText = model === "-" ? "" : model;
+  const identityWidth = (): number =>
+    displayWidth(prefix) + displayWidth(source) + (modelText ? 3 + displayWidth(modelText) : 0);
+  if (identityWidth() > columns && modelText) {
+    modelText = singleLine(modelText, Math.max(8, columns - displayWidth(prefix) - displayWidth(source) - 3));
+  }
+  if (identityWidth() > columns) {
+    const modelWidth = modelText ? 3 + displayWidth(modelText) : 0;
+    source = singleLine(source, Math.max(8, columns - displayWidth(prefix) - modelWidth));
+  }
+  const chunks: StyledChunk[] = [
+    { text: prefix, style: styleMeta },
+    { text: source, style: styleSource },
+  ];
+  if (modelText) {
+    chunks.push({ text: " · ", style: styleMeta }, { text: modelText, style: styleModel });
+  }
+  chunks.push({ text: "  " }, { text: title.replace(/\s+/gu, " ").trim(), style: styleCardTitle });
+  return wrapStyledChunks(chunks, columns, "", "    ");
+}
+
+/**
+ * `● time · source · model` — used by turn cards, which keep the prompt on
+ * its own line. The model segment is omitted when unknown.
+ */
+function cardHeaderLine(time: string, sourceName: string, model: string, columns: number): string {
+  const prefix = `● ${time} · `;
+  let source = sourceName;
+  let modelText = model === "-" ? "" : model;
+  const totalWidth = (): number =>
+    displayWidth(prefix) + displayWidth(source) + (modelText ? 3 + displayWidth(modelText) : 0);
+  if (totalWidth() > columns && modelText) {
+    modelText = singleLine(modelText, Math.max(8, columns - displayWidth(prefix) - displayWidth(source) - 3));
+  }
+  if (totalWidth() > columns) {
+    const modelWidth = modelText ? 3 + displayWidth(modelText) : 0;
+    source = singleLine(source, Math.max(8, columns - displayWidth(prefix) - modelWidth));
+  }
+  const modelSegment = modelText ? `${styleMeta(" · ")}${styleModel(modelText)}` : "";
+  return `${styleMeta(prefix)}${styleSource(source)}${modelSegment}`;
+}
+
+function renderResumeCommandLines(command: string, columns: number): string[] {
+  const match = /^(cd )(.+?)( && )(.+)$/u.exec(command);
+  if (!match) {
+    return wrapHumanText(command, columns, "  ", "    ").map(styleMeta);
+  }
+  return wrapStyledChunks(
+    [
+      { text: `  ${match[1]!}`, style: styleMeta },
+      { text: match[2]!, style: styleDirectory },
+      { text: `${match[3]!}${match[4]!}`, style: styleMeta },
+    ],
+    columns,
+    "",
+    "    ",
+  );
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(ANSI_PATTERN, "");
 }
 
 function requireSource(snapshot: LiveHistorySnapshot, ref: string): SourceStatus {
@@ -1863,6 +1965,67 @@ function wrapHumanText(
     indent = continuationIndent;
   }
   return lines;
+}
+
+function wrapStyledChunks(
+  chunks: readonly StyledChunk[],
+  columns: number,
+  firstIndent: string,
+  continuationIndent: string,
+): string[] {
+  type Cell = { character: string; style?: (value: string) => string };
+  const cells: Cell[] = [];
+  for (const chunk of chunks) {
+    if (!chunk.text) continue;
+    for (const character of chunk.text) {
+      cells.push({ character, style: chunk.style });
+    }
+  }
+  if (cells.length === 0) return [];
+
+  const lines: string[] = [];
+  let indent = firstIndent;
+  let offset = 0;
+  while (offset < cells.length) {
+    const available = Math.max(1, columns - displayWidth(indent));
+    let width = 0;
+    let cut = offset;
+    let lastSpace = -1;
+    while (cut < cells.length) {
+      const characterWidth = isWide(cells[cut]!.character.codePointAt(0) ?? 0) ? 2 : 1;
+      if (width + characterWidth > available) break;
+      width += characterWidth;
+      if (cells[cut]!.character === " ") lastSpace = cut;
+      cut += 1;
+    }
+    if (cut === offset) cut = offset + 1;
+    else if (cut < cells.length && lastSpace >= offset) cut = lastSpace;
+    lines.push(`${indent}${paintCells(cells.slice(offset, cut))}`);
+    offset = cut;
+    while (offset < cells.length && cells[offset]!.character === " ") offset += 1;
+    indent = continuationIndent;
+  }
+  return lines;
+}
+
+function paintCells(cells: ReadonlyArray<{ character: string; style?: (value: string) => string }>): string {
+  let result = "";
+  let buffer = "";
+  let currentStyle: ((value: string) => string) | undefined;
+  const flush = (): void => {
+    if (!buffer) return;
+    result += currentStyle ? currentStyle(buffer) : buffer;
+    buffer = "";
+  };
+  for (const cell of cells) {
+    if (cell.style !== currentStyle) {
+      flush();
+      currentStyle = cell.style;
+    }
+    buffer += cell.character;
+  }
+  flush();
+  return result;
 }
 
 function isWide(code: number): boolean {

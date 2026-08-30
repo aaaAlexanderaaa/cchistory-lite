@@ -101,6 +101,7 @@ export function extractTokenUsage(value: unknown, depth = 0): TokenUsageMetrics 
     value.tokens,
     value.token_count,
     value.tokenCount,
+    value.promptTokenBreakdown,
     value.metadata,
     value.last_token_usage,
     value.lastTokenUsage,
@@ -147,7 +148,9 @@ export function normalizeTokenUsageObject(value: Record<string, unknown>): Token
     asNumber(value.total_tokens) ??
     asNumber(value.totalTokens) ??
     asNumber(value.total_token_count) ??
-    asNumber(value.totalTokenCount);
+    asNumber(value.totalTokenCount) ??
+    asNumber(value.contextTokensUsed) ??
+    asNumber(value.totalUsedTokens);
 
   const rawCacheRead =
     asNumber(value.cache_read_input_tokens) ??
@@ -209,7 +212,7 @@ export function normalizeTokenUsageObject(value: Record<string, unknown>): Token
     total ??
     sumDefinedNumbers(input, output, cacheCreation, cacheRead);
 
-  return {
+  const metrics: TokenUsageMetrics = {
     input_tokens: input,
     output_tokens: output,
     total_tokens: computedTotal,
@@ -219,6 +222,12 @@ export function normalizeTokenUsageObject(value: Record<string, unknown>): Token
     reasoning_output_tokens: reasoningOutput,
     model: asString(value.model),
   };
+
+  if (TOKEN_USAGE_NUMERIC_FIELDS.every((field) => (metrics[field] ?? 0) === 0)) {
+    return undefined;
+  }
+
+  return metrics;
 }
 
 export function extractTokenUsageFromPayload(payload: Record<string, unknown>): TokenUsageMetrics | undefined {

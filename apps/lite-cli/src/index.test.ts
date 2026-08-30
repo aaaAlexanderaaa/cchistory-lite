@@ -11,7 +11,7 @@ import {
   scanLiteHistory,
   type ScanLiteHistoryOptions,
 } from "@cchistory/live-runtime";
-import { colorizeHumanText, formatTuiLaunchError, runLiteCli, type LiteCliIo } from "./index.js";
+import { formatTuiLaunchError, runLiteCli, type LiteCliIo } from "./index.js";
 import { compactPayload } from "./json-v2.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -828,6 +828,12 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
   const resumableSession = snapshot.listResolvedSessions().find((session) => session.resume_command);
   assert.ok(resumableSession?.resume_command);
   assert.ok(latestSessionText.replace(/\s+/gu, " ").includes(resumableSession.resume_command));
+  const resumableSessionRef = snapshot.getSessionDisplayRef(resumableSession.id) ?? resumableSession.id;
+  assert.equal(
+    latestSessionText.includes(`session ${resumableSessionRef}`),
+    false,
+    "latest must not repeat a session id when a resume command already identifies the session",
+  );
 
   const narrowSessions = captureIo(repoRoot, undefined, { scan: scanner, columns: 40 });
   assert.equal(await runLiteCli(["ls", "sessions", "--all"], narrowSessions.io), 0);
@@ -1132,29 +1138,176 @@ test("Lite CLI help documents latest, limits, and directory scope", async () => 
   assert.match(help, /does not open parent project folders or later Codex cwd lines/);
 });
 
-test("Lite CLI colorizes semantic human-readable fields", () => {
-  const colored = colorizeHumanText([
-    "Latest sessions (1, newest first; one record = one session)",
-    "● just now · Claude Code",
-    "  Fix session ordering",
-    "  2 turns · claude-opus-4.1 · 12,345 tokens",
-    "  cd /workspace/agentresearch && claude --resume 550867ae-full-session-id",
-  ].join("\n"));
-  assert.match(colored, /\u001b\[1m\u001b\[36mLatest sessions/);
-  assert.match(colored, /\u001b\[1m\u001b\[32m●\u001b\[0m/);
-  assert.match(colored, /\u001b\[1m\u001b\[36mClaude Code\u001b\[0m/);
-  assert.match(colored, /\u001b\[2m  cd \u001b\[0m\u001b\[32m\/workspace\/agentresearch\u001b\[0m/);
-  assert.match(colored, /\u001b\[2m && claude --resume 550867ae-full-session-id\u001b\[0m/);
 
-  const wrappedCommand = colorizeHumanText([
-    "  cd /workspace/a-very-long",
-    "    /directory && claude --resume",
-    "    550867ae-full-session-id",
-  ].join("\n"));
-  assert.match(wrappedCommand, /\u001b\[32m\/workspace\/a-very-long\u001b\[0m/);
-  assert.match(wrappedCommand, /\u001b\[2m    \u001b\[0m\u001b\[32m\/directory\u001b\[0m/);
-  assert.match(wrappedCommand, /\u001b\[2m && claude --resume\u001b\[0m/);
-  assert.match(wrappedCommand, /\u001b\[2m    550867ae-full-session-id\u001b\[0m/);
+test("Lite CLI colorizes collection cards semantically on a TTY", async () => {
+  const snapshot = await getCodexSnapshot();
+  const scanner = async () => snapshot;
+  const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const E = String.fromCharCode(27);
+  const savedNoColor = process.env.NO_COLOR;
+  const savedTerm = process.env.TERM;
+  delete process.env.NO_COLOR;
+  process.env.TERM = "xterm-256color";
+  try {
+    const tty = captureIo(repoRoot, undefined, { scan: scanner, isTTY: true });
+    assert.equal(await runLiteCli(["ls", "sessions", "--all"], tty.io), 0);
+    const text = tty.stdout.join("");
+
+    // Gray tier: heading, timestamps, counts, session ids, resume command body.
+    assert.ok(text.includes(`${E}[2mSessions (`));
+    assert.ok(text.includes(`${E}[2m● `));
+    // The stats line is one unbroken gray run: counts, tokens, storage.
+    assert.match(text, new RegExp(`${E}\\[2m {2}\\d+ turns · [^${E}]*tokens[^${E}]*${E}\\[0m`));
+    const resumable = snapshot.listTopLevelSessions().find((session) => session.resume_command);
+    assert.ok(resumable?.resume_command);
+    const resumeMatch = /^(cd )(.+?)( && )(.+)$/u.exec(resumable.resume_command);
+    assert.ok(resumeMatch);
+    assert.ok(text.includes(`${E}[2m  cd ${E}[0m${E}[37m${resumeMatch[2]}`));
+    assert.ok(text.includes(`${E}[37m${resumeMatch[2]}${E}[0m${E}[2m && `));
+    assert.ok(!text.includes(`${E}[32m  ${resumeMatch[1]}`));
+    const withoutResume = snapshot.listTopLevelSessions().find((session) => !session.resume_command);
+    if (withoutResume) {
+      const ref = snapshot.getSessionDisplayRef(withoutResume.id) ?? withoutResume.id;
+      assert.ok(text.includes(`${E}[2m  session ${ref}${E}[0m`));
+      assert.ok(!text.includes(`${E}[1m${E}[32m  session `));
+    }
+
+    // Identity line: source tool blue, model magenta, title green on the same line.
+    assert.ok(text.includes(`${E}[34mCodex${E}[0m`));
+    const sessionWithModel = snapshot.listTopLevelSessions().find((session) =>
+      session.model?.trim() || snapshot.listSessionTurns(session.id).some((turn) => turn.context_summary.primary_model?.trim()));
+    assert.ok(sessionWithModel);
+    const model = sessionWithModel.model?.trim()
+      || snapshot.listSessionTurns(sessionWithModel.id).map((turn) => turn.context_summary.primary_model?.trim()).find(Boolean);
+    assert.ok(model);
+    assert.ok(text.includes(`${E}[34mCodex${E}[0m${E}[2m · ${E}[0m${E}[35m`));
+    assert.match(text, new RegExp(`${E}\\[35m[^${E}]*${escapeRegExp(model)}`));
+    const hasDirectoryCard = snapshot.listTopLevelSessions().some((session) => !session.resume_command && session.working_directory);
+    if (hasDirectoryCard) {
+      assert.ok(text.includes(`${E}[37m  ~/`) || text.includes(`${E}[37m  /`));
+    }
+
+    // The title is the only bold line in a card and carries green; no underline anywhere.
+    const titled = snapshot.listTopLevelSessions().find((session) => session.title);
+    assert.ok(titled?.title);
+    const titleStart = titled.title.replace(/\s+/gu, " ").trim().slice(0, 24);
+    assert.ok(text.includes(`${E}[1m${E}[32m${titleStart}`));
+    assert.ok(text.includes(`${E}[35m`) && text.includes(`${E}[0m  ${E}[1m${E}[32m`));
+    assert.ok(!text.includes(`${E}[4m`));
+
+    const ttyTurns = captureIo(repoRoot, undefined, { scan: scanner, isTTY: true });
+    assert.equal(await runLiteCli(["latest", "turns", "2"], ttyTurns.io), 0);
+    const turnsText = ttyTurns.stdout.join("");
+    assert.ok(turnsText.includes(`${E}[34mCodex${E}[0m`));
+    assert.ok(turnsText.includes(`${E}[1m${E}[32m  `));
+    assert.ok(turnsText.includes(`${E}[35m`));
+
+    const ttyProjects = captureIo(repoRoot, undefined, { scan: scanner, isTTY: true });
+    assert.equal(await runLiteCli(["ls", "projects", "--all"], ttyProjects.io), 0);
+    assert.ok(ttyProjects.stdout.join("").includes(`${E}[2m● ${E}[0m${E}[1m${E}[32m`));
+
+    const ttySearch = captureIo(repoRoot, undefined, { scan: scanner, isTTY: true });
+    assert.equal(await runLiteCli(["search", "mock"], ttySearch.io), 0);
+    const searchText = ttySearch.stdout.join("");
+    assert.ok(searchText.includes(`${E}[2m- sess:`));
+    assert.ok(searchText.includes(`${E}[1m${E}[32m  `));
+
+    // Non-TTY output stays pure text.
+    const plain = captureIo(repoRoot, undefined, { scan: scanner });
+    assert.equal(await runLiteCli(["ls", "sessions", "--all"], plain.io), 0);
+    assert.ok(!plain.stdout.join("").includes(E));
+  } finally {
+    if (savedNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = savedNoColor;
+    if (savedTerm === undefined) delete process.env.TERM;
+    else process.env.TERM = savedTerm;
+  }
+});
+
+test("Lite CLI renders container storage as an estimated share and omits zero bytes", async () => {
+  const snapshot = await getCodexSnapshot();
+  const target = snapshot.listTopLevelSessions().find((session) => {
+    const family = snapshot.getSessionFamily(session.id);
+    return session.turn_count > 0 && (!family || family.child_count === 0 || family.parent_session_ref !== session.id);
+  });
+  assert.ok(target);
+  const sharedSnapshot = new LiveHistorySnapshot({
+    ...snapshot.data,
+    session_contributions: [
+      {
+        session_ref: target.id,
+        source_id: target.source_id,
+        source_platform: target.source_platform,
+        stats: {
+          storage_bytes: 12_000,
+          blob_count: 1,
+          turn_count: target.turn_count,
+          assistant_reply_count: 0,
+          tool_call_count: 0,
+          tool_success_count: 0,
+          tool_error_count: 0,
+          tool_pending_count: 0,
+        },
+        shared_storage: { estimated_bytes: 12_000, container_bytes: 10_485_760 },
+      },
+    ],
+  });
+  const captured = captureIo(repoRoot, undefined, { scan: async () => sharedSnapshot });
+  assert.equal(await runLiteCli(["ls", "sessions", "--all"], captured.io), 0);
+  const text = captured.stdout.join("");
+  assert.ok(text.includes("≈12KB of 10.0MB db"));
+  assert.ok(!text.includes("· 0B"));
+});
+
+test("Lite CLI puts the session title after the model and omits prompt-history ids", async () => {
+  const snapshot = await getCodexSnapshot();
+  const target = snapshot.listTopLevelSessions().find((session) => session.turn_count > 0 && session.title && session.model);
+  const source = snapshot.listSources()[0];
+  assert.ok(target);
+  assert.ok(source);
+  const promptHistory = {
+    ...target,
+    id: "sess:cursor:prompt-history:aaaaaaaa",
+    source_id: "src-cursor-prompt-history",
+    source_session_id: "prompt-history:aaaaaaaa",
+    source_platform: "cursor" as const,
+    title: "Cursor prompt history",
+    model: undefined,
+    resume_command: undefined,
+    resume_working_directory: undefined,
+    resume_command_confidence: undefined,
+    working_directory: "/workspace/cursor-prompt-history",
+    turn_count: 2,
+    created_at: "2026-08-03T12:04:00.000Z",
+    updated_at: "2026-08-03T12:05:00.000Z",
+  };
+  const mixedSnapshot = new LiveHistorySnapshot({
+    ...snapshot.data,
+    sources: [
+      ...snapshot.data.sources,
+      {
+        ...source,
+        id: "src-cursor-prompt-history",
+        slot_id: "cursor",
+        platform: "cursor",
+        display_name: "Cursor",
+      },
+    ],
+    sessions: [promptHistory, ...snapshot.data.sessions],
+  });
+  const captured = captureIo(repoRoot, undefined, { scan: async () => mixedSnapshot });
+  assert.equal(await runLiteCli(["ls", "sessions", "--all"], captured.io), 0);
+  const text = captured.stdout.join("");
+  const model = target.model?.trim();
+  assert.ok(model);
+  assert.match(text, new RegExp(`${model.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")} {2}${target.title}`));
+  assert.match(text, /● .* · Cursor {2}Cursor prompt history/);
+  const cardStart = text.indexOf("Cursor prompt history");
+  assert.ok(cardStart >= 0);
+  const nextBullet = text.indexOf("\n● ", cardStart);
+  const card = text.slice(cardStart, nextBullet === -1 ? undefined : nextBullet);
+  assert.doesNotMatch(card, /session prompt-h/);
+  assert.doesNotMatch(card, /tokens n\/a/);
 });
 
 test("Lite CLI JSON search defaults to cwd and --no-dir restores the unscoped snapshot", async () => {

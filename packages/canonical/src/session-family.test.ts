@@ -100,6 +100,80 @@ test("session family inventory splits parent storage from delegated children and
   assert.equal(families[0]?.children[0]?.agent_key, "explore");
 });
 
+test("session family inventory splits a shared container blob proportionally to raw record bytes", () => {
+  const source = createSource();
+  const sessionA = createSession(source, "sess:zcode:a", "a", "/container/db.sqlite");
+  const sessionB = createSession(source, "sess:zcode:b", "b", "/container/db.sqlite");
+  const container = createBlob("blob-db", "/container/db.sqlite", 10_000);
+  const inventory = buildSessionFamilyInventory({
+    sessions: [sessionA, sessionB],
+    blobs: [container],
+    records: [
+      createRecord("rec-a1", sessionA.id, container.id, "x".repeat(300)),
+      createRecord("rec-a2", sessionA.id, container.id, "x".repeat(300)),
+      createRecord("rec-b1", sessionB.id, container.id, "x".repeat(200)),
+    ],
+    atoms: [
+      createAtom("atom-a", sessionA.id, "tool_call", { tool_name: "read", call_id: "a1" }),
+      createAtom("atom-b1", sessionB.id, "tool_call", { tool_name: "read", call_id: "b1" }),
+      createAtom("atom-b2", sessionB.id, "tool_call", { tool_name: "grep", call_id: "b2" }),
+    ],
+    fragments: [
+      createFragment("atom-a", sessionA.id, "rec-a1"),
+      createFragment("atom-b1", sessionB.id, "rec-b1"),
+      createFragment("atom-b2", sessionB.id, "rec-b1"),
+    ],
+  });
+
+  const contributionA = inventory.contributions.find((entry) => entry.session_ref === sessionA.id);
+  const contributionB = inventory.contributions.find((entry) => entry.session_ref === sessionB.id);
+  assert.equal(contributionA?.stats.storage_bytes, 7_500);
+  assert.equal(contributionB?.stats.storage_bytes, 2_500);
+  assert.equal(
+    (contributionA?.stats.storage_bytes ?? 0) + (contributionB?.stats.storage_bytes ?? 0),
+    10_000,
+    "shares must sum to the container size",
+  );
+  assert.deepEqual(contributionA?.shared_storage, { estimated_bytes: 7_500, container_bytes: 10_000 });
+  assert.deepEqual(contributionB?.shared_storage, { estimated_bytes: 2_500, container_bytes: 10_000 });
+  assert.equal(contributionA?.stats.blob_count, 1);
+  assert.equal(contributionB?.stats.blob_count, 1);
+  // Atoms stay on their own session instead of collapsing onto the first record owner.
+  assert.equal(contributionA?.stats.tool_call_count, 1);
+  assert.equal(contributionB?.stats.tool_call_count, 2);
+});
+
+test("session family inventory marks a single-session SQLite blob as shared storage", () => {
+  const source = createSource();
+  const session = createSession(source, "sess:zcode:solo", "solo", "/container/db.sqlite");
+  const container = createBlob("blob-db", "/container/db.sqlite", 10_000);
+  const inventory = buildSessionFamilyInventory({
+    sessions: [session],
+    blobs: [container],
+    records: [createRecord("rec-solo", session.id, container.id, "x".repeat(200))],
+  });
+  const contribution = inventory.contributions.find((entry) => entry.session_ref === session.id);
+  assert.equal(contribution?.stats.storage_bytes, 10_000);
+  assert.deepEqual(contribution?.shared_storage, { estimated_bytes: 10_000, container_bytes: 10_000 });
+});
+
+test("session family inventory does not dump a whole SQLite file onto a filtered leftover session", () => {
+  const source = createSource();
+  const visible = createSession(source, "sess:zcode:visible", "visible", "/container/db.sqlite");
+  const container = createBlob("blob-db", "/container/db.sqlite", 10_000);
+  const inventory = buildSessionFamilyInventory({
+    sessions: [visible],
+    blobs: [container],
+    records: [
+      createRecord("rec-visible", visible.id, container.id, "x".repeat(200)),
+      createRecord("rec-hidden", "sess:zcode:hidden", container.id, "x".repeat(800)),
+    ],
+  });
+  const contribution = inventory.contributions.find((entry) => entry.session_ref === visible.id);
+  assert.equal(contribution?.stats.storage_bytes, 2_000);
+  assert.deepEqual(contribution?.shared_storage, { estimated_bytes: 2_000, container_bytes: 10_000 });
+});
+
 test("session family inventory merges later related-work status and prompt onto the same child", () => {
   const source = createSource();
   const parent = createSession(source, "sess:grok:parent", "parent", "/parent.jsonl");
@@ -609,7 +683,7 @@ function createBlob(id: string, originPath: string, size: number): CapturedBlob 
   };
 }
 
-function createRecord(id: string, sessionRef: string, blobId: string): RawRecord {
+function createRecord(id: string, sessionRef: string, blobId: string, rawJson = "{}"): RawRecord {
   return {
     id,
     source_id: "src-family",
@@ -619,7 +693,7 @@ function createRecord(id: string, sessionRef: string, blobId: string): RawRecord
     record_path_or_offset: "0",
     observed_at: "2026-01-01T00:00:00.000Z",
     parseable: true,
-    raw_json: "{}",
+    raw_json: rawJson,
   };
 }
 

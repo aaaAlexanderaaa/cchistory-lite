@@ -204,9 +204,19 @@ default to the current working directory; pass `--no-dir` to read every selected
 Human-readable CLI without `--json` still defaults to the whole machine.
 
 Human-readable collections use semantic timeline blocks rather than tables and adapt to terminal
-width. Sessions show their title, model summary, aggregate token count, and, when supported, the
-complete native `cd <directory> && <tool> resume <session-id>` command in green. A standalone
-directory is shown only when no resume command is available. Turns show their source, model, token
+width. Within a card the title is the only bold field and carries green, sitting on the identity
+line after the model; the identity line shows the source tool in blue with the model in magenta
+right after it; the working directory is white, including the `cd` target inside a resume command.
+Counts, timestamps, session
+references, and the rest of a resume command stay gray so the title and identity fields stand out. Sessions show
+their title, model summary, aggregate token count, and, when supported, the complete native
+`cd <directory> && <tool> resume <session-id>` command. A standalone directory is shown only when
+no resume command is available. Cursor prompt-history fallback sessions omit the truncated
+`session prompt-h…` id and `tokens n/a` line — that id is a prefix of a synthetic key, not a
+resumable handle. Session storage is the exact native file size for file-based
+sources; for container sources that keep every session in one SQLite store it is a proportional
+estimate shown as `≈12KB of 10.0MB db` (including a store that currently has only one session in
+the snapshot), and omitted when zero. Turns show their source, model, token
 count, prompt, and Lite turn reference. Times are relative to the current process. Set
 `NO_COLOR=1` to suppress ANSI color in a TTY. Every standard JSON response includes
 `projection_issues`; it is empty for a

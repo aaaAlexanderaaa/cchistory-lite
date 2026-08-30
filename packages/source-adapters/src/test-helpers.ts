@@ -451,7 +451,7 @@ export async function seedCodexInjectedScaffoldFixture(tempRoot: string): Promis
             {
               type: "input_text",
               text:
-                "# AGENTS.md instructions for /workspace/injected-scaffold\n\n<INSTRUCTIONS>\nBe precise.\n</INSTRUCTIONS>\n\n<environment_context>\n  <cwd>/workspace/injected-scaffold</cwd>\n  <shell>zsh</shell>\n</environment_context>\n\nPlease review the patch plan only.",
+                "<recommended_plugins>\nHere is a list of plugins that are available but not installed.\n\n- Airtable (airtable@openai-curated-remote)\n</recommended_plugins>\n\n# AGENTS.md instructions for /workspace/injected-scaffold\n\n<INSTRUCTIONS>\nBe precise.\n</INSTRUCTIONS>\n\n<environment_context>\n  <cwd>/workspace/injected-scaffold</cwd>\n  <shell>zsh</shell>\n</environment_context>\n\nPlease review the patch plan only.",
             },
           ],
         },

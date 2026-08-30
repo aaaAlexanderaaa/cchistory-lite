@@ -91,7 +91,7 @@ export function parseGenericConversationRecord(
       content: message.content,
     }];
   }
-  const usage = helpers.extractTokenUsage(message.usage ?? parsed.usage);
+  const usage = helpers.extractTokenUsage(message.usage ?? parsed.usage ?? parsed);
   const stopReason = helpers.normalizeStopReason(
     message.stop_reason ?? message.stopReason ?? parsed.stop_reason ?? parsed.stopReason,
   );
@@ -99,6 +99,9 @@ export function parseGenericConversationRecord(
   let localSeq = 0;
 
   if (!role && fragments.length > 0 && contentItems.length === 0) {
+    if (usage) {
+      fragments.push(helpers.createTokenUsageFragment(context, record, fragments.length, timeKey, usage));
+    }
     return { fragments, lossAudits };
   }
 

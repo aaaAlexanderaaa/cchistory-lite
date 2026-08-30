@@ -130,9 +130,10 @@ streaming `turn_completed` events only.
 
 `latest sessions` emits one timeline block per session, ordered by the session's
 last real message activity. Each block includes aggregate turn count, model
-summary, and total tokens. When native resume is supported, the final green line
-is the complete `cd <directory> && <tool> resume <session-id>` command; the
-directory is not repeated separately. Sessions with no UserTurns are omitted,
+summary, and total tokens, with the title on the identity line after the model.
+When native resume is supported, the last line is the complete
+`cd <directory> && <tool> resume <session-id>` command (directory in white, rest
+gray); the directory is not repeated separately. Sessions with no UserTurns are omitted,
 while pending Gemini sessions remain visible and sort by their real message
 time. `latest turns` emits one block per UserTurn and includes its model, token
 total, prompt, and Lite turn reference. Use `latest sessions 50` or `latest

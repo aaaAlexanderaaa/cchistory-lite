@@ -703,6 +703,18 @@ export interface SessionContributionProjection {
   source_id: string;
   source_platform: SourcePlatform;
   stats: SessionContributionStats;
+  /**
+   * Present when stats.storage_bytes includes a proportional share of a
+   * container blob (for example a SQLite store). The share is estimated from
+   * the session's raw record bytes and is already included in
+   * stats.storage_bytes; container_bytes is the summed size of those
+   * container blob(s). Marked even when the snapshot currently contains only
+   * one session from that store, so callers can render it as an estimate.
+   */
+  shared_storage?: {
+    estimated_bytes: number;
+    container_bytes: number;
+  };
 }
 
 export type DelegatedChildIdentityKind = "session" | "sidecar";

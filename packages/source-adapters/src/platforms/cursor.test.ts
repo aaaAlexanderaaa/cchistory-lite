@@ -551,6 +551,152 @@ test("cursor agent-transcript file mtimes drive session recency instead of scan 
   }
 });
 
+test("runSourceProbe reads Cursor composer contextTokensUsed and ignores zero tokenCount stubs", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cursor-context-tokens-"));
+
+  try {
+    const projectsRoot = path.join(tempRoot, ".cursor", "projects");
+    const composerId = "cursor-context-tokens";
+    const userDir = path.join(tempRoot, "Library", "Application Support", "Cursor", "User");
+    await mkdir(projectsRoot, { recursive: true });
+    await mkdir(path.join(userDir, "globalStorage"), { recursive: true });
+    seedCursorComposerUsableMetadataDb(path.join(userDir, "globalStorage", "state.vscdb"), {
+      composerId,
+      title: "Cursor context tokens",
+      workspacePath: "/workspace/cursor-tokens",
+      modelName: "grok-4.6",
+      userText: "How many tokens did this session use?",
+      assistantText: "Composer context usage should be projected.",
+      contextTokensUsed: 24744,
+      assistantTokenCount: { inputTokens: 0, outputTokens: 0 },
+      assistantUsage: null,
+    });
+
+    const [payload] = (
+      await runSourceProbe({}, [createSourceDefinition("src-cursor-context-tokens", "cursor", projectsRoot)])
+    ).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.turns[0]?.context_summary.total_tokens, 24744);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.total_tokens, 24744);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe keeps Cursor composer context tokens when a richer transcript has no usage", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cursor-kept-context-tokens-"));
+
+  try {
+    const projectsRoot = path.join(tempRoot, ".cursor", "projects");
+    const composerId = "cursor-kept-context-tokens";
+    const transcriptDir = path.join(projectsRoot, "Users-test-my-app", "agent-transcripts", composerId);
+    const userDir = path.join(tempRoot, "Library", "Application Support", "Cursor", "User");
+    await mkdir(transcriptDir, { recursive: true });
+    await mkdir(path.join(userDir, "globalStorage"), { recursive: true });
+    await writeFile(
+      path.join(transcriptDir, `${composerId}.jsonl`),
+      [
+        { role: "user", message: { content: [{ type: "text", text: "First transcript ask." }] } },
+        { role: "assistant", message: { content: [{ type: "text", text: "First transcript reply." }] } },
+        { role: "user", message: { content: [{ type: "text", text: "Second transcript ask." }] } },
+        { role: "assistant", message: { content: [{ type: "text", text: "Second transcript reply." }] } },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n"),
+      "utf8",
+    );
+    seedCursorComposerUsableMetadataDb(path.join(userDir, "globalStorage", "state.vscdb"), {
+      composerId,
+      title: "Cursor kept context tokens",
+      workspacePath: "/workspace/cursor-tokens",
+      modelName: "grok-4.6",
+      userText: "Composer ask.",
+      assistantText: "Composer reply.",
+      contextTokensUsed: 145562,
+      assistantTokenCount: { inputTokens: 0, outputTokens: 0 },
+      assistantUsage: null,
+    });
+
+    const [payload] = (
+      await runSourceProbe({}, [createSourceDefinition("src-cursor-kept-context-tokens", "cursor", projectsRoot)])
+    ).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.turns.length, 2);
+    assert.equal(
+      payload.turns.reduce((total, turn) => total + (turn.context_summary.total_tokens ?? 0), 0) > 0 ||
+        payload.turns.some((turn) => turn.context_summary.token_usage?.total_tokens === 145562),
+      true,
+    );
+    assert.equal(
+      payload.turns.some((turn) => turn.context_summary.total_tokens === 145562) ||
+        payload.turns.at(-1)?.context_summary.total_tokens === 145562,
+      true,
+      "composer contextTokensUsed must survive a richer transcript merge",
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe prefers Cursor composer clocks over a later touched transcript mtime", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cursor-touched-transcript-"));
+
+  try {
+    const projectsRoot = path.join(tempRoot, ".cursor", "projects");
+    const composerId = "cursor-stale-activity";
+    const transcriptDir = path.join(projectsRoot, "Users-test-my-app", "agent-transcripts", composerId);
+    const transcriptPath = path.join(transcriptDir, `${composerId}.jsonl`);
+    const userDir = path.join(tempRoot, "Library", "Application Support", "Cursor", "User");
+    const dbPath = path.join(userDir, "globalStorage", "state.vscdb");
+    await mkdir(transcriptDir, { recursive: true });
+    await mkdir(path.join(userDir, "globalStorage"), { recursive: true });
+    await writeFile(
+      transcriptPath,
+      [
+        { role: "user", message: { content: [{ type: "text", text: "This conversation ended in March." }] } },
+        { role: "assistant", message: { content: [{ type: "text", text: "Activity must stay in March." }] } },
+        { role: "user", message: { content: [{ type: "text", text: "A later transcript-only follow up." }] } },
+        { role: "assistant", message: { content: [{ type: "text", text: "Still March on the composer clock." }] } },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n"),
+      "utf8",
+    );
+    seedCursorComposerUsableMetadataDb(dbPath, {
+      composerId,
+      title: "Stale Cursor session",
+      workspacePath: "/workspace/cursor-stale",
+      modelName: "grok-4.6",
+      userText: "This conversation ended in March.",
+      assistantText: "Activity must stay in March.",
+      composerCreatedAt: Date.parse("2026-03-10T03:30:00.000Z"),
+      composerLastUpdatedAt: Date.parse("2026-03-10T03:30:01.000Z"),
+    });
+    const recentMtime = new Date("2026-08-30T01:21:57.000Z");
+    await utimes(dbPath, recentMtime, recentMtime);
+    await utimes(transcriptPath, recentMtime, recentMtime);
+
+    const [payload] = (
+      await runSourceProbe({}, [createSourceDefinition("src-cursor-touched-transcript", "cursor", projectsRoot)])
+    ).sources;
+
+    assert.ok(payload);
+    const session = payload.sessions[0];
+    const turn = payload.turns[0];
+    assert.ok(session);
+    assert.ok(turn);
+    assert.equal(turn.last_context_activity_at.startsWith("2026-03-10T03:30"), true);
+    assert.equal(session.updated_at?.startsWith("2026-03-10T03:30"), true);
+    assert.equal(turn.last_context_activity_at.startsWith("2026-08-30"), false);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("runSourceProbe falls back to Cursor prompt history with workspace-linked synthetic sessions", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
 
@@ -1412,6 +1558,11 @@ function seedCursorComposerUsableMetadataDb(
     userText: string;
     assistantText: string;
     extraBubbles?: Array<{ bubbleId: string; type: number; text: string }>;
+    contextTokensUsed?: number;
+    composerCreatedAt?: number;
+    composerLastUpdatedAt?: number;
+    assistantTokenCount?: { inputTokens: number; outputTokens: number };
+    assistantUsage?: { inputTokens: number; outputTokens: number; totalTokens: number } | null;
   },
 ): void {
   const db = new DatabaseSync(dbPath);
@@ -1429,6 +1580,11 @@ function seedCursorComposerUsableMetadataDb(
       workspacePath: options.workspacePath,
       modelName: options.modelName,
       extraBubbles: options.extraBubbles,
+      contextTokensUsed: options.contextTokensUsed,
+      composerCreatedAt: options.composerCreatedAt,
+      composerLastUpdatedAt: options.composerLastUpdatedAt,
+      assistantTokenCount: options.assistantTokenCount,
+      assistantUsage: options.assistantUsage,
     });
   } finally {
     db.close();
@@ -1571,6 +1727,11 @@ function insertComposer(
     modelName?: string;
     workspaceIdentifier?: Record<string, unknown>;
     extraBubbles?: Array<{ bubbleId: string; type: number; text: string }>;
+    contextTokensUsed?: number;
+    composerCreatedAt?: number;
+    composerLastUpdatedAt?: number;
+    assistantTokenCount?: { inputTokens: number; outputTokens: number };
+    assistantUsage?: { inputTokens: number; outputTokens: number; totalTokens: number } | null;
   },
 ): void {
   const extraBubbles = options.extraBubbles ?? [];
@@ -1600,6 +1761,9 @@ function insertComposer(
             ...extraBubbles.map((bubble) => ({ bubbleId: bubble.bubbleId, type: bubble.type })),
           ]
         : [],
+      contextTokensUsed: options.contextTokensUsed,
+      createdAt: options.composerCreatedAt,
+      lastUpdatedAt: options.composerLastUpdatedAt,
     }),
   );
   insert.run(
@@ -1618,7 +1782,10 @@ function insertComposer(
       type: 2,
       createdAt: "2026-03-10T03:30:01.000Z",
       text: options.assistantText,
-      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      usage: options.assistantUsage === null
+        ? undefined
+        : options.assistantUsage ?? { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      tokenCount: options.assistantTokenCount,
       stopReason: "end_turn",
     }),
   );

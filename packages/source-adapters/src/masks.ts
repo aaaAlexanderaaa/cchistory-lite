@@ -46,6 +46,7 @@ export const LITERAL_PROMPT_MASK_TEMPLATE_IDS = [
   "mask-skills-instructions-block",
   "mask-permissions-instructions-block",
   "mask-collaboration-mode-block",
+  "mask-recommended-plugins-block",
 ] as const;
 
 const BUILTIN_MASK_TEMPLATES: readonly BuiltinMaskTemplate[] = [
@@ -168,6 +169,21 @@ const BUILTIN_MASK_TEMPLATES: readonly BuiltinMaskTemplate[] = [
     is_active: true,
     created_at: "2026-08-11T00:00:00.000Z",
     updated_at: "2026-08-11T00:00:00.000Z",
+  },
+  {
+    id: "mask-recommended-plugins-block",
+    name: "Recommended Plugins Catalog",
+    description: "Collapses the injected Codex plugin catalog that precedes a user request.",
+    match_type: "regex",
+    match_pattern: "<recommended_plugins>[\\s\\S]*?</recommended_plugins>",
+    action: "collapse",
+    collapse_label: "Recommended Plugins",
+    priority: 8,
+    applies_to: ["user_message", "system_message"],
+    is_builtin: true,
+    is_active: true,
+    created_at: "2026-08-30T00:00:00.000Z",
+    updated_at: "2026-08-30T00:00:00.000Z",
   },
   {
     id: "mask-system-prompt-prefix",

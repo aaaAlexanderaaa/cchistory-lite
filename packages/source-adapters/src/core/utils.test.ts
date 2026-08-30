@@ -287,6 +287,29 @@ Let me chronologically analyze the conversation...`;
     assert.equal(chunks.at(-1)?.text, "Review the validator behavior.");
   });
 
+  test("Codex recommended_plugins catalog stays injected ahead of the user request", () => {
+    const text = [
+      "<recommended_plugins>",
+      "Here is a list of plugins that are available but not installed.",
+      "",
+      "- Airtable (airtable@openai-curated-remote)",
+      "</recommended_plugins>",
+      "",
+      "# AGENTS.md instructions for /workspace/app",
+      "",
+      "<INSTRUCTIONS>Repository rules</INSTRUCTIONS>",
+      "",
+      "<environment_context><cwd>/workspace/app</cwd></environment_context>",
+      "",
+      "对比这个项目和 TMP 目录下的 loop 以及 Dockit。",
+    ].join("\n");
+    const chunks = splitUserText(text);
+    assert.equal(chunks[0]?.originKind, "injected_user_shaped");
+    assert.match(chunks[0]?.text ?? "", /<recommended_plugins>/u);
+    assert.equal(chunks.at(-1)?.originKind, "user_authored");
+    assert.equal(chunks.at(-1)?.text, "对比这个项目和 TMP 目录下的 loop 以及 Dockit。");
+  });
+
   test("a user-authored Skills heading without the injected catalog signature stays authored", () => {
     const text = "## Skills\n\nPlease add image editing and spreadsheet support.";
     const chunks = splitUserText(text);
@@ -300,6 +323,7 @@ Let me chronologically analyze the conversation...`;
       "<skills_instructions>\n<skill>review history</skill>",
       "<permissions instructions>\nFilesystem access is read-only.",
       "<collaboration_mode>\nDefault",
+      "<recommended_plugins>\nHere is a list of plugins that are available but not installed.",
     ];
     for (const text of truncatedEnvelopes) {
       const chunks = splitUserText(text);

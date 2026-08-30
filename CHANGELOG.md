@@ -7,6 +7,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Container sources (zcode, lobechat, and the SQLite parts of hybrid sources)
+  no longer attribute the whole database file to one session and 0B to the
+  rest. A shared blob's bytes are split proportionally to each session's raw
+  record bytes — no extra queries, the records are already in memory from
+  parsing — and contributions carry `shared_storage` with the estimated share
+  and the container total. SQLite blobs are marked shared even when the
+  snapshot currently contains only one session from that store, so Zcode and
+  single-composer Cursor workspace DBs render as `≈12KB of 10.0MB db` instead
+  of an exact-looking exclusive file size. A filtered leftover session keeps
+  its own proportion rather than inheriting the whole database. Session cards
+  keep the `≈` marker when the parent also has subagents. Sessions with zero
+  bytes omit the storage hint instead of showing `0B`. Atom-based stats (tool
+  calls) for container sessions also stay on their own session instead of
+  collapsing onto the first record owner.
+- Codex session titles no longer take the injected
+  `<recommended_plugins>` catalog as the first 72 characters of the user
+  turn. That envelope is classified as injected scaffolding, same as
+  AGENTS.md and `<environment_context>`, so the card title is the actual
+  request.
+
+### Changed
+
+- Human-readable CLI collections replace the bold-title/all-gray cards with
+  semantic field colors: the title is the only bold field and carries green
+  on the identity line after the model; the identity line shows the source
+  tool in blue with the model in magenta; working directories are white,
+  including the `cd` target inside a resume command; counts, timestamps,
+  session references, and the rest of a resume command stay gray. Cursor
+  prompt-history fallback sessions omit the truncated `session prompt-h…`
+  id and `tokens n/a`. The renderers emit styles directly instead of the old
+  regex post-painter, and non-TTY / `NO_COLOR=1` output remains pure text.
+
 ## [0.4.2] - 2026-08-29
 
 ### Added
