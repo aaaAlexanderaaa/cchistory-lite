@@ -275,7 +275,7 @@ async function scan(
   overrides: Partial<ScanLiteHistoryOptions> = {},
 ): Promise<LiveHistorySnapshot> {
   const scanHistory = io.scan ?? scanLiteHistory;
-  return scanHistory({
+  const options: ScanLiteHistoryOptions = {
     homeDir: io.homeDir,
     hostname: io.hostname,
     sourceRoots: values(parsed, "source-root").map((entry) => parseSourceRoot(entry, io.cwd)),
@@ -299,7 +299,9 @@ async function scan(
       }
     } : undefined,
     ...overrides,
-  });
+  };
+  emitDirectoryScopeNotice(parsed, io, options.directoryScope, json);
+  return scanHistory(options);
 }
 
 function scanGuardRequestFor(
@@ -1795,12 +1797,32 @@ function commandAcceptsDirectoryScope(command: string): boolean {
 
 function defaultsDirectoryScopeToCwd(parsed: ParsedArgs): boolean {
   if (!commandAcceptsDirectoryScope(parsed.command)) return false;
-  if (parsed.command === "query" || parsed.command === "shell") return true;
-  if (parsed.command === "sample") return false;
-  if (getJsonOutputMode(parsed) === "none") return false;
   if (parsed.command === "ls" && (parsed.positionals[0] ?? "projects") === "sources") return false;
   if (parsed.command === "tree" && (parsed.positionals[0] ?? "projects") !== "projects") return false;
   return true;
+}
+
+function emitDirectoryScopeNotice(
+  parsed: ParsedArgs,
+  io: LiteCliIo,
+  directoryScope: string | undefined,
+  json: boolean,
+): void {
+  if (json) return;
+  if (!commandAcceptsDirectoryScope(parsed.command)) return;
+  if (parsed.command === "ls" && (parsed.positionals[0] ?? "projects") === "sources") return;
+  if (parsed.command === "tree" && (parsed.positionals[0] ?? "projects") !== "projects") return;
+  if (directoryScope) {
+    const scopedToCwd = path.resolve(directoryScope) === path.resolve(io.cwd);
+    const where = scopedToCwd ? `${directoryScope} (current directory)` : directoryScope;
+    io.stderr(
+      `Looking for history under ${where}. Sessions whose working directory is outside this path are omitted. Whole-machine scan: --no-dir\n`,
+    );
+    return;
+  }
+  io.stderr(
+    "Scanning all selected sources on this machine (no directory scope). This can use a lot of memory. Narrow with --dir or --source, or preview with sample.\n",
+  );
 }
 
 function resolveDirectoryScope(parsed: ParsedArgs, io: LiteCliIo): string | undefined {
@@ -1871,8 +1893,8 @@ Usage:
   cchistory-lite help [command]
 
 Browsing options:
-  --dir <path>                       Keep history under this working directory
-  --no-dir                           Do not apply a directory scope (overrides JSON/query/shell cwd default)
+  --dir <path>                       Keep history under this working directory (default: current directory)
+  --no-dir                           Scan all selected sources on this machine (no directory scope)
   --limit <n>                        Show at most n rows (ls defaults to 20; search counts sessions)
   --all                              Show every ls row; cannot be combined with --limit
   --offset <n>                       Skip the first n search sessions (default 0)
@@ -1888,9 +1910,11 @@ latest turns is one record per UserTurn and shows its session, model, and total 
 or latest turns 50 to choose a count.
 Directory paths are resolved from the current directory and support ~. Sessions without a
 working directory are excluded when a directory scope is present. --dir applies only to
-collection views, search, stats, tree projects, query, shell, and sample. query, shell, and --json
-collection/search/stats commands default to the current working directory; pass --no-dir for
-the whole machine. Human-readable CLI without --json still defaults to every source.
+collection views, search, stats, tree projects, query, shell, and sample. Those commands
+default to the current working directory for both the human CLI and --json; pass --no-dir
+for the whole machine. A whole-machine scan can use a lot of memory — prefer --dir,
+--source, --limit-files, or sample. Human (non-JSON) scans print the chosen scope on
+stderr before they start. TUI and export still scan every selected source.
 --dir does not open parent project folders or later Codex cwd lines; if a subdirectory
 listing is empty, retry --dir at the repository root or --no-dir.
 search returns one row per top-level session; --limit/--offset count sessions, not turns.

@@ -53,8 +53,9 @@ The scan guard (`CCHISTORY_SCAN_GUARD=0` disables it) has four parts:
    that requested it.
 
 To bound one scan: `--source`, `--source-root`, `--dir`, `--limit-files`, or
-`sample`. To amortize: one `shell` session or one `query` batch instead of N
-one-shot processes.
+`sample`. Collection commands (human CLI and `--json`) default to `--dir=$PWD`;
+`--no-dir` is the whole-machine opt-in. To amortize: one `shell` session or one
+`query` batch instead of N one-shot processes.
 
 ## Concurrency discipline
 

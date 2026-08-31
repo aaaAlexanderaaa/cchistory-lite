@@ -46,6 +46,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [`@cchistory/lite`](https://www.npmjs.com/package/@cchistory/lite) package
   (`npx` / `npm install -g`) now that 0.4.2 is on npm.
 
+- Human CLI collection commands (`ls`, `latest`, `sample`, `search`, `stats`,
+  `tree projects`) now default to the current working directory, same as
+  `--json` / `query` / `shell`. `sample` no longer stays unscoped. Pass
+  `--no-dir` for a whole-machine scan. Human (non-JSON) runs print the chosen
+  scope on stderr before the scan starts, or a memory warning when `--no-dir`
+  is set. TUI and `export` still scan every selected source.
+
 ### Fixed
 
 - Markdown `export` used the full-scan memory estimate (×8) even though it

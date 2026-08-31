@@ -115,8 +115,10 @@ Use `--json` for compact `cchistory-lite/v2` read output, or
 command performs a fresh canonical scan; use `query` to batch agent reads into
 one scan, `shell` to keep one directory-scoped snapshot in memory, or the TUI
 to amortize a scan across interactive browsing. `--json`, `query`, and `shell`
-default to `--dir=$PWD`; pass `--no-dir` to disable that scope. Human-readable
-CLI without `--json` still defaults to every selected source.
+default to `--dir=$PWD`; pass `--no-dir` to disable that scope. The human CLI
+(`ls`, `latest`, `sample`, `search`, `stats`, `tree projects`) shares that
+current-directory default and prints the chosen scope on stderr. TUI and
+`export` still scan every selected source.
 
 `ls` shows 20 rows by default. Pass `--limit <n>` or `--all`; JSON collection
 payloads include the untruncated `total` and returned `shown` counts. `ls families`
@@ -126,7 +128,8 @@ input/output previews. Lite does not delete those files. `latest`
 defaults to the 20 newest sessions and takes its count positionally, for example
 `latest 50` or `latest turns 50`. `sample` is a bounded latest-shaped preview
 (default 50 top-level sessions per source) for checking what Lite will show on
-this machine without a full scan. `sample --json` does not default to `--dir=$PWD`.
+this machine without a full parse of every file. `sample` defaults to
+`--dir=$PWD`; pass `--no-dir` for a bounded whole-machine preview.
 Cheap ranking inspects at most four listed files at a time; it still fully
 parses only the selected files. Grok `updates.jsonl` contributes usage by
 streaming `turn_completed` events only.
@@ -193,8 +196,8 @@ with `NO_COLOR=1`.
 
 Agents looking up local history should follow
 `skills/using-cchistory-lite/SKILL.md`. Use `--json` (or `query` / `shell`).
-Those entry points default to `--dir=$PWD`; pass `--no-dir` for an unscoped
-scan. Search rows are top-level sessions; `total` counts sessions. Compact
+Those entry points, and the human CLI, default to `--dir=$PWD`; pass
+`--no-dir` for an unscoped scan. Search rows are top-level sessions; `total` counts sessions. Compact
 JSON is `untrusted_history`. Run `cchistory-lite agent` for the versioned
 machine-readable contract (commands, flags, exit codes, output schemas, cost
 model) and `cchistory-lite agent guide` for the long-form agent manual.

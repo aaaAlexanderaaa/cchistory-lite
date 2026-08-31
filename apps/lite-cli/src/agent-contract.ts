@@ -101,12 +101,12 @@ const JSON_NO_CANONICAL: AgentFlagContract = {
 const DIR: AgentFlagContract = {
   name: "--dir",
   kind: "value",
-  summary: "Keep history under this working directory",
+  summary: "Keep history under this working directory (default: current directory)",
 };
 const NO_DIR: AgentFlagContract = {
   name: "--no-dir",
   kind: "boolean",
-  summary: "Do not apply a directory scope (overrides the JSON/query/shell cwd default)",
+  summary: "Scan all selected sources on this machine (overrides the cwd default)",
 };
 
 function buildCommands(): Record<string, AgentCommandContract> {
@@ -141,7 +141,7 @@ function buildCommands(): Record<string, AgentCommandContract> {
       summary: "Bounded latest-shaped preview (default 50 top-level sessions per source); bypasses the scan lock",
       usage: "cchistory-lite sample [N] [--dir <path>] [options]",
       flags: [...scanFlags, DIR, NO_DIR],
-      notes: "Unlike other --json commands, sample --json does not default to --dir=$PWD.",
+      notes: "Defaults to --dir=$PWD like other collection commands; pass --no-dir for a bounded whole-machine preview.",
     },
     tree: {
       name: "tree",
@@ -320,6 +320,7 @@ export function buildAgentContract(version: string): AgentContract {
         "Never fan out concurrent one-shot full scans: they serialize behind the scan lock and fail after the bounded wait.",
         "Prefer one shell or query session over many one-shot commands to amortize the scan.",
         "Use sample to preview a machine without a full scan.",
+        "Collection commands default to --dir=$PWD; pass --no-dir only when a whole-machine scan is required.",
         "Bound large scans with --source, --dir, or --limit-files.",
       ],
     },

@@ -132,7 +132,7 @@ test("Lite CLI searches, reports stats, and writes one-way export", async () => 
     assert.ok(statsPayload.overview.total_turns > 0);
 
     const humanStats = captureIo(tempHome);
-    assert.equal(await runLiteCli(["stats", ...sourceArgs], humanStats.io), 0);
+    assert.equal(await runLiteCli(["stats", ...sourceArgs, "--no-dir"], humanStats.io), 0);
     assert.match(humanStats.stdout.join(""), /Excluded zero-token turns:/);
 
     const rollup = captureIo(tempHome);
@@ -827,7 +827,7 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
   });
 
   const latestSessions = captureIo(repoRoot, undefined, { scan: async () => zeroTurnSnapshot });
-  assert.equal(await runLiteCli(["latest"], latestSessions.io), 0);
+  assert.equal(await runLiteCli(["latest", "--no-dir"], latestSessions.io), 0);
   const latestSessionText = latestSessions.stdout.join("");
   assert.match(latestSessionText, /Latest sessions \(6, newest first; one record = one session\)/);
   assert.match(latestSessionText, /● just now ·/);
@@ -848,7 +848,7 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
   );
 
   const narrowSessions = captureIo(repoRoot, undefined, { scan: scanner, columns: 40 });
-  assert.equal(await runLiteCli(["ls", "sessions", "--all"], narrowSessions.io), 0);
+  assert.equal(await runLiteCli(["ls", "sessions", "--all", "--no-dir"], narrowSessions.io), 0);
   const narrowSessionText = narrowSessions.stdout.join("");
   assert.ok(
     narrowSessionText.split("\n").slice(1).every((line) => displayColumnsForTest(line) <= 40),
@@ -860,7 +860,7 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
   );
 
   const latestTurns = captureIo(repoRoot, undefined, { scan: scanner });
-  assert.equal(await runLiteCli(["latest", "turns", "1"], latestTurns.io), 0);
+  assert.equal(await runLiteCli(["latest", "turns", "1", "--no-dir"], latestTurns.io), 0);
   const latestTurnText = latestTurns.stdout.join("");
   const firstTurn = snapshot.listResolvedTurns()[0];
   assert.ok(firstTurn);
@@ -880,7 +880,7 @@ test("Lite CLI latest parses defaults, aliases, and positional counts", async ()
   }
 
   const narrowTurns = captureIo(repoRoot, undefined, { scan: scanner, columns: 70 });
-  assert.equal(await runLiteCli(["latest", "turns", "1"], narrowTurns.io), 0);
+  assert.equal(await runLiteCli(["latest", "turns", "1", "--no-dir"], narrowTurns.io), 0);
   assert.ok(
     narrowTurns.stdout.join("").split("\n").every((line) => displayColumnsForTest(line) <= 70),
     "latest output must stay within a narrow terminal width",
@@ -943,13 +943,13 @@ test("Lite CLI ls limits human and JSON output and rejects conflicting controls 
   const snapshot = await getCodexSnapshot();
   const scanner = async () => snapshot;
   const projects = captureIo(repoRoot, undefined, { scan: scanner });
-  assert.equal(await runLiteCli(["ls", "projects", "--limit", "1"], projects.io), 0);
+  assert.equal(await runLiteCli(["ls", "projects", "--limit", "1", "--no-dir"], projects.io), 0);
   assert.match(projects.stdout.join(""), /Projects \(1 of \d+, most active first; one record = one project\)/);
   assert.match(projects.stdout.join(""), /● /);
   assert.doesNotMatch(projects.stdout.join(""), /ACTIVITY\s+LINKAGE\s+SESS\s+TURNS\s+DIRECTORY/);
 
   const limited = captureIo(repoRoot, undefined, { scan: scanner });
-  assert.equal(await runLiteCli(["ls", "sessions", "--limit", "1"], limited.io), 0);
+  assert.equal(await runLiteCli(["ls", "sessions", "--limit", "1", "--no-dir"], limited.io), 0);
   assert.match(limited.stdout.join(""), /Sessions \(1 of 5, newest first; one record = one session\)/);
   assert.match(limited.stdout.join(""), /● .* · Codex/);
   assert.doesNotMatch(limited.stdout.join(""), /UPDATED\s+SOURCE\s+SESSION\s+TURNS/);
@@ -1149,7 +1149,7 @@ test("Lite CLI sample is a bounded latest-shaped preview", async () => {
   });
   assert.equal(await runLiteCli(["sample", "3", "--json"], captured.io), 0);
   assert.equal(scanOptions[0]?.sample?.perSource, 3);
-  assert.equal(scanOptions[0]?.directoryScope, undefined);
+  assert.equal(scanOptions[0]?.directoryScope, repoRoot);
   const payload = JSON.parse(captured.stdout.join("")) as {
     sampled?: boolean;
     sample_per_source?: number;
@@ -1185,6 +1185,9 @@ test("Lite CLI help documents latest, limits, and directory scope", async () => 
   assert.match(help, /last real message activity/);
   assert.match(help, /Sessions without a\nworking directory are excluded/);
   assert.match(help, /does not open parent project folders or later Codex cwd lines/);
+  assert.match(help, /default: current directory/);
+  assert.match(help, /can use a lot of memory/);
+  assert.match(help, /TUI and export still scan every selected source/);
   assert.match(help, /--offset <n>/);
   assert.match(help, /--project <ref>/);
   assert.match(help, /--by <dimension>/);
@@ -1235,7 +1238,7 @@ test("Lite CLI colorizes collection cards semantically on a TTY", async () => {
   process.env.TERM = "xterm-256color";
   try {
     const tty = captureIo(repoRoot, undefined, { scan: scanner, isTTY: true });
-    assert.equal(await runLiteCli(["ls", "sessions", "--all"], tty.io), 0);
+    assert.equal(await runLiteCli(["ls", "sessions", "--all", "--no-dir"], tty.io), 0);
     const text = tty.stdout.join("");
 
     // Gray tier: heading, timestamps, counts, session ids, resume command body.
@@ -1281,25 +1284,25 @@ test("Lite CLI colorizes collection cards semantically on a TTY", async () => {
     assert.ok(!text.includes(`${E}[4m`));
 
     const ttyTurns = captureIo(repoRoot, undefined, { scan: scanner, isTTY: true });
-    assert.equal(await runLiteCli(["latest", "turns", "2"], ttyTurns.io), 0);
+    assert.equal(await runLiteCli(["latest", "turns", "2", "--no-dir"], ttyTurns.io), 0);
     const turnsText = ttyTurns.stdout.join("");
     assert.ok(turnsText.includes(`${E}[34mCodex${E}[0m`));
     assert.ok(turnsText.includes(`${E}[1m${E}[32m  `));
     assert.ok(turnsText.includes(`${E}[35m`));
 
     const ttyProjects = captureIo(repoRoot, undefined, { scan: scanner, isTTY: true });
-    assert.equal(await runLiteCli(["ls", "projects", "--all"], ttyProjects.io), 0);
+    assert.equal(await runLiteCli(["ls", "projects", "--all", "--no-dir"], ttyProjects.io), 0);
     assert.ok(ttyProjects.stdout.join("").includes(`${E}[2m● ${E}[0m${E}[1m${E}[32m`));
 
     const ttySearch = captureIo(repoRoot, undefined, { scan: scanner, isTTY: true });
-    assert.equal(await runLiteCli(["search", "mock"], ttySearch.io), 0);
+    assert.equal(await runLiteCli(["search", "mock", "--no-dir"], ttySearch.io), 0);
     const searchText = ttySearch.stdout.join("");
     assert.ok(searchText.includes(`${E}[2m- sess:`));
     assert.ok(searchText.includes(`${E}[1m${E}[32m  `));
 
     // Non-TTY output stays pure text.
     const plain = captureIo(repoRoot, undefined, { scan: scanner });
-    assert.equal(await runLiteCli(["ls", "sessions", "--all"], plain.io), 0);
+    assert.equal(await runLiteCli(["ls", "sessions", "--all", "--no-dir"], plain.io), 0);
     assert.ok(!plain.stdout.join("").includes(E));
   } finally {
     if (savedNoColor === undefined) delete process.env.NO_COLOR;
@@ -1338,7 +1341,7 @@ test("Lite CLI renders container storage as an estimated share and omits zero by
     ],
   });
   const captured = captureIo(repoRoot, undefined, { scan: async () => sharedSnapshot });
-  assert.equal(await runLiteCli(["ls", "sessions", "--all"], captured.io), 0);
+  assert.equal(await runLiteCli(["ls", "sessions", "--all", "--no-dir"], captured.io), 0);
   const text = captured.stdout.join("");
   assert.ok(text.includes("≈12KB of 10.0MB db"));
   assert.ok(!text.includes("· 0B"));
@@ -1381,7 +1384,7 @@ test("Lite CLI puts the session title after the model and omits prompt-history i
     sessions: [promptHistory, ...snapshot.data.sessions],
   });
   const captured = captureIo(repoRoot, undefined, { scan: async () => mixedSnapshot });
-  assert.equal(await runLiteCli(["ls", "sessions", "--all"], captured.io), 0);
+  assert.equal(await runLiteCli(["ls", "sessions", "--all", "--no-dir"], captured.io), 0);
   const text = captured.stdout.join("");
   const model = target.model?.trim();
   assert.ok(model);
@@ -1425,6 +1428,41 @@ test("Lite CLI JSON search defaults to cwd and --no-dir restores the unscoped sn
   const conflict = captureIo(scoped.working_directory);
   assert.equal(await runLiteCli(["search", "Review", "--json", "--dir", scoped.working_directory, "--no-dir"], conflict.io), 2);
   assert.match(conflict.stderr.join(""), /--no-dir and --dir cannot be used together/);
+});
+
+test("Lite CLI human collection commands default to cwd and announce the scope", async () => {
+  const snapshot = await getCodexSnapshot();
+  const scanOptions: ScanLiteHistoryOptions[] = [];
+  const scanner = async (options: ScanLiteHistoryOptions) => {
+    scanOptions.push(options);
+    return snapshot;
+  };
+
+  const human = captureIo(repoRoot, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["latest"], human.io), 0);
+  assert.equal(scanOptions.at(-1)?.directoryScope, repoRoot);
+  assert.match(human.stderr.join(""), /Looking for history under /);
+  assert.match(human.stderr.join(""), /\(current directory\)/);
+  assert.match(human.stderr.join(""), /Whole-machine scan: --no-dir/);
+  assert.doesNotMatch(human.stdout.join(""), /Looking for history under /);
+
+  const json = captureIo(repoRoot, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["latest", "--json"], json.io), 0);
+  assert.equal(scanOptions.at(-1)?.directoryScope, repoRoot);
+  assert.doesNotMatch(json.stderr.join(""), /Looking for history under /);
+  assert.doesNotMatch(json.stderr.join(""), /Whole-machine scan/);
+
+  const unscoped = captureIo(repoRoot, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["latest", "--no-dir"], unscoped.io), 0);
+  assert.equal(scanOptions.at(-1)?.directoryScope, undefined);
+  assert.match(unscoped.stderr.join(""), /Scanning all selected sources on this machine/);
+  assert.match(unscoped.stderr.join(""), /This can use a lot of memory/);
+
+  const exportRun = captureIo(repoRoot, undefined, { scan: scanner });
+  assert.equal(await runLiteCli(["export", "--format", "markdown", "--out", "-"], exportRun.io), 0);
+  assert.equal(scanOptions.at(-1)?.directoryScope, undefined);
+  assert.doesNotMatch(exportRun.stderr.join(""), /Looking for history under /);
+  assert.doesNotMatch(exportRun.stderr.join(""), /Scanning all selected sources on this machine/);
 });
 
 test("Lite CLI query latest and list count the same unit they return", async () => {
@@ -1635,7 +1673,7 @@ test("Lite CLI scan guard refuses a scan whose estimate risks the machine, teach
 
     // Bounded probes bypass the lock and the estimate even on the same root.
     const sampled = captureIo(tempHome);
-    assert.equal(await runLiteCli(["sample", "1", ...sourceArgs], sampled.io), 0, sampled.stderr.join(""));
+    assert.equal(await runLiteCli(["sample", "1", ...sourceArgs, "--no-dir"], sampled.io), 0, sampled.stderr.join(""));
     const shown = captureIo(tempHome);
     assert.equal(
       await runLiteCli(
