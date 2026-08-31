@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-08-31
+
 ### Added
 
 - `cchistory-lite agent` prints the versioned machine-readable contract
