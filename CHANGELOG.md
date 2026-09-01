@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-09-01
+
 ### Changed
 
 - Agent-facing CLI teaching: `--help` now leads with `cchistory-lite agent`,
