@@ -1444,7 +1444,7 @@ test("Lite CLI human collection commands default to cwd and announce the scope",
   assert.equal(scanOptions.at(-1)?.directoryScope, repoRoot);
   assert.match(human.stderr.join(""), /Filtering sessions whose working directory is under /);
   assert.match(human.stderr.join(""), /\(current directory\)/);
-  assert.match(human.stderr.join(""), /memory estimate still covers every selected source root/);
+  assert.match(human.stderr.join(""), /memory estimate counts source files that may match this directory/);
   assert.match(human.stderr.join(""), /Whole-machine listing: --no-dir/);
   assert.doesNotMatch(human.stdout.join(""), /Filtering sessions whose working directory/);
 
@@ -1458,7 +1458,7 @@ test("Lite CLI human collection commands default to cwd and announce the scope",
   assert.equal(await runLiteCli(["latest", "--no-dir"], unscoped.io), 0);
   assert.equal(scanOptions.at(-1)?.directoryScope, undefined);
   assert.match(unscoped.stderr.join(""), /Listing every selected source on this machine/);
-  assert.match(unscoped.stderr.join(""), /memory estimate still covers every selected source root/);
+  assert.match(unscoped.stderr.join(""), /memory estimate covers every selected source root/);
   assert.match(unscoped.stderr.join(""), /Bound with --source, --limit-files, or sample/);
 
   const exportRun = captureIo(repoRoot, undefined, { scan: scanner });
@@ -1657,7 +1657,7 @@ test("Lite CLI scan guard refuses a scan whose estimate risks the machine, teach
     assert.match(message, /Refusing to scan/);
     assert.match(message, /Selected source roots/);
     assert.match(message, /codex/);
-    assert.match(message, /does not shrink source bytes/);
+    assert.match(message, /this scan has no --dir filter/);
     assert.match(message, /--source <slot>/);
     assert.match(message, /--limit-files/);
     assert.match(message, /sample/);
@@ -1666,6 +1666,16 @@ test("Lite CLI scan guard refuses a scan whose estimate risks the machine, teach
     assert.match(message, /query/);
     assert.match(message, /CCHISTORY_SCAN_GUARD=0/);
     assert.doesNotMatch(message, /--dir is already on/);
+    assert.doesNotMatch(message, /does not shrink source bytes/);
+
+    const scopedLatest = captureIo(tempHome);
+    assert.equal(
+      await runLiteCli(["latest", "--dir", "/workspace/codex-delegated", ...sourceArgs], scopedLatest.io),
+      0,
+      scopedLatest.stderr.join(""),
+    );
+    const defaultDir = captureIo(tempHome);
+    assert.equal(await runLiteCli(["latest", ...sourceArgs], defaultDir.io), 0, defaultDir.stderr.join(""));
 
     const refusedJson = captureIo(tempHome);
     assert.equal(await runLiteCli(["sources", "--json", ...sourceArgs], refusedJson.io), 1);
@@ -1742,6 +1752,7 @@ test("Lite CLI maps scan guard refusals and aborts to exit 1 with distinct struc
             estimatedBytes: 17 * 1024 ** 3,
             availableBytes: 1.3 * 1024 ** 3,
             scannedBytes: 4.3 * 1024 ** 3,
+            directoryScoped: true,
             detail: "synthetic",
             roots: [{ path: "/root/.claude/projects", bytes: 4.3 * 1024 ** 3, slot_id: "claude_code" }],
           },
@@ -1749,9 +1760,11 @@ test("Lite CLI maps scan guard refusals and aborts to exit 1 with distinct struc
       },
     });
     assert.equal(await runLiteCli(["latest", "sessions", "40"], scopedRefuse.io), 1);
-    assert.match(scopedRefuse.stderr.join(""), /--dir is already on for this command/);
-    assert.match(scopedRefuse.stderr.join(""), /does not shrink source bytes/);
+    assert.match(scopedRefuse.stderr.join(""), /already limited this estimate/);
+    assert.match(scopedRefuse.stderr.join(""), /after --dir filter/);
     assert.match(scopedRefuse.stderr.join(""), /claude_code/);
+    assert.doesNotMatch(scopedRefuse.stderr.join(""), /--dir is already on/);
+    assert.doesNotMatch(scopedRefuse.stderr.join(""), /does not shrink source bytes/);
 
     // Human mode prints the plain message, not the JSON envelope.
     const human = captureIo(tempHome, undefined, {
@@ -2063,7 +2076,7 @@ test("Lite CLI help leads with the agent path and prints per-command contracts",
   assert.match(head, /sample --json/);
   assert.match(head, /--source <slot>/);
   assert.match(head, /ls sources --limit-files 1/);
-  assert.match(head, /does not shrink source bytes/);
+  assert.match(head, /bounds the source-byte estimate/);
   assert.match(head, /Do not discard stderr/);
   assert.match(help, /cchistory-lite agent \[skill\|guide\]/);
 

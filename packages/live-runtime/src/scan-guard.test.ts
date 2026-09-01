@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -481,17 +481,28 @@ test("refusal and warning text name the numbers, the bounds, and the override", 
   assert.match(estimateRefusal.message, /Refusing to scan/);
   assert.match(estimateRefusal.message, /772 B/);
   assert.match(estimateRefusal.message, /1\.0 KiB/);
-  assert.match(estimateRefusal.message, /Selected source roots/);
+  assert.match(estimateRefusal.message, /Selected source roots:/);
   assert.match(estimateRefusal.message, /\/root/);
   assert.match(estimateRefusal.message, /193 B/);
-  assert.match(estimateRefusal.message, /does not shrink source bytes/);
+  assert.match(estimateRefusal.message, /this scan has no --dir filter/);
   assert.match(estimateRefusal.message, /--source <slot>/);
   assert.match(estimateRefusal.message, /--limit-files/);
   assert.match(estimateRefusal.message, /`sample`/);
   assert.match(estimateRefusal.message, /ls sources --limit-files 1/);
   assert.match(estimateRefusal.message, /`shell` \/ `query`/);
   assert.match(estimateRefusal.message, /CCHISTORY_SCAN_GUARD=0/);
+  assert.doesNotMatch(estimateRefusal.message, /does not shrink source bytes/);
   assert.doesNotMatch(estimateRefusal.message, /Narrow the scan with --source, --dir/);
+
+  const scopedAssessment = await assessScanRisk(
+    { roots: ["/root"], profile: "light", directoryScoped: true },
+    { walkRootBytes: async () => 193, readAvailableBytes: () => 1024 },
+  );
+  assert.equal(scopedAssessment.directoryScoped, true);
+  const scopedRefusal = new ScanGuardRefusedError({ reason: "estimated_memory", assessment: scopedAssessment });
+  assert.match(scopedRefusal.message, /Selected source roots after --dir filter:/);
+  assert.match(scopedRefusal.message, /already limited this estimate/);
+  assert.doesNotMatch(scopedRefusal.message, /no --dir filter/);
 
   const lockRefusal = new ScanGuardRefusedError({
     reason: "scan_in_progress",
@@ -644,6 +655,108 @@ test("the watchdog aborts a guarded scan when available memory collapses mid-pro
     },
   );
   assert.ok(reads > 1);
+});
+
+test("a --dir estimate prices matching source files and ignores junk plus out-of-scope Codex sessions", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-dir-estimate-"));
+  const hugeRoot = path.join(tempHome, "codex-sessions");
+  try {
+    await cp(codexRoot, hugeRoot, { recursive: true });
+    const junk = path.join(hugeRoot, "huge.bin");
+    await writeFile(junk, "");
+    await truncate(junk, 256 * GIB);
+    const outsideSession = path.join(hugeRoot, "huge-outside.jsonl");
+    await writeFile(
+      outsideSession,
+      `${JSON.stringify({
+        timestamp: "2026-08-01T00:00:00.000Z",
+        type: "session_meta",
+        payload: { id: "huge-outside", cwd: "/workspace/other" },
+      })}\n`,
+    );
+    await truncate(outsideSession, 256 * GIB);
+    const tightMemory = { readAvailableBytes: () => 512 * MIB };
+
+    await assert.rejects(
+      scanLiteHistory({
+        homeDir: emptyHome,
+        hostname: "cchistory-lite-dir-estimate-host",
+        sourceRefs: ["codex"],
+        sourceRoots: [{ sourceRef: "codex", baseDir: hugeRoot }],
+        safeMode: true,
+        contextMode: "none",
+        scanGuard: { profile: "light" },
+        scanGuardDeps: tightMemory,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ScanGuardRefusedError);
+        assert.equal(error.reason, "estimated_memory");
+        assert.equal(error.assessment?.directoryScoped, undefined);
+        assert.match(error.message, /this scan has no --dir filter/);
+        return true;
+      },
+    );
+
+    const scoped = await scanLiteHistory({
+      homeDir: emptyHome,
+      hostname: "cchistory-lite-dir-estimate-host",
+      sourceRefs: ["codex"],
+      sourceRoots: [{ sourceRef: "codex", baseDir: hugeRoot }],
+      directoryScope: "/workspace/codex-delegated",
+      safeMode: true,
+      contextMode: "none",
+      scanGuard: { profile: "light" },
+      scanGuardDeps: tightMemory,
+    });
+    assert.ok(scoped.listResolvedSessions({ directoryScope: "/workspace/codex-delegated" }).length > 0);
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("a --dir estimate keeps a logical-session group whose known cwds conflict", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-dir-conflict-"));
+  const hugeRoot = path.join(tempHome, "codex-sessions");
+  try {
+    await mkdir(hugeRoot, { recursive: true });
+    const writeSession = async (fileName: string, cwd: string, day: string): Promise<string> => {
+      const filePath = path.join(hugeRoot, fileName);
+      await writeFile(
+        filePath,
+        `${JSON.stringify({
+          timestamp: `2026-08-0${day}T00:00:00.000Z`,
+          type: "session_meta",
+          payload: { id: "cwd-conflict", cwd },
+        })}\n`,
+      );
+      return filePath;
+    };
+    await writeSession("split-a.jsonl", "/workspace/alpha", "1");
+    const splitB = await writeSession("split-b.jsonl", "/workspace/beta", "2");
+    await truncate(splitB, 256 * GIB);
+    await assert.rejects(
+      scanLiteHistory({
+        homeDir: emptyHome,
+        hostname: "cchistory-lite-dir-conflict-host",
+        sourceRefs: ["codex"],
+        sourceRoots: [{ sourceRef: "codex", baseDir: hugeRoot }],
+        directoryScope: "/workspace/gamma",
+        safeMode: true,
+        contextMode: "none",
+        scanGuard: { profile: "light" },
+        scanGuardDeps: { readAvailableBytes: () => 512 * MIB },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ScanGuardRefusedError);
+        assert.equal(error.reason, "estimated_memory");
+        assert.equal(error.assessment?.directoryScoped, true);
+        assert.ok((error.assessment?.scannedBytes ?? 0) >= 256 * GIB);
+        return true;
+      },
+    );
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
 });
 
 test("CCHISTORY_SCAN_GUARD=0 disables the lock, the estimate, and the watchdog", async () => {

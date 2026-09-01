@@ -125,10 +125,8 @@ class UsageError extends Error {
 
 export async function runLiteCli(argv: string[], io: LiteCliIo = defaultIo()): Promise<number> {
   let structuredOutput = false;
-  let parsedForError: ParsedArgs | undefined;
   try {
     const parsed = parseArgs(argv);
-    parsedForError = parsed;
     structuredOutput = requestsStructuredOutput(parsed);
     if (parsed.booleans.has("version")) {
       io.stdout(`${VERSION}\n`);
@@ -208,7 +206,7 @@ export async function runLiteCli(argv: string[], io: LiteCliIo = defaultIo()): P
     }
     throw new UsageError(`Unhandled Lite command: ${parsed.command}.`);
   } catch (error) {
-    const message = formatThrownMessage(error, parsedForError, io);
+    const message = formatThrownMessage(error);
     if (structuredOutput || (error instanceof UsageError && error.structuredOutput)) {
       io.stderr(`${JSON.stringify(buildErrorPayload(error, message), null, 2)}\n`);
     }
@@ -1831,12 +1829,12 @@ function emitDirectoryScopeNotice(
     const scopedToCwd = path.resolve(directoryScope) === path.resolve(io.cwd);
     const where = scopedToCwd ? `${directoryScope} (current directory)` : directoryScope;
     io.stderr(
-      `Filtering sessions whose working directory is under ${where}. The memory estimate still covers every selected source root. Whole-machine listing: --no-dir\n`,
+      `Filtering sessions whose working directory is under ${where}. The memory estimate counts source files that may match this directory. Whole-machine listing: --no-dir\n`,
     );
     return;
   }
   io.stderr(
-    "Listing every selected source on this machine (no working-directory filter). The memory estimate still covers every selected source root. Bound with --source, --limit-files, or sample.\n",
+    "Listing every selected source on this machine (no working-directory filter). The memory estimate covers every selected source root. Bound with --source, --limit-files, or sample.\n",
   );
 }
 
@@ -1895,9 +1893,11 @@ Agents: start with \`cchistory-lite agent\` (no scan); agent skill and agent gui
   cchistory-lite sample --json
   cchistory-lite latest sessions 10 --json --source <slot>
   cchistory-lite ls sources --limit-files 1
-\`--dir\` (default: current directory) filters sessions by working directory after
-the estimate. It does not shrink source bytes. Bound memory with --source,
---limit-files, or sample. Do not discard stderr: refusals live there.
+\`--dir\` (default: current directory) filters sessions by working directory and
+bounds the source-byte estimate to files that may match that path. \`--no-dir\`,
+\`sources\`, and \`export\` still estimate every selected source root. Bound further
+with --source, --limit-files, or sample. Do not discard stderr: refusals live
+there.
 
 Usage:
   cchistory-lite agent [skill|guide]
@@ -1917,7 +1917,7 @@ Usage:
 
 Browsing options:
   --dir <path>                       Filter sessions by working directory (default: current directory)
-  --no-dir                           Disable the working-directory filter (does not shrink the estimate)
+  --no-dir                           Disable the working-directory filter (estimates every selected source root)
   --limit <n>                        Show at most n rows (ls defaults to 20; search counts sessions)
   --all                              Show every ls row; cannot be combined with --limit
   --offset <n>                       Skip the first n search sessions (default 0)
@@ -1936,9 +1936,9 @@ working directory are excluded when a directory scope is present. --dir applies 
 collection views, search, stats, tree projects, query, shell, and sample. Those commands
 default to the current working directory for both the human CLI and --json; pass --no-dir
 for a whole-machine listing. A whole-machine listing can use a lot of memory — bound it with
---source, --limit-files, or sample. --dir filters session working directories; it does not
-shrink the source-byte estimate. Human (non-JSON) scans print the chosen scope on
-stderr before they start. TUI and export still scan every selected source.
+--source, --limit-files, or sample. --dir filters session working directories and bounds
+the source-byte estimate to files that may match. Human (non-JSON) scans print the chosen
+scope on stderr before they start. TUI and export still scan every selected source.
 --dir does not open parent project folders or later Codex cwd lines; if a subdirectory
 listing is empty, retry --dir at the repository root or --no-dir.
 search returns one row per top-level session; --limit/--offset count sessions, not turns.
@@ -2029,17 +2029,8 @@ function requestsStructuredOutput(parsed: ParsedArgs): boolean {
   return parsed.command === "query" || parsed.command === "agent" || getJsonOutputMode(parsed) !== "none";
 }
 
-function formatThrownMessage(error: unknown, parsed: ParsedArgs | undefined, io: LiteCliIo): string {
-  const message = error instanceof Error ? error.message : String(error);
-  if (
-    parsed &&
-    error instanceof ScanGuardRefusedError &&
-    error.reason === "estimated_memory" &&
-    resolveDirectoryScope(parsed, io)
-  ) {
-    return `${message} --dir is already on for this command.`;
-  }
-  return message;
+function formatThrownMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function buildErrorPayload(error: unknown, message = error instanceof Error ? error.message : String(error)): Record<string, unknown> {

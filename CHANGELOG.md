@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `--dir` now bounds the pre-flight memory estimate to the source files a
+  scan would probe for that working directory, including Codex first-cwd
+  rejects. Unscoped commands (`sources`, `export`, `--no-dir`) still price
+  every regular file under the selected roots.
+
 ## [0.4.4] - 2026-09-01
 
 ### Changed

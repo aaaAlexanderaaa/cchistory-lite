@@ -101,12 +101,12 @@ const JSON_NO_CANONICAL: AgentFlagContract = {
 const DIR: AgentFlagContract = {
   name: "--dir",
   kind: "value",
-  summary: "Filter sessions whose working directory is under this path (default: current directory). Does not shrink the source-byte estimate",
+  summary: "Filter sessions whose working directory is under this path (default: current directory). Also bounds the source-byte estimate to files that may match",
 };
 const NO_DIR: AgentFlagContract = {
   name: "--no-dir",
   kind: "boolean",
-  summary: "Disable the working-directory filter (overrides the cwd default). Does not change the source-byte estimate",
+  summary: "Disable the working-directory filter (overrides the cwd default). Estimates every selected source root",
 };
 
 function buildCommands(): Record<string, AgentCommandContract> {
@@ -322,7 +322,7 @@ export function buildAgentContract(version: string): AgentContract {
         "Never fan out concurrent one-shot full scans: they serialize behind the scan lock and fail after the bounded wait.",
         "Prefer one shell or query session over many one-shot commands to amortize the scan.",
         "Use sample to preview a machine without a full scan.",
-        "Collection commands default to --dir=$PWD; --dir filters session working directories and does not shrink the source-byte estimate. Pass --no-dir only when a whole-machine listing is required.",
+        "Collection commands default to --dir=$PWD; --dir filters session working directories and bounds the source-byte estimate to files that may match. Pass --no-dir only when a whole-machine listing is required.",
         "Bound large scans with --source, --limit-files, or sample. Use `ls sources --limit-files 1` to list slots without a full parse.",
       ],
     },

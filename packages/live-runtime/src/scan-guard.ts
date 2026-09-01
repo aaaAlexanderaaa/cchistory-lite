@@ -75,10 +75,15 @@ export interface ScanRiskAssessment {
   estimatedBytes: number;
   /** Bytes the host can give right now; undefined when the platform cannot say. */
   availableBytes?: number;
-  /** Raw regular-file bytes walked under the selected roots, pre-multiplier. */
+  /** Bytes the scan would probe under the selected roots, pre-multiplier. */
   scannedBytes: number;
   /** Per-root walk totals that summed to scannedBytes. */
   roots?: readonly ScanRiskRoot[];
+  /**
+   * True when the estimate counted `--dir`-filtered files rather than every
+   * regular file under the selected roots.
+   */
+  directoryScoped?: boolean;
   /** Neutral machine-readable note; surfaces compose the human message. */
   detail: string;
 }
@@ -91,6 +96,11 @@ export interface AssessScanRiskInput {
   /** Per-root cap on files counted, mirroring limit_files_per_source. */
   limitFiles?: number;
   profile: ScanGuardProfile;
+  /**
+   * When true, the caller walked the same `--dir`-filtered file set the scan
+   * would probe. Refusal copy then says the estimate is already scoped.
+   */
+  directoryScoped?: boolean;
 }
 
 export interface AssessScanRiskDeps {
@@ -134,6 +144,7 @@ export async function assessScanRisk(
     availableBytes,
     scannedBytes,
     roots,
+    ...(input.directoryScoped ? { directoryScoped: true } : {}),
   } as const;
   if (walkFailed) {
     return {
@@ -570,22 +581,29 @@ function buildRefusalMessage(init: {
   const available = assessment?.availableBytes === undefined
     ? "unknown"
     : formatScanGuardBytes(assessment.availableBytes);
+  const directoryNote = assessment?.directoryScoped
+    ? "--dir already limited this estimate to files that may match that working directory."
+    : "--dir also bounds the estimate when a collection command uses it; this scan has no --dir filter.";
   return `Refusing to scan: estimated peak memory ${formatScanGuardBytes(assessment?.estimatedBytes ?? 0)} ` +
     `(${assessment?.profile ?? "light"} scan of ${formatScanGuardBytes(assessment?.scannedBytes ?? 0)} source bytes, ×${multiplier}) ` +
     `exceeds 75% of the ${available} currently available on this machine.` +
-    `${formatSelectedSourceRoots(assessment?.roots)} ` +
-    `--dir filters sessions by working directory; it does not shrink source bytes. ` +
+    `${formatSelectedSourceRoots(assessment)} ` +
+    `${directoryNote} ` +
     `${formatScanBoundNextSteps()} ` +
     `Override the guard with CCHISTORY_SCAN_GUARD=0.`;
 }
 
-function formatSelectedSourceRoots(roots: readonly ScanRiskRoot[] | undefined): string {
+function formatSelectedSourceRoots(assessment: ScanRiskAssessment | undefined): string {
+  const roots = assessment?.roots;
   if (!roots?.length) return "";
   const lines = roots.map((root) => {
     const slot = root.slot_id ? `${root.slot_id}  ` : "";
     return `  ${slot}${root.path}  ${formatScanGuardBytes(root.bytes)}`;
   });
-  return ` Selected source roots (the estimate is this sum, not a --dir filter):\n${lines.join("\n")}`;
+  const heading = assessment?.directoryScoped
+    ? "Selected source roots after --dir filter:"
+    : "Selected source roots:";
+  return ` ${heading}\n${lines.join("\n")}`;
 }
 
 function formatScanBoundNextSteps(): string {

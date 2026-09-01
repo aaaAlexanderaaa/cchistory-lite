@@ -686,13 +686,20 @@ async function beginScanGuard(
 
   try {
     if (!request.bypass) {
+      const directoryScoped = Boolean(options.directoryScope);
+      const walkRootBytes = deps.walkRootBytes ?? (
+        directoryScoped && options.directoryScope
+          ? await createDirectoryScopedRootWalker(sources, options.directoryScope)
+          : undefined
+      );
       const assessment = await assessScanRisk(
         {
           roots: sources.map((source) => ({ path: source.base_dir, slot_id: source.slot_id })),
           limitFiles: options.limitFiles,
           profile: request.profile,
+          ...(directoryScoped ? { directoryScoped: true } : {}),
         },
-        { walkRootBytes: deps.walkRootBytes, readAvailableBytes: deps.readAvailableBytes },
+        { walkRootBytes, readAvailableBytes: deps.readAvailableBytes },
       );
       if (assessment.status === "refuse") {
         throw new ScanGuardRefusedError({ reason: "estimated_memory", assessment });
@@ -1226,6 +1233,117 @@ function sourceFileMayBeInDirectoryScope(
   const preview = sourceAdapters.previewSourceFileWorkingDirectory(source.platform, filePath);
   if (preview.state !== "known" || !preview.workingDirectory) return true;
   return pathMatchesDirectoryScope(preview.workingDirectory, directoryScope);
+}
+
+/**
+ * Files a `--dir` scan would pass to the probe. Layout/`preview` rejects match
+ * `scanSourceWithCollector`; logical-session adapters also apply the same
+ * first-cwd / group keep rule as `scanLogicalSessionGroups` so the estimate
+ * does not price files the scan would drop after inspect.
+ */
+async function selectDirectoryScopedProbeFiles(
+  sourceAdapters: typeof import("@cchistory/source-adapters"),
+  source: SourceDefinition,
+  listedFiles: readonly string[],
+  directoryScope: string,
+): Promise<string[]> {
+  const candidates = listedFiles.filter((filePath) => sourceFileMayBeInDirectoryScope(
+    sourceAdapters,
+    source,
+    filePath,
+    directoryScope,
+  ));
+  const adapter = sourceAdapters.listPlatformAdapters().find((entry) => entry.platform === source.platform);
+  if (adapter?.projectionBoundary !== "logical_session" || candidates.length === 0) {
+    return candidates;
+  }
+  const inspected = await sourceAdapters.inspectSourceFilesLogicalSessionMetadata(
+    source.platform,
+    candidates,
+    {
+      includeWorkspaceMetadata: true,
+      workspaceScan: source.platform === "codex" ? "first" : "full",
+    },
+  );
+  if (inspected.some((metadata) => metadata.sessionKeyState === "uncertain")) {
+    return candidates;
+  }
+  // Same merge + keep rule as scanLogicalSessionGroups: a group with
+  // conflicting known cwds becomes uncertain and is fully probed.
+  const filesByGroup = new Map<string, {
+    files: string[];
+    workingDirectoryState: "known" | "absent" | "uncertain";
+    workingDirectory?: string;
+  }>();
+  for (const [fileIndex, filePath] of candidates.entries()) {
+    const metadata = inspected[fileIndex]!;
+    const group = filesByGroup.get(metadata.sessionKey);
+    if (group) {
+      group.files.push(filePath);
+      mergeLogicalSessionWorkingDirectory(group, metadata);
+      continue;
+    }
+    filesByGroup.set(metadata.sessionKey, {
+      files: [filePath],
+      workingDirectoryState: metadata.workingDirectoryState,
+      workingDirectory: metadata.workingDirectory,
+    });
+  }
+  return [...filesByGroup.values()]
+    .filter((group) =>
+      group.workingDirectoryState !== "known"
+      || !group.workingDirectory
+      || pathMatchesDirectoryScope(group.workingDirectory, directoryScope),
+    )
+    .flatMap((group) => group.files);
+}
+
+function mergeLogicalSessionWorkingDirectory(
+  group: { workingDirectoryState: "known" | "absent" | "uncertain"; workingDirectory?: string },
+  metadata: { workingDirectoryState: "known" | "absent" | "uncertain"; workingDirectory?: string },
+): void {
+  if (
+    group.workingDirectoryState === "uncertain"
+    || metadata.workingDirectoryState === "uncertain"
+    || (
+      group.workingDirectoryState === "known"
+      && metadata.workingDirectoryState === "known"
+      && group.workingDirectory !== metadata.workingDirectory
+    )
+  ) {
+    group.workingDirectoryState = "uncertain";
+    group.workingDirectory = undefined;
+    return;
+  }
+  if (group.workingDirectoryState === "absent" && metadata.workingDirectoryState === "known") {
+    group.workingDirectoryState = metadata.workingDirectoryState;
+    group.workingDirectory = metadata.workingDirectory;
+  }
+}
+
+async function createDirectoryScopedRootWalker(
+  sources: readonly SourceDefinition[],
+  directoryScope: string,
+): Promise<(root: string, limitFiles?: number) => Promise<number>> {
+  const sourceAdapters = await import("@cchistory/source-adapters");
+  const byRoot = new Map(sources.map((source) => [path.normalize(source.base_dir), source]));
+  return async (root, limitFiles) => {
+    const source = byRoot.get(path.normalize(root));
+    if (!source) {
+      throw new Error(`scan estimate has no source for ${root}`);
+    }
+    const listed = await sourceAdapters.listSourceFiles(source.platform, source.base_dir, limitFiles);
+    const files = await selectDirectoryScopedProbeFiles(sourceAdapters, source, listed, directoryScope);
+    let totalBytes = 0;
+    for (const filePath of files) {
+      try {
+        totalBytes += (await stat(filePath)).size;
+      } catch {
+        // Listed then vanished: the scan would skip this file too.
+      }
+    }
+    return totalBytes;
+  };
 }
 
 function buildProbeOptions(

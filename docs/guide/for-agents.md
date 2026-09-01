@@ -42,8 +42,10 @@ The scan guard (`CCHISTORY_SCAN_GUARD=0` disables it) has four parts:
    in the per-user runtime dir. A queued scan waits up to 30s, then fails with
    `scan_guard_refused`. `sample` and exact-id `show session` are bounded
    probes and bypass the lock and the estimate.
-2. **Pre-flight estimate.** Before scanning, Lite walks the selected roots and
-   estimates peak memory as scanned bytes ×4 (light profile) or ×8 (full
+2. **Pre-flight estimate.** Before scanning, Lite walks the files the scan
+   would probe — `--dir` counts matching source files; `sources`, `export`,
+   TUI, and `--no-dir` count every regular file under the selected roots —
+   and estimates peak memory as scanned bytes ×4 (light profile) or ×8 (full
    profile). Above 50% of available memory it prints a warning and proceeds;
    above 75% it refuses with `scan_guard_refused`.
 3. **Watchdog.** Mid-scan, if available memory drops below
@@ -52,9 +54,11 @@ The scan guard (`CCHISTORY_SCAN_GUARD=0` disables it) has four parts:
 4. **Kill-switch.** `CCHISTORY_SCAN_GUARD=0` turns the layer off for a scan
    that requested it.
 
-To bound one scan: `--source`, `--source-root`, `--limit-files`, or `sample`.
-`--dir` filters sessions by working directory after the estimate; it does not
-shrink source bytes. Collection commands (human CLI and `--json`) default to
+To bound one scan: `--source`, `--source-root`, `--limit-files`, `--dir`, or
+`sample`. `--dir` filters sessions by working directory and bounds the
+pre-flight estimate to files that may match that path (Codex uses the first
+cwd line). `sources`, `export`, TUI, and `--no-dir` still estimate every
+selected source root. Collection commands (human CLI and `--json`) default to
 `--dir=$PWD`; `--no-dir` is the whole-machine listing opt-in. If a scan is
 refused, use `sample`, `--source <slot>`, `--limit-files`, or
 `cchistory-lite ls sources --limit-files 1` to list slots without a full parse.
