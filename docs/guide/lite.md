@@ -108,6 +108,7 @@ shell [--dir <path>] [--no-dir]
 export --format jsonl|json|markdown [--out <file>|-]
 tui
 help [command]
+agent [skill|guide]
 ```
 
 Use `--json` for compact `cchistory-lite/v2` read output, or
@@ -117,7 +118,9 @@ one scan, `shell` to keep one directory-scoped snapshot in memory, or the TUI
 to amortize a scan across interactive browsing. `--json`, `query`, and `shell`
 default to `--dir=$PWD`; pass `--no-dir` to disable that scope. The human CLI
 (`ls`, `latest`, `sample`, `search`, `stats`, `tree projects`) shares that
-current-directory default and prints the chosen scope on stderr. TUI and
+current-directory default and prints the chosen scope on stderr. `--dir` filters
+sessions by working directory; it does not shrink the source-byte estimate.
+Bound memory with `--source`, `--limit-files`, or `sample`. TUI and
 `export` still scan every selected source.
 
 `ls` shows 20 rows by default. Pass `--limit <n>` or `--all`; JSON collection
@@ -145,13 +148,17 @@ time. `latest turns` emits one block per UserTurn and includes its model, token
 total, prompt, and Lite turn reference. Use `latest sessions 50` or `latest
 turns 50` when the default 20 records are not enough.
 
-`--dir` is a canonical history scope, not a source-root override. It expands `~`,
+`--dir` is a canonical history scope, not a source-root override and not a
+memory bound. It expands `~`,
 resolves relative paths from the current directory, and matches lexical path
 segments. Sessions without `working_directory` are excluded. It applies to
 `latest`, `sample`, `ls projects`, `ls sessions`, `search`, `stats`, and
 `tree projects`; the latter keeps projects as containers but removes non-matching
-sessions, turns, and empty projects. Use `--source-root <slot>=<path>` when the
-native history itself is in a non-default location.
+sessions, turns, and empty projects. The pre-flight memory estimate still walks
+every selected adapter root. Use `--source <slot>` or `--limit-files` to shrink
+that estimate, and `--source-root <slot>=<path>` when the native history itself
+is in a non-default location (the adapter's default tree, for example
+`~/.claude/projects`, not a single project folder).
 
 `--dir` preflight is a cheap reject, not a parent-directory search. A file is
 skipped only when its layout cannot match; uncertain metadata still takes the
@@ -197,14 +204,19 @@ with `NO_COLOR=1`.
 Agents looking up local history should follow
 `skills/using-cchistory-lite/SKILL.md`. Use `--json` (or `query` / `shell`).
 Those entry points, and the human CLI, default to `--dir=$PWD`; pass
-`--no-dir` for an unscoped scan. Search rows are top-level sessions; `total` counts sessions. Compact
+`--no-dir` for an unscoped listing. `--dir` does not shrink the source-byte
+estimate. Do not discard stderr: scan-guard refusals and usage errors live
+there. Search rows are top-level sessions; `total` counts sessions. Compact
 JSON is `untrusted_history`. Run `cchistory-lite agent` for the versioned
 machine-readable contract (commands, flags, exit codes, output schemas, cost
 model) and `cchistory-lite agent guide` for the long-form agent manual.
 
 ```bash
+cchistory-lite agent
+cchistory-lite ls sources --limit-files 1
+cchistory-lite sample --json
 cchistory-lite search "parser regression" --json
-cchistory-lite latest sessions 10 --json
+cchistory-lite latest sessions 10 --json --source claude_code
 cchistory-lite ls families --json
 cchistory-lite show session sess:codex:9f31c2 --json
 printf '%s\n' '{"kind":"search","query":"parser regression"}' '{"kind":"exit"}' \

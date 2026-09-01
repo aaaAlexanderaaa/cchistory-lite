@@ -61,6 +61,12 @@ export const SCAN_WATCHDOG_TOTAL_FLOOR_FRACTION = 0.05;
 export const SCAN_WATCHDOG_CHECK_EVERY_FILES = 64;
 export const SCAN_WATCHDOG_CHECK_INTERVAL_MS = 1_000;
 
+export interface ScanRiskRoot {
+  path: string;
+  bytes: number;
+  slot_id?: string;
+}
+
 export interface ScanRiskAssessment {
   status: ScanGuardStatus;
   /** The profile whose multiplier produced estimatedBytes. */
@@ -71,13 +77,17 @@ export interface ScanRiskAssessment {
   availableBytes?: number;
   /** Raw regular-file bytes walked under the selected roots, pre-multiplier. */
   scannedBytes: number;
+  /** Per-root walk totals that summed to scannedBytes. */
+  roots?: readonly ScanRiskRoot[];
   /** Neutral machine-readable note; surfaces compose the human message. */
   detail: string;
 }
 
+export type AssessScanRiskRoot = string | { path: string; slot_id?: string };
+
 export interface AssessScanRiskInput {
   /** Resolved adapter base dirs, after --source/--source-root selection. */
-  roots: readonly string[];
+  roots: readonly AssessScanRiskRoot[];
   /** Per-root cap on files counted, mirroring limit_files_per_source. */
   limitFiles?: number;
   profile: ScanGuardProfile;
@@ -94,11 +104,17 @@ export async function assessScanRisk(
 ): Promise<ScanRiskAssessment> {
   const multiplier = input.profile === "full" ? FULL_SCAN_MEMORY_MULTIPLIER : LIGHT_SCAN_MEMORY_MULTIPLIER;
   const walk = deps.walkRootBytes ?? walkRegularFileBytes;
+  const normalizedRoots = input.roots.map((root) => (
+    typeof root === "string" ? { path: root } : root
+  ));
+  const roots: ScanRiskRoot[] = [];
   let scannedBytes = 0;
   let walkFailed = false;
-  for (const root of input.roots) {
+  for (const root of normalizedRoots) {
     try {
-      scannedBytes += await walk(root, input.limitFiles);
+      const bytes = await walk(root.path, input.limitFiles);
+      roots.push({ path: root.path, bytes, ...(root.slot_id ? { slot_id: root.slot_id } : {}) });
+      scannedBytes += bytes;
     } catch {
       // An incomplete walk cannot produce a sound estimate; degrade to ok.
       walkFailed = true;
@@ -112,52 +128,44 @@ export async function assessScanRisk(
   } catch {
     availableBytes = undefined;
   }
+  const shared = {
+    profile: input.profile,
+    estimatedBytes,
+    availableBytes,
+    scannedBytes,
+    roots,
+  } as const;
   if (walkFailed) {
     return {
-      status: "ok",
-      profile: input.profile,
-      estimatedBytes,
-      availableBytes,
-      scannedBytes,
+      ...shared,
+      status: "ok" as const,
       detail: "scan guard could not walk every selected root; proceeding without a complete estimate",
     };
   }
   if (availableBytes === undefined) {
     return {
-      status: "ok",
-      profile: input.profile,
-      estimatedBytes,
-      availableBytes,
-      scannedBytes,
+      ...shared,
+      status: "ok" as const,
       detail: "available system memory is unknown; proceeding without a memory estimate",
     };
   }
   if (estimatedBytes > availableBytes * SCAN_GUARD_REFUSE_AVAILABLE_FRACTION) {
     return {
-      status: "refuse",
-      profile: input.profile,
-      estimatedBytes,
-      availableBytes,
-      scannedBytes,
+      ...shared,
+      status: "refuse" as const,
       detail: "estimated peak exceeds 75% of available memory",
     };
   }
   if (estimatedBytes > availableBytes * SCAN_GUARD_WARN_AVAILABLE_FRACTION) {
     return {
-      status: "warn",
-      profile: input.profile,
-      estimatedBytes,
-      availableBytes,
-      scannedBytes,
+      ...shared,
+      status: "warn" as const,
       detail: "estimated peak exceeds 50% of available memory",
     };
   }
   return {
-    status: "ok",
-    profile: input.profile,
-    estimatedBytes,
-    availableBytes,
-    scannedBytes,
+    ...shared,
+    status: "ok" as const,
     detail: "estimated peak within available memory",
   };
 }
@@ -493,8 +501,8 @@ export class ScanGuardAbortedError extends Error {
       `Scan aborted: available memory dropped to ${
         init.availableBytes === undefined ? "an unknown level" : formatScanGuardBytes(init.availableBytes)
       }, below the ${formatScanGuardBytes(init.floorBytes)} safety floor; failing fast is safer than letting this machine swap. ` +
-      `Narrow the scan with --source, --dir, or --limit-files, or retry when the machine is less loaded. ` +
-      `Override the guard with CCHISTORY_SCAN_GUARD=0.`,
+      `${formatScanBoundNextSteps()} ` +
+      `Retry when the machine is less loaded. Override the guard with CCHISTORY_SCAN_GUARD=0.`,
     );
     this.name = "ScanGuardAbortedError";
     this.availableBytes = init.availableBytes;
@@ -564,8 +572,24 @@ function buildRefusalMessage(init: {
     : formatScanGuardBytes(assessment.availableBytes);
   return `Refusing to scan: estimated peak memory ${formatScanGuardBytes(assessment?.estimatedBytes ?? 0)} ` +
     `(${assessment?.profile ?? "light"} scan of ${formatScanGuardBytes(assessment?.scannedBytes ?? 0)} source bytes, ×${multiplier}) ` +
-    `exceeds 75% of the ${available} currently available on this machine. ` +
-    `Narrow the scan with --source, --dir, or --limit-files; use \`sample\` for a bounded preview, ` +
-    `or \`shell\` / \`query\` to amortize one scan over many reads. ` +
+    `exceeds 75% of the ${available} currently available on this machine.` +
+    `${formatSelectedSourceRoots(assessment?.roots)} ` +
+    `--dir filters sessions by working directory; it does not shrink source bytes. ` +
+    `${formatScanBoundNextSteps()} ` +
     `Override the guard with CCHISTORY_SCAN_GUARD=0.`;
+}
+
+function formatSelectedSourceRoots(roots: readonly ScanRiskRoot[] | undefined): string {
+  if (!roots?.length) return "";
+  const lines = roots.map((root) => {
+    const slot = root.slot_id ? `${root.slot_id}  ` : "";
+    return `  ${slot}${root.path}  ${formatScanGuardBytes(root.bytes)}`;
+  });
+  return ` Selected source roots (the estimate is this sum, not a --dir filter):\n${lines.join("\n")}`;
+}
+
+function formatScanBoundNextSteps(): string {
+  return "Next: `sample` for a bounded preview, `--source <slot>` to scan one adapter, " +
+    "`--limit-files <n>` to cap files per adapter, or `cchistory-lite ls sources --limit-files 1` " +
+    "to list slots without a full parse; `shell` / `query` amortize one scan over many reads.";
 }

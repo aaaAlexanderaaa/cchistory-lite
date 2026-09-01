@@ -998,6 +998,7 @@ test("Lite CLI ls limits human and JSON output and rejects conflicting controls 
   });
   assert.equal(await runLiteCli(["ls", "sources", "--dir", "/workspace"], invalidScope.io), 2);
   assert.match(invalidScope.stderr.join(""), /--dir is not valid for ls sources/);
+  assert.match(invalidScope.stderr.join(""), /Drop --dir and pass --limit-files/);
   assert.equal(rejectedScans, 0);
 });
 
@@ -1441,28 +1442,30 @@ test("Lite CLI human collection commands default to cwd and announce the scope",
   const human = captureIo(repoRoot, undefined, { scan: scanner });
   assert.equal(await runLiteCli(["latest"], human.io), 0);
   assert.equal(scanOptions.at(-1)?.directoryScope, repoRoot);
-  assert.match(human.stderr.join(""), /Looking for history under /);
+  assert.match(human.stderr.join(""), /Filtering sessions whose working directory is under /);
   assert.match(human.stderr.join(""), /\(current directory\)/);
-  assert.match(human.stderr.join(""), /Whole-machine scan: --no-dir/);
-  assert.doesNotMatch(human.stdout.join(""), /Looking for history under /);
+  assert.match(human.stderr.join(""), /memory estimate still covers every selected source root/);
+  assert.match(human.stderr.join(""), /Whole-machine listing: --no-dir/);
+  assert.doesNotMatch(human.stdout.join(""), /Filtering sessions whose working directory/);
 
   const json = captureIo(repoRoot, undefined, { scan: scanner });
   assert.equal(await runLiteCli(["latest", "--json"], json.io), 0);
   assert.equal(scanOptions.at(-1)?.directoryScope, repoRoot);
-  assert.doesNotMatch(json.stderr.join(""), /Looking for history under /);
-  assert.doesNotMatch(json.stderr.join(""), /Whole-machine scan/);
+  assert.doesNotMatch(json.stderr.join(""), /Filtering sessions whose working directory/);
+  assert.doesNotMatch(json.stderr.join(""), /Whole-machine listing/);
 
   const unscoped = captureIo(repoRoot, undefined, { scan: scanner });
   assert.equal(await runLiteCli(["latest", "--no-dir"], unscoped.io), 0);
   assert.equal(scanOptions.at(-1)?.directoryScope, undefined);
-  assert.match(unscoped.stderr.join(""), /Scanning all selected sources on this machine/);
-  assert.match(unscoped.stderr.join(""), /This can use a lot of memory/);
+  assert.match(unscoped.stderr.join(""), /Listing every selected source on this machine/);
+  assert.match(unscoped.stderr.join(""), /memory estimate still covers every selected source root/);
+  assert.match(unscoped.stderr.join(""), /Bound with --source, --limit-files, or sample/);
 
   const exportRun = captureIo(repoRoot, undefined, { scan: scanner });
   assert.equal(await runLiteCli(["export", "--format", "markdown", "--out", "-"], exportRun.io), 0);
   assert.equal(scanOptions.at(-1)?.directoryScope, undefined);
-  assert.doesNotMatch(exportRun.stderr.join(""), /Looking for history under /);
-  assert.doesNotMatch(exportRun.stderr.join(""), /Scanning all selected sources on this machine/);
+  assert.doesNotMatch(exportRun.stderr.join(""), /Filtering sessions whose working directory/);
+  assert.doesNotMatch(exportRun.stderr.join(""), /Listing every selected source on this machine/);
 });
 
 test("Lite CLI query latest and list count the same unit they return", async () => {
@@ -1652,13 +1655,17 @@ test("Lite CLI scan guard refuses a scan whose estimate risks the machine, teach
     assert.equal(refused.stdout.join(""), "");
     const message = refused.stderr.join("");
     assert.match(message, /Refusing to scan/);
-    assert.match(message, /--source/);
-    assert.match(message, /--dir/);
+    assert.match(message, /Selected source roots/);
+    assert.match(message, /codex/);
+    assert.match(message, /does not shrink source bytes/);
+    assert.match(message, /--source <slot>/);
     assert.match(message, /--limit-files/);
     assert.match(message, /sample/);
+    assert.match(message, /ls sources --limit-files 1/);
     assert.match(message, /shell/);
     assert.match(message, /query/);
     assert.match(message, /CCHISTORY_SCAN_GUARD=0/);
+    assert.doesNotMatch(message, /--dir is already on/);
 
     const refusedJson = captureIo(tempHome);
     assert.equal(await runLiteCli(["sources", "--json", ...sourceArgs], refusedJson.io), 1);
@@ -1724,6 +1731,27 @@ test("Lite CLI maps scan guard refusals and aborts to exit 1 with distinct struc
     const refusalPayload = JSON.parse(refused.stderr.join("")) as { error: { code: string; message: string } };
     assert.equal(refusalPayload.error.code, "scan_guard_refused");
     assert.match(refusalPayload.error.message, /another cchistory-lite scan/);
+
+    const scopedRefuse = captureIo(tempHome, undefined, {
+      scan: async () => {
+        throw new ScanGuardRefusedError({
+          reason: "estimated_memory",
+          assessment: {
+            status: "refuse",
+            profile: "light",
+            estimatedBytes: 17 * 1024 ** 3,
+            availableBytes: 1.3 * 1024 ** 3,
+            scannedBytes: 4.3 * 1024 ** 3,
+            detail: "synthetic",
+            roots: [{ path: "/root/.claude/projects", bytes: 4.3 * 1024 ** 3, slot_id: "claude_code" }],
+          },
+        });
+      },
+    });
+    assert.equal(await runLiteCli(["latest", "sessions", "40"], scopedRefuse.io), 1);
+    assert.match(scopedRefuse.stderr.join(""), /--dir is already on for this command/);
+    assert.match(scopedRefuse.stderr.join(""), /does not shrink source bytes/);
+    assert.match(scopedRefuse.stderr.join(""), /claude_code/);
 
     // Human mode prints the plain message, not the JSON envelope.
     const human = captureIo(tempHome, undefined, {
@@ -2024,13 +2052,62 @@ test("Lite CLI agent skill and guide print the shipped docs", async () => {
   assert.equal(await runLiteCli(["agent", "skill", "extra"], extra.io), 2);
 });
 
-test("Lite CLI help points agents at the agent contract and docs", async () => {
+test("Lite CLI help leads with the agent path and prints per-command contracts", async () => {
   const captured = captureIo(repoRoot);
   assert.equal(await runLiteCli(["help"], captured.io), 0);
   const help = captured.stdout.join("");
-  assert.match(help, /cchistory-lite agent/);
-  assert.match(help, /agent skill/);
-  assert.match(help, /agent guide/);
+  const head = help.split("\n").slice(0, 20).join("\n");
+  assert.match(head, /cchistory-lite agent/);
+  assert.match(head, /agent skill/);
+  assert.match(head, /agent guide/);
+  assert.match(head, /sample --json/);
+  assert.match(head, /--source <slot>/);
+  assert.match(head, /ls sources --limit-files 1/);
+  assert.match(head, /does not shrink source bytes/);
+  assert.match(head, /Do not discard stderr/);
+  assert.match(help, /cchistory-lite agent \[skill\|guide\]/);
+
+  const sourcesHelp = captureIo(repoRoot);
+  assert.equal(await runLiteCli(["help", "sources"], sourcesHelp.io), 0);
+  const sourcesText = sourcesHelp.stdout.join("");
+  assert.match(sourcesText, /List resolved source adapters/);
+  assert.match(sourcesText, /cchistory-lite sources/);
+  assert.match(sourcesText, /no --dir\/--no-dir/);
+  assert.doesNotMatch(sourcesText, /through the command synopsis below/);
+
+  const flagHelp = captureIo(repoRoot);
+  assert.equal(await runLiteCli(["sources", "--help"], flagHelp.io), 0);
+  assert.equal(flagHelp.stdout.join(""), sourcesText);
+
+  const lsHelp = captureIo(repoRoot);
+  assert.equal(await runLiteCli(["help", "ls"], lsHelp.io), 0);
+  assert.match(lsHelp.stdout.join(""), /ls sources always lists every selected adapter/);
+  assert.match(lsHelp.stdout.join(""), /bound it with --limit-files/);
+
+  const unknownHelp = captureIo(repoRoot);
+  assert.equal(await runLiteCli(["help", "bogus"], unknownHelp.io), 0);
+  assert.match(unknownHelp.stdout.join(""), /Unknown Lite command: bogus/);
+  assert.match(unknownHelp.stdout.join(""), /Known commands:/);
+});
+
+test("Lite CLI dead-end flags and unknown adapters teach the next command", async () => {
+  const noScan: Partial<LiteCliIo> = {
+    scan: async () => {
+      throw new Error("usage errors must not scan");
+    },
+  };
+  const sourcesNoDir = captureIo(repoRoot, undefined, noScan);
+  assert.equal(await runLiteCli(["sources", "--no-dir"], sourcesNoDir.io), 2);
+  assert.match(sourcesNoDir.stderr.join(""), /--no-dir is not valid for sources/);
+  assert.match(sourcesNoDir.stderr.join(""), /Drop --no-dir and pass --limit-files/);
+  assert.match(sourcesNoDir.stderr.join(""), /ls sources --limit-files 1/);
+
+  const unknown = captureIo(repoRoot);
+  assert.equal(await runLiteCli(["latest", "--source", "claude"], unknown.io), 1);
+  assert.match(unknown.stderr.join(""), /Unknown Lite source adapter: claude/);
+  assert.match(unknown.stderr.join(""), /Registered slots:/);
+  assert.match(unknown.stderr.join(""), /claude_code/);
+  assert.match(unknown.stderr.join(""), /not a single project folder/);
 });
 
 function captureIo(

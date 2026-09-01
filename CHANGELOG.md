@@ -7,6 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Agent-facing CLI teaching: `--help` now leads with `cchistory-lite agent`,
+  `sample`, `--source <slot>`, and `ls sources --limit-files 1` so a
+  `head -60` still sees the path. `help <command>` and `<command> --help`
+  print that command's contract instead of dumping the full synopsis.
+  `--dir` is described as a working-directory filter, not a memory bound;
+  scan-guard refusals list the selected source roots and sizes, point at
+  `sample` / `--source` / `--limit-files` / `ls sources --limit-files 1`,
+  and say when `--dir` is already on. Unknown adapter errors list registered
+  slots (`claude` → `claude_code`). `sources` rejects `--dir` / `--no-dir`
+  with the next bounded command instead of a dead-end flag error.
+
 ## [0.4.3] - 2026-08-31
 
 ### Added

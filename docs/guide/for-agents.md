@@ -52,10 +52,14 @@ The scan guard (`CCHISTORY_SCAN_GUARD=0` disables it) has four parts:
 4. **Kill-switch.** `CCHISTORY_SCAN_GUARD=0` turns the layer off for a scan
    that requested it.
 
-To bound one scan: `--source`, `--source-root`, `--dir`, `--limit-files`, or
-`sample`. Collection commands (human CLI and `--json`) default to `--dir=$PWD`;
-`--no-dir` is the whole-machine opt-in. To amortize: one `shell` session or one
-`query` batch instead of N one-shot processes.
+To bound one scan: `--source`, `--source-root`, `--limit-files`, or `sample`.
+`--dir` filters sessions by working directory after the estimate; it does not
+shrink source bytes. Collection commands (human CLI and `--json`) default to
+`--dir=$PWD`; `--no-dir` is the whole-machine listing opt-in. If a scan is
+refused, use `sample`, `--source <slot>`, `--limit-files`, or
+`cchistory-lite ls sources --limit-files 1` to list slots without a full parse.
+To amortize: one `shell` session or one `query` batch instead of N one-shot
+processes. Do not discard stderr: structured refusals live there.
 
 ## Concurrency discipline
 

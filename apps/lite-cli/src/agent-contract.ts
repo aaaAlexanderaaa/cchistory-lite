@@ -69,13 +69,13 @@ const SOURCE_ROOT: AgentFlagContract = {
   name: "--source-root",
   kind: "value",
   repeatable: true,
-  summary: "Override one registered adapter root; <slot-or-id>=<path>",
+  summary: "Override one adapter's default root (the adapter tree, not a project folder); <slot-or-id>=<path>",
 };
 const SOURCE: AgentFlagContract = {
   name: "--source",
   kind: "value",
   repeatable: true,
-  summary: "Select registered adapters by slot or id",
+  summary: "Select registered adapters by slot or id (for example claude_code, not claude)",
 };
 const LIMIT_FILES: AgentFlagContract = {
   name: "--limit-files",
@@ -101,12 +101,12 @@ const JSON_NO_CANONICAL: AgentFlagContract = {
 const DIR: AgentFlagContract = {
   name: "--dir",
   kind: "value",
-  summary: "Keep history under this working directory (default: current directory)",
+  summary: "Filter sessions whose working directory is under this path (default: current directory). Does not shrink the source-byte estimate",
 };
 const NO_DIR: AgentFlagContract = {
   name: "--no-dir",
   kind: "boolean",
-  summary: "Scan all selected sources on this machine (overrides the cwd default)",
+  summary: "Disable the working-directory filter (overrides the cwd default). Does not change the source-byte estimate",
 };
 
 function buildCommands(): Record<string, AgentCommandContract> {
@@ -117,6 +117,7 @@ function buildCommands(): Record<string, AgentCommandContract> {
       summary: "List resolved source adapters with sync status and session/turn counts",
       usage: "cchistory-lite sources [options]",
       flags: [...scanFlags],
+      notes: "sources has no --dir/--no-dir; it always lists selected adapters. Bound with --limit-files. Use `cchistory-lite ls sources --limit-files 1` for the same collection with a file cap.",
     },
     ls: {
       name: "ls",
@@ -129,6 +130,7 @@ function buildCommands(): Record<string, AgentCommandContract> {
         DIR,
         NO_DIR,
       ],
+      notes: "--dir and --no-dir apply to ls projects, sessions, and families. ls sources always lists every selected adapter (no directory filter); bound it with --limit-files.",
     },
     latest: {
       name: "latest",
@@ -236,7 +238,7 @@ function buildCommands(): Record<string, AgentCommandContract> {
       summary: "Command synopsis",
       usage: "cchistory-lite help [command]",
       flags: [],
-      notes: "help renders before option validation, so every known flag is accepted and ignored.",
+      notes: "help <command> prints that command's contract (usage, flags, notes). help renders before option validation, so every known flag is accepted and ignored.",
     },
     agent: {
       name: "agent",
@@ -320,8 +322,8 @@ export function buildAgentContract(version: string): AgentContract {
         "Never fan out concurrent one-shot full scans: they serialize behind the scan lock and fail after the bounded wait.",
         "Prefer one shell or query session over many one-shot commands to amortize the scan.",
         "Use sample to preview a machine without a full scan.",
-        "Collection commands default to --dir=$PWD; pass --no-dir only when a whole-machine scan is required.",
-        "Bound large scans with --source, --dir, or --limit-files.",
+        "Collection commands default to --dir=$PWD; --dir filters session working directories and does not shrink the source-byte estimate. Pass --no-dir only when a whole-machine listing is required.",
+        "Bound large scans with --source, --limit-files, or sample. Use `ls sources --limit-files 1` to list slots without a full parse.",
       ],
     },
     docs: {

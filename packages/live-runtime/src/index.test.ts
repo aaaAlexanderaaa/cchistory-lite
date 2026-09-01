@@ -620,6 +620,21 @@ test("Lite path-links Cursor nested subagent transcripts out of top-level collec
 test("Lite scans explicit roots without creating or reading a Full store", async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-no-store-"));
   try {
+    await assert.rejects(
+      resolveLiteSources({
+        homeDir: tempHome,
+        sourceRefs: ["claude"],
+      }),
+      /Unknown Lite source adapter: claude\. Registered slots: .*claude_code/,
+    );
+    await assert.rejects(
+      resolveLiteSources({
+        homeDir: tempHome,
+        sourceRoots: [{ sourceRef: "claude", baseDir: path.join(mockDataRoot, ".codex", "sessions") }],
+      }),
+      /not a single project folder/,
+    );
+
     const resolved = await resolveLiteSources({
       homeDir: tempHome,
       sourceRoots: [

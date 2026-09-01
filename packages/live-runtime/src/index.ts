@@ -74,7 +74,6 @@ import {
   type ScanGuardProfile,
   type ScanLockDeps,
   type ScanLockHandle,
-  type ScanRiskAssessment,
   type ScanWatchdogDeps,
 } from "./scan-guard.js";
 
@@ -115,6 +114,7 @@ export type {
   ScanLockHandle,
   ScanLockHolder,
   ScanRiskAssessment,
+  ScanRiskRoot,
   ScanWatchdog,
   ScanWatchdogDeps,
 } from "./scan-guard.js";
@@ -688,7 +688,7 @@ async function beginScanGuard(
     if (!request.bypass) {
       const assessment = await assessScanRisk(
         {
-          roots: sources.map((source) => source.base_dir),
+          roots: sources.map((source) => ({ path: source.base_dir, slot_id: source.slot_id })),
           limitFiles: options.limitFiles,
           profile: request.profile,
         },
@@ -1532,7 +1532,7 @@ export async function resolveLiteSources(options: ResolveLiteSourcesOptions = {}
     await assertLiteSourceRoot(override.baseDir, { homeDir: options.homeDir });
     const source = findSource(completeRoster, override.sourceRef);
     if (!source) {
-      throw new Error(`Unknown Lite source adapter: ${override.sourceRef}.`);
+      throw new Error(formatUnknownLiteSourceAdapter(override.sourceRef, completeRoster));
     }
     if (overridesBySlotId.has(source.slot_id)) {
       throw new Error(`Duplicate --source-root for ${source.platform}.`);
@@ -1561,7 +1561,7 @@ export async function resolveLiteSources(options: ResolveLiteSourcesOptions = {}
     for (const ref of sourceRefs) {
       const source = findSource(resolvedRoster, ref);
       if (!source) {
-        throw new Error(`Unknown Lite source adapter: ${ref}.`);
+        throw new Error(formatUnknownLiteSourceAdapter(ref, completeRoster));
       }
       if (!selected.some((entry) => entry.id === source.id)) {
         selected.push(source);
@@ -1613,6 +1613,12 @@ export async function assertLiteSourceRoot(
   ) {
     throw new Error(`Full bundle paths are not Lite sources: ${resolved}`);
   }
+}
+
+function formatUnknownLiteSourceAdapter(ref: string, roster: readonly SourceDefinition[]): string {
+  const slots = [...new Set(roster.map((source) => source.slot_id))].sort();
+  return `Unknown Lite source adapter: ${ref}. Registered slots: ${slots.join(", ")}. ` +
+    `--source-root overrides an adapter's default root (for example ~/.claude/projects), not a single project folder.`;
 }
 
 function findSource(sources: SourceDefinition[], ref: string): SourceDefinition | undefined {

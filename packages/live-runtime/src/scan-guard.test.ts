@@ -59,6 +59,28 @@ test("scan guard thresholds: ok at exactly 50%, warn up to exactly 75%, refuse a
   assert.equal(refusal.estimatedBytes, 193 * 4);
   assert.equal(refusal.scannedBytes, 193);
   assert.equal(refusal.availableBytes, available);
+  assert.deepEqual(refusal.roots, [{ path: "/root", bytes: 193 }]);
+});
+
+test("scan guard assessment records per-root bytes and slot labels", async () => {
+  const assessment = await assessScanRisk(
+    {
+      roots: [
+        { path: "/a", slot_id: "claude_code" },
+        { path: "/b", slot_id: "codex" },
+      ],
+      profile: "light",
+    },
+    {
+      walkRootBytes: async (root) => (root === "/a" ? 100 : 50),
+      readAvailableBytes: () => 1024,
+    },
+  );
+  assert.equal(assessment.scannedBytes, 150);
+  assert.deepEqual(assessment.roots, [
+    { path: "/a", bytes: 100, slot_id: "claude_code" },
+    { path: "/b", bytes: 50, slot_id: "codex" },
+  ]);
 });
 
 test("scan guard multiplier: full scans estimate 8×, light scans 4×", async () => {
@@ -459,12 +481,17 @@ test("refusal and warning text name the numbers, the bounds, and the override", 
   assert.match(estimateRefusal.message, /Refusing to scan/);
   assert.match(estimateRefusal.message, /772 B/);
   assert.match(estimateRefusal.message, /1\.0 KiB/);
-  assert.match(estimateRefusal.message, /--source/);
-  assert.match(estimateRefusal.message, /--dir/);
+  assert.match(estimateRefusal.message, /Selected source roots/);
+  assert.match(estimateRefusal.message, /\/root/);
+  assert.match(estimateRefusal.message, /193 B/);
+  assert.match(estimateRefusal.message, /does not shrink source bytes/);
+  assert.match(estimateRefusal.message, /--source <slot>/);
   assert.match(estimateRefusal.message, /--limit-files/);
   assert.match(estimateRefusal.message, /`sample`/);
+  assert.match(estimateRefusal.message, /ls sources --limit-files 1/);
   assert.match(estimateRefusal.message, /`shell` \/ `query`/);
   assert.match(estimateRefusal.message, /CCHISTORY_SCAN_GUARD=0/);
+  assert.doesNotMatch(estimateRefusal.message, /Narrow the scan with --source, --dir/);
 
   const lockRefusal = new ScanGuardRefusedError({
     reason: "scan_in_progress",
