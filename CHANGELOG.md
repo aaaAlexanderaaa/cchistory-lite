@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-09-02
+
 ### Fixed
 
 - `--dir` now bounds the pre-flight memory estimate to the source files a

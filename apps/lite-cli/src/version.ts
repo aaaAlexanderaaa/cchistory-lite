@@ -7,4 +7,4 @@
  * package manifest so the two cannot drift; `release-prepare.mjs` rewrites
  * this literal when cutting a release.
  */
-export const VERSION = "0.4.4";
+export const VERSION = "0.4.5";
