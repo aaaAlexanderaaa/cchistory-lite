@@ -156,3 +156,14 @@ export function buildDirectoryScopedProjectTreeProjection(params: {
     unlinkedSessions: scopedSessions.filter((session) => !linkedSessionIds.has(session.id)),
   };
 }
+
+/** Counts only observed sessions; missing cwd is not evidence of another directory. */
+export function summarizeDirectoryScope(sessions: readonly SessionProjection[], directoryScope?: string) {
+  if (!directoryScope) return null;
+  return {
+    directory: directoryScope,
+    observed_sessions: sessions.length,
+    matching_sessions: sessions.filter(session => sessionMatchesDirectoryScope(session, directoryScope)).length,
+    unknown_directory_sessions: sessions.filter(session => !normalizeDirectoryScopePath(session.working_directory)).length,
+  };
+}

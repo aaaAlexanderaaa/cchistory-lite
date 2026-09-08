@@ -1,3 +1,4 @@
+import { readBudgetedSqliteRows, SourceReadBudgetExceededError, type SourceReadBudget } from "./read-budget.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -62,17 +63,19 @@ export async function extractVscodeStateSeeds(
   source: SourceDefinition,
   filePath: string,
   helpers: VscodeStateHelpers,
+  budget?: SourceReadBudget,
 ): Promise<ExtractedSessionSeed[] | undefined> {
   const workspacePath = await extractWorkspacePathFromWorkspaceState(filePath, helpers);
   const db = new DatabaseSync(filePath, { readOnly: true });
   try {
-    const rows = selectVscodeKeyValueRows(db, source.platform, helpers);
+    db.exec("BEGIN");
+    const rows = selectVscodeKeyValueRows(db, source.platform, helpers, budget);
     const rowMap = new Map(rows.map((row) => [row.storage_key, row.storage_value]));
     const seedsById = new Map<string, ExtractedSessionSeed>();
     const workspacePathById =
       source.platform === "cursor" ? loadCursorWorkspacePathsByStorageId(filePath, helpers) : new Map<string, string>();
     const composerHeaders =
-      source.platform === "cursor" ? selectCursorComposerHeaders(db, helpers) : new Map<string, CursorComposerHeader>();
+      source.platform === "cursor" ? selectCursorComposerHeaders(db, helpers, budget) : new Map<string, CursorComposerHeader>();
     const fallbackObservedAtBase = (await fs.stat(filePath)).mtime.toISOString();
     const antigravityTrajectoryRows = new Map<string, string>();
     const antigravityHistoryRows: string[] = [];
@@ -232,6 +235,7 @@ function selectVscodeKeyValueRows(
   db: DatabaseSync,
   platform: SourcePlatform,
   helpers: Pick<VscodeStateHelpers, "asString">,
+  budget?: SourceReadBudget,
 ): Array<{ storage_key: string; storage_value: string }> {
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
@@ -242,7 +246,7 @@ function selectVscodeKeyValueRows(
       ? ["%chat%", "%aichat%", "%prompt%", "%generation%", "%trajectory%", "%jetski%", "%history%"]
       : ["%composer%", "%chat%", "%aichat%", "%bubble%", "%prompt%", "%generation%"];
 
-  return selectSqliteKeyValueRows(db, tables, filterPatterns, helpers);
+  return selectSqliteKeyValueRows(db, tables, filterPatterns, helpers, budget);
 }
 
 async function extractWorkspacePathFromWorkspaceState(
@@ -305,10 +309,11 @@ function mergeCursorComposerWithHeaders(
 function selectCursorComposerHeaders(
   db: DatabaseSync,
   helpers: Pick<VscodeStateHelpers, "asString" | "safeJsonParse" | "isObject">,
+  budget?: SourceReadBudget,
 ): Map<string, CursorComposerHeader> {
   const headers = new Map<string, CursorComposerHeader>();
   try {
-    const rows = db.prepare("SELECT composerId, workspaceId, value FROM composerHeaders").all() as Array<{
+    const rows = readBudgetedSqliteRows(db, "SELECT composerId, workspaceId, value FROM composerHeaders", ["composerId", "workspaceId", "value"], [], budget, "Cursor composer headers") as Array<{
       composerId: unknown;
       workspaceId: unknown;
       value: unknown;
@@ -324,7 +329,8 @@ function selectCursorComposerHeaders(
         value: helpers.isObject(parsed) ? parsed : undefined,
       });
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof SourceReadBudgetExceededError) throw error;
     return headers;
   }
   return headers;
@@ -447,6 +453,7 @@ function selectSqliteKeyValueRows(
   tables: Array<{ name: string }>,
   filterPatterns: string[],
   helpers: Pick<VscodeStateHelpers, "asString">,
+  budget?: SourceReadBudget,
 ): Array<{ storage_key: string; storage_value: string }> {
   const rows: Array<{ storage_key: string; storage_value: string }> = [];
 
@@ -467,7 +474,7 @@ function selectSqliteKeyValueRows(
       FROM ${escapeSqliteIdentifier(tableName)}
       WHERE ${filterPatterns.map(() => `lower(${escapeSqliteIdentifier(keyColumn)}) LIKE ?`).join(" OR ")}
     `;
-    const selectedRows = db.prepare(query).all(...filterPatterns) as Array<{ storage_key: unknown; storage_value: unknown }>;
+    const selectedRows = readBudgetedSqliteRows(db, query, ["storage_key", "storage_value"], filterPatterns, budget, `SQLite ${tableName}`) as Array<{ storage_key: unknown; storage_value: unknown }>;
 
     for (const row of selectedRows) {
       const storageKey = helpers.asString(row.storage_key);

@@ -3,24 +3,74 @@
   "$id": "https://cchistory.dev/schemas/cchistory-lite-error-v1.schema.json",
   "title": "CC History Lite structured error",
   "type": "object",
-  "required": ["schema", "kind", "error"],
+  "required": [
+    "schema",
+    "kind",
+    "error"
+  ],
   "properties": {
-    "schema": { "const": "cchistory-lite-error/v1" },
-    "kind": { "const": "error" },
+    "schema": {
+      "const": "cchistory-lite-error/v1"
+    },
+    "kind": {
+      "const": "error"
+    },
     "error": {
       "type": "object",
-      "required": ["code", "message", "candidates"],
+      "required": [
+        "code",
+        "message",
+        "candidates"
+      ],
       "properties": {
-        "code": { "type": "string" },
-        "message": { "type": "string" },
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
         "candidates": {
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["id"],
-            "properties": { "id": { "type": "string" }, "label": { "type": "string" } },
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              }
+            },
             "additionalProperties": false
           }
+        },
+        "reason": {
+          "enum": [
+            "syntax",
+            "unsupported",
+            "field",
+            "parameter",
+            "type",
+            "budget"
+          ]
+        },
+        "operation_id": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "object",
+          "required": [
+            "complete"
+          ],
+          "properties": {
+            "complete": {
+              "const": false
+            }
+          },
+          "additionalProperties": true
         }
       },
       "additionalProperties": false

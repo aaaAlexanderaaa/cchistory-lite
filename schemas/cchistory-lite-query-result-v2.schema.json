@@ -3,27 +3,82 @@
   "$id": "https://cchistory.dev/schemas/cchistory-lite-query-result-v2.schema.json",
   "title": "CC History Lite batch query result",
   "type": "object",
-  "required": ["schema", "kind", "content_trust", "operations", "projection_issues"],
+  "required": [
+    "schema",
+    "kind",
+    "content_trust",
+    "operations",
+    "projection_issues"
+  ],
   "properties": {
-    "schema": { "const": "cchistory-lite-query-result/v2" },
-    "kind": { "const": "query_result" },
-    "content_trust": { "const": "untrusted_history" },
+    "schema": {
+      "const": "cchistory-lite-query-result/v2"
+    },
+    "kind": {
+      "const": "query_result"
+    },
+    "content_trust": {
+      "const": "untrusted_history"
+    },
     "operations": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "kind", "status"],
+        "required": [
+          "id",
+          "kind",
+          "status"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "kind": { "enum": ["search", "session", "replies", "latest", "list"] },
-          "status": { "enum": ["ok", "error"] },
-          "result": { "type": "object" },
-          "error": { "type": "object" }
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "search",
+              "session",
+              "replies",
+              "latest",
+              "list"
+            ]
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "error"
+            ]
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": "object"
+          }
         },
         "additionalProperties": false
       }
     },
-    "projection_issues": { "type": "array" }
+    "projection_issues": {
+      "type": "array"
+    },
+    "diagnostics": {
+      "type": "object",
+      "properties": {
+        "directory_scope": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "sources": {
+          "type": "array"
+        },
+        "loss_audits": {
+          "type": "array"
+        }
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": false
 }

@@ -103,8 +103,9 @@ tree [projects|project <ref>|session <ref>] [--dir <path>]
 search <query> [--project <ref>] [--source <ref>] [--dir <path>] [--no-dir] [--limit <n>] [--offset <n>]
 show project|session|turn|source <ref>
 stats [--by source|project|model|day] [--project <ref>] [--dir <path>] [--no-dir]
-query --request <file|-> [--dir <path>] [--no-dir]
-shell [--dir <path>] [--no-dir]
+query --request <file|-> | --sql <text> | --sql-file <file|-> [--params <JSON-array>] [--complete]
+      [--dir <path>] [--no-dir]
+shell [--dir <path>] [--no-dir] [--idle-timeout <seconds>]
 export --format jsonl|json|markdown [--out <file>|-]
 tui
 help [command]
@@ -113,7 +114,7 @@ agent [skill|guide]
 
 Use `--json` for compact `cchistory-lite/v2` read output, or
 `--json=canonical` for full `cchistory-lite-canonical/v1` evidence. Each one-shot
-command performs a fresh canonical scan; use `query` to batch agent reads into
+history command performs a fresh canonical scan (sources is metadata-only unless --complete); use `query` to batch agent reads into
 one scan, `shell` to keep one directory-scoped snapshot in memory, or the TUI
 to amortize a scan across interactive browsing. `--json`, `query`, and `shell`
 default to `--dir=$PWD`; pass `--no-dir` to disable that scope. The human CLI
@@ -130,10 +131,11 @@ is a read-only inventory of parent sessions that have delegated subagents: combi
 native storage, per-child bytes, token totals, tool success/error counts, and
 input/output previews. Lite does not delete those files. `latest`
 defaults to the 20 newest sessions and takes its count positionally, for example
-`latest 50` or `latest turns 50`. `sample` is a bounded latest-shaped preview
+`latest 50` or `latest turns 50`. `sample` is a latest-shaped preview of selected input
 (default 50 top-level sessions per source) for checking what Lite will show on
 this machine without a full parse of every file. `sample` defaults to
-`--dir=$PWD`; pass `--no-dir` for a bounded whole-machine preview.
+`--dir=$PWD`; pass `--no-dir` only for an intentionally unscoped preview.
+N caps rendered sessions; selected SQLite containers may contain many more records.
 Cheap ranking inspects at most four listed files at a time; it still fully
 parses only the selected files. Grok `updates.jsonl` contributes usage by
 streaming `turn_completed` events only.
@@ -214,9 +216,10 @@ machine-readable contract (commands, flags, exit codes, output schemas, cost
 model) and `cchistory-lite agent guide` for the long-form agent manual.
 
 ```bash
-cchistory-lite agent
-cchistory-lite ls sources --limit-files 1
-cchistory-lite sample --json
+# Start directly with the target directory
+cchistory-lite latest sessions 10 --dir /path/to/project --json
+# Optional discovery, no history scan
+cchistory-lite sources --json
 cchistory-lite search "parser regression" --json
 cchistory-lite latest sessions 10 --json --source claude_code
 cchistory-lite ls families --json
@@ -224,6 +227,11 @@ cchistory-lite show session sess:codex:9f31c2 --json
 printf '%s\n' '{"kind":"search","query":"parser regression"}' '{"kind":"exit"}' \
   | cchistory-lite shell --json
 ```
+
+For composable conditions, selected columns, and ordinary SQL templates, see the
+[finite SQL query guide](query.md). The shell accepts SQL as one complete line; it expires
+after 300 idle seconds by default (`--idle-timeout 0` disables expiry). Active work does not
+expire. Existing commands and v2 JSON retain their output and use the same collection executor.
 
 Batch several reads in one scan with `query --request` (`cchistory-lite-query/v2`).
 Schema details are in the next section. Flag dictionary: `cchistory-lite --help`.
@@ -264,9 +272,21 @@ and exits `1`; an invalid request or scan failure writes
 `cchistory-lite-error/v1` to stderr and leaves stdout empty. The release artifact
 ships all public contracts in `schemas/`.
 
-Lite entrypoints calculate the default Node old-space ceiling as
-`min(host memory / 2, 4096 MiB)`. This replaces the former fixed 1024 MiB cap
-that caused large local TUI launches to fail before the canonical scan finished.
+Lite leaves the heap limit to Node's default or the operator's explicit Node flags /
+`NODE_OPTIONS`. It does not resize the heap from free pages or use
+`CCHISTORY_ADAPTIVE_NODE_MEMORY_MB`; that removed internal marker has no effect.
+The guard reports the system availability estimate and remaining V8 heap separately.
+macOS estimates free + inactive pages; Linux uses `MemAvailable` and known cgroup
+headroom. These are conservative estimates, not a universal OOM boundary; see the
+[cost model](for-agents.md#cost-model).
+
+For an operator-chosen heap size, Node's normal `--max-old-space-size=<MiB>` option
+works, including through `NODE_OPTIONS`. Keep the guard enabled: increasing heap does
+not create physical memory or remove a container constraint. `CCHISTORY_SCAN_GUARD=0`
+remains an explicit diagnostic escape hatch that disables the scan lock, estimate,
+watchdog and native-byte admission. It changes no Node/OS memory limit and can cause
+OOM. It is not the normal response to a refusal. Preserve scope and report the limit;
+do not automatically retry with broader filters or a disabled guard.
 
 ## Lite TUI
 
@@ -355,3 +375,21 @@ Run the focused gate with:
 pnpm run verify:lite
 pnpm run verify:lite-artifact
 ```
+
+## First-use and discovery contract
+
+`latest sessions 10 --dir /path/to/project --json` can be the first history command.
+`source_inventory` from `sources --json` / `ls sources --json` uses its own v1 schema:
+it reads adapter/root metadata only and reports null session/turn counts.
+`--complete` requests the existing counted source report (with the ordinary scan and
+v2/canonical output). `--limit-files` affects that scan, not metadata discovery.
+
+The shell prepares on its first valid read; help, invalid requests, cold exit and idle
+expiry do not scan. A cold `refresh` explicitly prepares; failed refresh retains the
+previous snapshot. Collection results include `diagnostics.directory_scope` with
+observed/matching/unknown-directory session counts, plus sources and loss audits.
+Unknown directory attribution is excluded by the directory predicate and reported,
+not automatically searched with `--no-dir`. Resource failures are errors with
+`resource.complete: false`; they are never exact empty results. `sample` still
+selects native file/groups and caps rendered sessions, but container parsing is not
+bounded by its rendered row count.

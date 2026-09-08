@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, cp, mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -10,13 +10,10 @@ import {
   FULL_SCAN_MEMORY_MULTIPLIER,
   LIGHT_SCAN_MEMORY_MULTIPLIER,
   LiveHistorySnapshot,
-  MAX_OLD_SPACE_MIB,
-  MIN_OLD_SPACE_MIB,
   SCAN_GUARD_REFUSE_AVAILABLE_FRACTION,
   SCAN_GUARD_WARN_AVAILABLE_FRACTION,
   SCAN_LOCK_WAIT_MS,
-  SCAN_WATCHDOG_MIN_FLOOR_BYTES,
-  SCAN_WATCHDOG_TOTAL_FLOOR_FRACTION,
+  SCAN_WATCHDOG_AVAILABLE_RESERVE_FRACTION,
   scanLiteHistory,
   ScanGuardAbortedError,
   ScanGuardRefusedError,
@@ -74,7 +71,7 @@ test("Lite CLI searches, reports stats, and writes one-way export", async () => 
       total: number;
       sources: Array<{ id: string }>;
     };
-    assert.equal(sourcesPayload.kind, "sources");
+    assert.equal(sourcesPayload.kind, "source_inventory");
     assert.equal(sourcesPayload.total, 1);
 
     const sessions = captureIo(tempHome);
@@ -998,7 +995,7 @@ test("Lite CLI ls limits human and JSON output and rejects conflicting controls 
   });
   assert.equal(await runLiteCli(["ls", "sources", "--dir", "/workspace"], invalidScope.io), 2);
   assert.match(invalidScope.stderr.join(""), /--dir is not valid for ls sources/);
-  assert.match(invalidScope.stderr.join(""), /Drop --dir and pass --limit-files/);
+  assert.match(invalidScope.stderr.join(""), /Drop --dir/);
   assert.equal(rejectedScans, 0);
 });
 
@@ -1207,7 +1204,7 @@ test("Lite CLI help documents latest, limits, and directory scope", async () => 
     "format",
     "out",
     "dir",
-    "request",
+    "request", "sql", "sql-file", "params", "complete", "idle-timeout",
     "safe",
     "json",
     "help",
@@ -1459,7 +1456,7 @@ test("Lite CLI human collection commands default to cwd and announce the scope",
   assert.equal(scanOptions.at(-1)?.directoryScope, undefined);
   assert.match(unscoped.stderr.join(""), /Listing every selected source on this machine/);
   assert.match(unscoped.stderr.join(""), /memory estimate covers every selected source root/);
-  assert.match(unscoped.stderr.join(""), /Bound with --source, --limit-files, or sample/);
+  assert.match(unscoped.stderr.join(""), /File and sample counts are not memory guarantees/);
 
   const exportRun = captureIo(repoRoot, undefined, { scan: scanner });
   assert.equal(await runLiteCli(["export", "--format", "markdown", "--out", "-"], exportRun.io), 0);
@@ -1599,6 +1596,7 @@ test("Lite shell JSON-lines keeps the snapshot when refresh fails and uses struc
   const snapshot = await getCodexSnapshot();
   let scans = 0;
   const refreshLines = [
+    JSON.stringify({ id: "initial", kind: "search", query: "Review", limit: 1 }),
     JSON.stringify({ kind: "refresh" }),
     JSON.stringify({ id: "find", kind: "search", query: "Review", limit: 1 }),
     JSON.stringify({ kind: "exit" }),
@@ -1619,66 +1617,74 @@ test("Lite shell JSON-lines keeps the snapshot when refresh fails and uses struc
     error?: { code?: string };
     operations?: Array<{ status?: string }>;
   });
-  assert.equal(refreshPayloads[0]?.kind, "error");
-  assert.equal(refreshPayloads[0]?.error?.code, "scan_failed");
-  assert.equal(refreshPayloads[1]?.kind, "query_result");
-  assert.equal(refreshPayloads[1]?.operations?.[0]?.status, "ok");
+  assert.equal(refreshPayloads[1]?.kind, "error");
+  assert.equal(refreshPayloads[1]?.error?.code, "scan_failed");
+  assert.equal(refreshPayloads[2]?.kind, "query_result");
+  assert.equal(refreshPayloads[2]?.operations?.[0]?.status, "ok");
   assert.equal(refresh.stderr.join(""), "");
 
+  const startupLines = ['{"kind":"latest","limit":1}', '{"kind":"exit"}'];
   const startup = captureIo(repoRoot, undefined, {
     isTTY: true,
     stdinIsTTY: false,
+    readLine: async () => startupLines.shift() ?? null,
     scan: async () => {
       throw new Error("synthetic startup scan failure");
     },
   });
   assert.equal(await runLiteCli(["shell", "--no-dir"], startup.io), 1);
-  assert.equal(startup.stdout.join(""), "");
-  const startupError = JSON.parse(startup.stderr.join("")) as { schema: string; error: { code: string } };
-  assert.equal(startupError.schema, "cchistory-lite-error/v1");
+  assert.equal(startup.stderr.join(""), "");
+  const startupError = JSON.parse(startup.stdout.join("")) as { error: { code: string } };
   assert.equal(startupError.error.code, "scan_failed");
 });
 
 test("Lite CLI scan guard refuses a scan whose estimate risks the machine, teaches the bounds, and bends to the kill-switch", async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-guard-cli-"));
-  const hugeRoot = path.join(tempHome, "huge-codex");
+  const fixtureRoot = path.join(tempHome, "codex-sessions");
   try {
-    await cp(codexRoot, hugeRoot, { recursive: true });
-    // Sparse: reports 256 GiB without allocating real bytes.
-    const hugeFile = path.join(hugeRoot, "huge.bin");
-    await writeFile(hugeFile, "");
-    await truncate(hugeFile, 256 * 1024 ** 3);
-    const sourceArgs = ["--source-root", `codex=${hugeRoot}`, "--source", "codex", "--safe"];
+    await cp(codexRoot, fixtureRoot, { recursive: true });
+    // Exercise guard-to-surface behavior with a controlled risk estimate. Runtime
+    // tests cover adapter selection; unrelated files must not inflate the estimate.
+    const guardedIo = () => captureIo(tempHome, undefined, {
+      scan: (options) => scanLiteHistory({
+        ...options,
+        scanGuardDeps: {
+          walkRootBytes: async () => options.directoryScope ? 0 : 256 * 1024 ** 3,
+          readAvailableBytes: () => 1024 ** 3,
+        },
+      }),
+    });
+    const sourceArgs = ["--source-root", `codex=${fixtureRoot}`, "--source", "codex", "--safe"];
 
-    const refused = captureIo(tempHome);
-    assert.equal(await runLiteCli(["sources", ...sourceArgs], refused.io), 1);
+    const refused = guardedIo();
+    assert.equal(await runLiteCli(["sources", "--complete", ...sourceArgs], refused.io), 1);
     assert.equal(refused.stdout.join(""), "");
     const message = refused.stderr.join("");
     assert.match(message, /Refusing to scan/);
     assert.match(message, /Selected source roots/);
     assert.match(message, /codex/);
     assert.match(message, /this scan has no --dir filter/);
-    assert.match(message, /--source <slot>/);
-    assert.match(message, /--limit-files/);
+    assert.match(message, /keep the requested scope/);
+    assert.match(message, /File count and sample size are not memory bounds/);
     assert.match(message, /sample/);
-    assert.match(message, /ls sources --limit-files 1/);
+    assert.match(message, /sources --json/);
     assert.match(message, /shell/);
-    assert.match(message, /query/);
-    assert.match(message, /CCHISTORY_SCAN_GUARD=0/);
+    assert.match(message, /No complete result/);
+    assert.doesNotMatch(message, /CCHISTORY_SCAN_GUARD=0/);
     assert.doesNotMatch(message, /--dir is already on/);
     assert.doesNotMatch(message, /does not shrink source bytes/);
 
-    const scopedLatest = captureIo(tempHome);
+    const scopedLatest = guardedIo();
     assert.equal(
       await runLiteCli(["latest", "--dir", "/workspace/codex-delegated", ...sourceArgs], scopedLatest.io),
       0,
       scopedLatest.stderr.join(""),
     );
-    const defaultDir = captureIo(tempHome);
+    const defaultDir = guardedIo();
     assert.equal(await runLiteCli(["latest", ...sourceArgs], defaultDir.io), 0, defaultDir.stderr.join(""));
 
-    const refusedJson = captureIo(tempHome);
-    assert.equal(await runLiteCli(["sources", "--json", ...sourceArgs], refusedJson.io), 1);
+    const refusedJson = guardedIo();
+    assert.equal(await runLiteCli(["sources", "--complete", "--json", ...sourceArgs], refusedJson.io), 1);
     assert.equal(refusedJson.stdout.join(""), "");
     const errorPayload = JSON.parse(refusedJson.stderr.join("")) as {
       schema: string;
@@ -1688,23 +1694,23 @@ test("Lite CLI scan guard refuses a scan whose estimate risks the machine, teach
     assert.equal(errorPayload.error.code, "scan_guard_refused");
     assert.match(errorPayload.error.message, /Refusing to scan/);
 
-    // Bounded probes bypass the lock and the estimate even on the same root.
-    const sampled = captureIo(tempHome);
-    assert.equal(await runLiteCli(["sample", "1", ...sourceArgs, "--no-dir"], sampled.io), 0, sampled.stderr.join(""));
-    const shown = captureIo(tempHome);
+    // Sample/exact probes bypass only the lock; an excessive estimate still refuses.
+    const sampled = guardedIo();
+    assert.equal(await runLiteCli(["sample", "1", ...sourceArgs, "--no-dir"], sampled.io), 1, sampled.stderr.join(""));
+    const shown = guardedIo();
     assert.equal(
       await runLiteCli(
         ["show", "session", "sess:codex:019ce4fd-8290-7501-afc4-0e9486733614", ...sourceArgs],
         shown.io,
       ),
-      0,
+      1,
       shown.stderr.join(""),
     );
 
     process.env.CCHISTORY_SCAN_GUARD = "0";
     try {
-      const allowed = captureIo(tempHome);
-      assert.equal(await runLiteCli(["sources", ...sourceArgs], allowed.io), 0, allowed.stderr.join(""));
+      const allowed = guardedIo();
+      assert.equal(await runLiteCli(["sources", "--complete", ...sourceArgs], allowed.io), 0, allowed.stderr.join(""));
     } finally {
       delete process.env.CCHISTORY_SCAN_GUARD;
     }
@@ -1721,7 +1727,7 @@ test("Lite CLI maps scan guard refusals and aborts to exit 1 with distinct struc
         throw new ScanGuardAbortedError({ availableBytes: 300 * 1024 ** 2, floorBytes: 512 * 1024 ** 2 });
       },
     });
-    assert.equal(await runLiteCli(["sources", "--json"], aborted.io), 1);
+    assert.equal(await runLiteCli(["sources", "--complete", "--json"], aborted.io), 1);
     assert.equal(aborted.stdout.join(""), "");
     const abortPayload = JSON.parse(aborted.stderr.join("")) as { schema: string; error: { code: string } };
     assert.equal(abortPayload.schema, "cchistory-lite-error/v1");
@@ -1772,7 +1778,7 @@ test("Lite CLI maps scan guard refusals and aborts to exit 1 with distinct struc
         throw new ScanGuardRefusedError({ reason: "scan_in_progress", holder: { pid: 4321 }, waitedMs: 30_000 });
       },
     });
-    assert.equal(await runLiteCli(["sources"], human.io), 1);
+    assert.equal(await runLiteCli(["sources", "--complete"], human.io), 1);
     assert.match(human.stderr.join(""), /Refusing to scan/);
     assert.throws(() => JSON.parse(human.stderr.join("")));
   } finally {
@@ -1799,9 +1805,9 @@ test("Lite CLI prints a one-line scan guard warning on stderr and proceeds", asy
         return getCodexSnapshot();
       },
     });
-    assert.equal(await runLiteCli(["sources", "--json"], warned.io), 0);
+    assert.equal(await runLiteCli(["sources", "--complete", "--json"], warned.io), 0);
     assert.match(warned.stderr.join(""), /Scan guard warning/);
-    assert.match(warned.stderr.join(""), /CCHISTORY_SCAN_GUARD=0/);
+    assert.doesNotMatch(warned.stderr.join(""), /CCHISTORY_SCAN_GUARD=0/);
     assert.equal((JSON.parse(warned.stdout.join("")) as { kind: string }).kind, "sources");
   } finally {
     await rm(tempHome, { recursive: true, force: true });
@@ -1828,7 +1834,7 @@ test("Lite CLI agent prints the machine-readable contract without scanning", asy
     trust_model: { content_trust: string };
     guardrails: string[];
     cost_model: {
-      heap_ceiling: { min_old_space_mib: number; max_old_space_mib: number };
+      heap_ceiling: { policy: string; automatic_reexec: boolean };
       scan_guard: {
         kill_switch: { env: string; value: string };
         light_scan_memory_multiplier: number;
@@ -1836,7 +1842,7 @@ test("Lite CLI agent prints the machine-readable contract without scanning", asy
         warn_available_fraction: number;
         refuse_available_fraction: number;
         lock_wait_ms: number;
-        watchdog_floor: { min_floor_bytes: number; total_floor_fraction: number };
+        watchdog_floor: { initial_available_fraction: number };
         error_codes: string[];
       };
     };
@@ -1870,12 +1876,11 @@ test("Lite CLI agent prints the machine-readable contract without scanning", asy
   assert.equal(guard.warn_available_fraction, SCAN_GUARD_WARN_AVAILABLE_FRACTION);
   assert.equal(guard.refuse_available_fraction, SCAN_GUARD_REFUSE_AVAILABLE_FRACTION);
   assert.equal(guard.lock_wait_ms, SCAN_LOCK_WAIT_MS);
-  assert.equal(guard.watchdog_floor.min_floor_bytes, SCAN_WATCHDOG_MIN_FLOOR_BYTES);
-  assert.equal(guard.watchdog_floor.total_floor_fraction, SCAN_WATCHDOG_TOTAL_FLOOR_FRACTION);
+  assert.equal(guard.watchdog_floor.initial_available_fraction, SCAN_WATCHDOG_AVAILABLE_RESERVE_FRACTION);
   assert.deepEqual(guard.kill_switch, { env: "CCHISTORY_SCAN_GUARD", value: "0" });
-  assert.deepEqual([...guard.error_codes].sort(), ["scan_guard_aborted", "scan_guard_refused"]);
-  assert.equal(contract.cost_model.heap_ceiling.min_old_space_mib, MIN_OLD_SPACE_MIB);
-  assert.equal(contract.cost_model.heap_ceiling.max_old_space_mib, MAX_OLD_SPACE_MIB);
+  assert.deepEqual([...guard.error_codes].sort(), ["read_budget_exceeded", "scan_guard_aborted", "scan_guard_refused"]);
+  assert.equal(contract.cost_model.heap_ceiling.policy, "node_default_or_explicit");
+  assert.equal(contract.cost_model.heap_ceiling.automatic_reexec, false);
 
   assert.equal(contract.trust_model.content_trust, "untrusted_history");
   const schemaIds = contract.output_schemas.map((entry) => entry.id);
@@ -1960,7 +1965,7 @@ test("Lite CLI agent contract flags match the parser in both directions", async 
   const parserFlags = [
     "--source-root", "--source", "--limit-files", "--limit", "--offset", "--project", "--by",
     "--format", "--out", "--dir", "--request", "--safe", "--json", "--all", "--no-dir",
-    "--help", "--version",
+    "--help", "--version", "--sql", "--sql-file", "--params", "--complete", "--idle-timeout",
   ];
   assert.deepEqual([...universe].sort(), [...parserFlags].sort());
 
@@ -1993,6 +1998,10 @@ test("Lite CLI agent contract flags match the parser in both directions", async 
       case "--out": return [name, "-"];
       case "--dir": return [name, repoRoot];
       case "--request": return [name, "-"];
+      case "--sql": return [name, "SELECT id FROM sessions LIMIT 1"];
+      case "--sql-file": return [name, path.join(repoRoot, "docs/guide/queries/latest-turns.sql")];
+      case "--params": return [name, "[]"];
+      case "--idle-timeout": return [name, "0"];
       default: return [name];
     }
   };
@@ -2021,7 +2030,11 @@ test("Lite CLI agent contract flags match the parser in both directions", async 
     }
     const accepted = new Set([...globalFlags, ...command.flags.map((flag) => flag.name)]);
     for (const flag of universe) {
-      const argv = tail.includes(flag) ? [name, ...tail] : [name, ...tail, ...flagArgs(flag)];
+      let argv = tail.includes(flag) ? [name, ...tail] : [name, ...tail, ...flagArgs(flag)];
+      if (name === "query" && ["--sql", "--sql-file", "--params", "--complete"].includes(flag)) {
+        argv = [name, ...(["--sql", "--sql-file"].includes(flag) ? [] : ["--sql", "SELECT id FROM sessions LIMIT 1"]), ...flagArgs(flag)];
+      }
+      if (name === "ls" && flag === "--complete") argv = ["ls", "sources", "--complete"];
       const code = await run(argv);
       if (accepted.has(flag)) {
         assert.equal(code, 0, `${name} must accept ${flag} (argv: ${argv.join(" ")})`);
@@ -2065,19 +2078,18 @@ test("Lite CLI agent skill and guide print the shipped docs", async () => {
   assert.equal(await runLiteCli(["agent", "skill", "extra"], extra.io), 2);
 });
 
-test("Lite CLI help leads with the agent path and prints per-command contracts", async () => {
+test("Lite CLI help leads with a direct scoped read and prints optional command contracts", async () => {
   const captured = captureIo(repoRoot);
   assert.equal(await runLiteCli(["help"], captured.io), 0);
   const help = captured.stdout.join("");
   const head = help.split("\n").slice(0, 20).join("\n");
   assert.match(head, /cchistory-lite agent/);
-  assert.match(head, /agent skill/);
-  assert.match(head, /agent guide/);
-  assert.match(head, /sample --json/);
-  assert.match(head, /--source <slot>/);
-  assert.match(head, /ls sources --limit-files 1/);
-  assert.match(head, /bounds the source-byte estimate/);
-  assert.match(head, /Do not discard stderr/);
+  assert.match(head, /latest sessions 10 --dir/);
+  assert.match(head, /sources --json/);
+  assert.match(head, /no history scan/);
+  assert.match(head, /first valid read/);
+  assert.match(head, /Keep stderr/);
+  assert.doesNotMatch(head, /sample --json/);
   assert.match(help, /cchistory-lite agent \[skill\|guide\]/);
 
   const sourcesHelp = captureIo(repoRoot);
@@ -2095,7 +2107,7 @@ test("Lite CLI help leads with the agent path and prints per-command contracts",
   const lsHelp = captureIo(repoRoot);
   assert.equal(await runLiteCli(["help", "ls"], lsHelp.io), 0);
   assert.match(lsHelp.stdout.join(""), /ls sources always lists every selected adapter/);
-  assert.match(lsHelp.stdout.join(""), /bound it with --limit-files/);
+  assert.match(lsHelp.stdout.join(""), /without parsing history/);
 
   const unknownHelp = captureIo(repoRoot);
   assert.equal(await runLiteCli(["help", "bogus"], unknownHelp.io), 0);
@@ -2112,8 +2124,8 @@ test("Lite CLI dead-end flags and unknown adapters teach the next command", asyn
   const sourcesNoDir = captureIo(repoRoot, undefined, noScan);
   assert.equal(await runLiteCli(["sources", "--no-dir"], sourcesNoDir.io), 2);
   assert.match(sourcesNoDir.stderr.join(""), /--no-dir is not valid for sources/);
-  assert.match(sourcesNoDir.stderr.join(""), /Drop --no-dir and pass --limit-files/);
-  assert.match(sourcesNoDir.stderr.join(""), /ls sources --limit-files 1/);
+  assert.match(sourcesNoDir.stderr.join(""), /Drop --no-dir/);
+  assert.match(sourcesNoDir.stderr.join(""), /sources --complete/);
 
   const unknown = captureIo(repoRoot);
   assert.equal(await runLiteCli(["latest", "--source", "claude"], unknown.io), 1);

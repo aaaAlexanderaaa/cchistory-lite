@@ -1,0 +1,9 @@
+{
+  "createdAt": "2026-04-12T01:00:00.000Z",
+  "updatedAt": "2026-04-12T01:00:05.000Z",
+  "title": "Kimi semantic fixture",
+  "workDir": "/workspace/kimi-semantic",
+  "lastPrompt": "Inspect the Kimi semantic fixture.",
+  "agents": { "main": { "type": "main", "parentAgentId": null } },
+  "custom": {}
+}

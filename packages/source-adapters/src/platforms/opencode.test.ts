@@ -1,9 +1,10 @@
+import { runSourceProbe } from "../probe-reference.test.js";
 import assert from "node:assert/strict";
 import { mkdir, writeFile, rm, mkdtemp } from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { getDefaultSourcesForHost, runSourceProbe } from "../index.js";
+import { getDefaultSourcesForHost} from "../index.js";
 import { 
   getRepoMockDataRoot, 
   createSourceDefinition, 

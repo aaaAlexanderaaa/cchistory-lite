@@ -13,6 +13,8 @@ import "./core/path-utils.test.js";
 import "./core/jsonl-records.test.js";
 import "./core/session-grouping.test.js";
 import "./core/directory-preview.test.js";
+import "./core/file-read-plan.test.js";
+import "./core/read-budget.test.js";
 import "./platforms/cursor.test.js";
 import "./platforms/antigravity.test.js";
 import "./platforms/openclaw.test.js";

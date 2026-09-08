@@ -1,10 +1,11 @@
+import { runSourceProbe } from "../probe-reference.test.js";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import type { SourceDefinition } from "@cchistory/domain";
-import { getDefaultSourcesForHost, runSourceProbe } from "../index.js";
+import { getDefaultSourcesForHost} from "../index.js";
 import { 
   seedExpandedSourceFixtures
 } from "../test-helpers.js";

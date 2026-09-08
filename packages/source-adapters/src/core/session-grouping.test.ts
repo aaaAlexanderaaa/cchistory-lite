@@ -1,3 +1,4 @@
+import { runSourceProbe } from "../probe-reference.test.js";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -10,7 +11,7 @@ import {
 } from "./session-grouping.js";
 import { deriveSessionId } from "./source-identity.js";
 import { getRepoMockDataRoot } from "../test-helpers.js";
-import { runSourceProbe } from "../index.js";
+
 
 test("Codex delegated child metadata exposes its parent as a related session", async () => {
   const filePath = path.join(

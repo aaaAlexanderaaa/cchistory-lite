@@ -1,0 +1,136 @@
+{
+  "split": [
+    {
+      "timestamp": "2026-01-01T12:00:00Z",
+      "type": "session_meta",
+      "payload": {
+        "id": "oldest",
+        "cwd": "/fixture/query-project",
+        "source": "cli"
+      }
+    },
+    {
+      "timestamp": "2026-01-06T12:01:00Z",
+      "type": "response_item",
+      "payload": {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Split later turn"
+          }
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-06T12:01:00Z",
+      "type": "response_item",
+      "payload": {
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "Split latest reply"
+          }
+        ]
+      }
+    }
+  ],
+  "child": [
+    {
+      "timestamp": "2026-01-07T12:00:00Z",
+      "type": "session_meta",
+      "payload": {
+        "id": "child",
+        "cwd": "/fixture/query-project",
+        "source": {
+          "subagent": {
+            "thread_spawn": {
+              "parent_thread_id": "newest"
+            }
+          }
+        }
+      }
+    },
+    {
+      "timestamp": "2026-01-07T12:01:00Z",
+      "type": "response_item",
+      "payload": {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Delegated task"
+          }
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-01-07T12:01:00Z",
+      "type": "response_item",
+      "payload": {
+        "type": "message",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "Delegated reply"
+          }
+        ]
+      }
+    }
+  ],
+  "unknown": {
+    "timestamp": "2026-01-01T12:02:00Z",
+    "type": "future_native_record",
+    "payload": {
+      "type": "future_shape"
+    }
+  },
+  "family_tool": {
+    "timestamp": "2026-01-01T12:02:00Z",
+    "type": "response_item",
+    "payload": {
+      "type": "function_call",
+      "name": "Task",
+      "call_id": "fixture-child-call",
+      "arguments": "{}"
+    }
+  },
+  "changed": {
+    "timestamp": "2026-01-10T12:01:00Z",
+    "type": "response_item",
+    "payload": {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Changed evidence must abort the attempt"
+        }
+      ]
+    }
+  },
+  "ordinary_tool": {
+    "timestamp": "2026-01-01T12:00:30Z",
+    "type": "response_item",
+    "payload": {
+      "type": "function_call",
+      "name": "read_file",
+      "call_id": "fixture-read",
+      "arguments": "{}"
+    }
+  },
+  "ordinary_output": {
+    "timestamp": "2026-01-01T12:00:40Z",
+    "type": "response_item",
+    "payload": {
+      "type": "function_call_output",
+      "call_id": "fixture-read",
+      "output": "Synthetic bounded tool output.\n"
+    }
+  }
+}

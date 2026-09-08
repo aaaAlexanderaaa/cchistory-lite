@@ -1,3 +1,4 @@
+import { readBudgetedSqliteRows, type SourceReadBudget } from "../../core/read-budget.js";
 import { DatabaseSync } from "node:sqlite";
 import { maxIso } from "@cchistory/domain";
 import type { SourcePlatform } from "@cchistory/domain";
@@ -70,42 +71,44 @@ export function extractZcodeSqliteSeeds(
   filePath: string,
   helpers: ZcodeRuntimeHelpers,
   targetSessionRefs: readonly string[] = [],
+  budget?: SourceReadBudget,
 ): ExtractedSessionSeed[] | undefined {
   const db = new DatabaseSync(filePath, { readOnly: true });
   try {
+    db.exec("BEGIN");
     if (!tableExists(db, "session") || !tableExists(db, "message") || !tableExists(db, "part")) {
       return undefined;
     }
 
     const targetIds = targetSessionRefs.map((ref) => ref.replace(/^sess:zcode:/u, ""));
     const placeholders = targetIds.map(() => "?").join(", ");
-    const sessionRows = db.prepare(`
+    const sessionRows = readBudgetedSqliteRows(db, `
       SELECT id, parent_id, directory, path, title, task_type, time_created, time_updated, time_archived, trace_id
       FROM session
       ${targetIds.length > 0 ? `WHERE id IN (${placeholders})` : ""}
       ORDER BY time_created, id
-    `).all(...targetIds) as unknown as ZcodeSessionRow[];
-    const messageRows = db.prepare(`
+    `, ["id", "parent_id", "directory", "path", "title", "task_type", "time_created", "time_updated", "time_archived", "trace_id"], targetIds, budget, `${filePath}:session`) as unknown as ZcodeSessionRow[];
+    const messageRows = readBudgetedSqliteRows(db, `
       SELECT id, session_id, time_created, time_updated, data
       FROM message
       ${targetIds.length > 0 ? `WHERE session_id IN (${placeholders})` : ""}
       ORDER BY session_id, time_created, id
-    `).all(...targetIds) as unknown as ZcodeMessageRow[];
-    const partRows = db.prepare(`
+    `, ["id", "session_id", "time_created", "time_updated", "data"], targetIds, budget, `${filePath}:message`) as unknown as ZcodeMessageRow[];
+    const partRows = readBudgetedSqliteRows(db, `
       SELECT id, message_id, session_id, time_created, time_updated, data
       FROM part
       ${targetIds.length > 0 ? `WHERE session_id IN (${placeholders})` : ""}
       ORDER BY session_id, time_created, id
-    `).all(...targetIds) as unknown as ZcodePartRow[];
+    `, ["id", "message_id", "session_id", "time_created", "time_updated", "data"], targetIds, budget, `${filePath}:part`) as unknown as ZcodePartRow[];
     const taskLinkRows = tableExists(db, "session_task_link")
-      ? db.prepare(`
+      ? readBudgetedSqliteRows(db, `
           SELECT parent_session_id, child_session_id, role, label, agent_type, model, status, time_created
           FROM session_task_link
           ${targetIds.length > 0
             ? `WHERE parent_session_id IN (${placeholders}) OR child_session_id IN (${placeholders})`
             : ""}
           ORDER BY time_created, child_session_id
-        `).all(...targetIds, ...targetIds) as unknown as ZcodeSessionTaskLinkRow[]
+        `, ["parent_session_id", "child_session_id", "role", "label", "agent_type", "model", "status", "time_created"], [...targetIds, ...targetIds], budget, `${filePath}:session_task_link`) as unknown as ZcodeSessionTaskLinkRow[]
       : [];
 
     const partsByMessageId = groupRows(partRows, (row) => helpers.asString(row.message_id));

@@ -274,7 +274,26 @@ export async function listGrokRecordSidecarPaths(
 
 async function grokSessionMayBeDelegatedChild(sessionDir: string): Promise<boolean> {
   try {
-    const parsed = JSON.parse(await fs.readFile(path.join(sessionDir, "summary.json"), "utf8")) as unknown;
+    // Companion discovery runs before the scan budget is assessed. Oversized or
+    // changing summaries cannot justify excluding possible parent evidence.
+    const handle = await fs.open(path.join(sessionDir, "summary.json"), "r");
+    let text: string;
+    try {
+      const { size } = await handle.stat();
+      if (size > 1024 * 1024) return true;
+      const buffer = Buffer.alloc(size + 1);
+      let length = 0;
+      while (length < buffer.length) {
+        const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+        if (bytesRead === 0) break;
+        length += bytesRead;
+      }
+      if (length !== size) return true;
+      text = buffer.subarray(0, length).toString("utf8");
+    } finally {
+      await handle.close();
+    }
+    const parsed = JSON.parse(text) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       return true;
     }

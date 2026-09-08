@@ -1,0 +1,572 @@
+{
+  "status": "M1 hand-authored review oracle; M2 runtime acceptance covers Q1-Q8",
+  "sessions": [
+    {
+      "source_id": "source-codex",
+      "source_platform": "codex",
+      "title": "Alpha",
+      "created_at": "2026-04-10T10:00:00.000Z",
+      "last_message_at": "2026-04-15T12:00:00.000Z",
+      "turn_count": 2,
+      "is_top_level": true,
+      "primary_project_id": "project-one",
+      "working_directory": "/workspace/shared",
+      "model": "model-fixture",
+      "total_tokens": 30,
+      "id": "s1"
+    },
+    {
+      "source_id": "source-codex",
+      "source_platform": "codex",
+      "title": "Beta",
+      "created_at": "2026-04-11T10:00:00.000Z",
+      "last_message_at": "2026-04-15T12:00:00.000Z",
+      "turn_count": 1,
+      "is_top_level": true,
+      "primary_project_id": "project-one",
+      "working_directory": "/workspace/shared",
+      "model": "model-fixture",
+      "total_tokens": 20,
+      "id": "s2"
+    },
+    {
+      "source_id": "source-claude",
+      "source_platform": "claude_code",
+      "title": "Alpha",
+      "created_at": "2026-04-13T10:00:00.000Z",
+      "last_message_at": "2026-04-14T15:00:00.000Z",
+      "turn_count": 1,
+      "is_top_level": true,
+      "primary_project_id": "project-two",
+      "working_directory": "/workspace/shared",
+      "model": "model-fixture",
+      "total_tokens": 10,
+      "id": "s3"
+    },
+    {
+      "source_id": "source-codex",
+      "source_platform": "codex",
+      "title": "Delegated child",
+      "created_at": "2026-04-12T10:00:00.000Z",
+      "last_message_at": "2026-04-16T09:00:00.000Z",
+      "turn_count": 1,
+      "is_top_level": false,
+      "primary_project_id": "project-one",
+      "working_directory": "/workspace/shared",
+      "model": "model-fixture",
+      "total_tokens": 10,
+      "id": "s4"
+    },
+    {
+      "source_id": "source-codex",
+      "source_platform": "codex",
+      "title": "Empty session",
+      "created_at": "2026-04-18T10:00:00.000Z",
+      "last_message_at": null,
+      "turn_count": 0,
+      "is_top_level": true,
+      "primary_project_id": "project-one",
+      "working_directory": "/workspace/shared",
+      "model": "model-fixture",
+      "total_tokens": null,
+      "id": "s5"
+    },
+    {
+      "source_id": "source-codex",
+      "source_platform": "codex",
+      "title": "Orphan work",
+      "created_at": "2026-04-12T08:00:00.000Z",
+      "last_message_at": "2026-04-13T10:00:00.000Z",
+      "turn_count": 1,
+      "is_top_level": true,
+      "primary_project_id": null,
+      "working_directory": "/workspace/shared",
+      "model": null,
+      "total_tokens": null,
+      "id": "s6"
+    }
+  ],
+  "turns": [
+    {
+      "id": "t1",
+      "session_id": "s1",
+      "source_id": "source-codex",
+      "source_platform": "codex",
+      "project_id": "project-one",
+      "submitted_at": "2026-04-15T11:00:00.000Z",
+      "last_message_at": "2026-04-15T12:00:00.000Z",
+      "text": "Review the fixture.",
+      "model": "model-fixture",
+      "total_tokens": 10,
+      "has_errors": false,
+      "link_state": "committed"
+    },
+    {
+      "id": "t2",
+      "session_id": "s1",
+      "source_id": "source-codex",
+      "source_platform": "codex",
+      "project_id": "project-two",
+      "submitted_at": "2026-04-15T10:00:00.000Z",
+      "last_message_at": "2026-04-15T11:00:00.000Z",
+      "text": "Review the fixture.",
+      "model": "model-fixture",
+      "total_tokens": 20,
+      "has_errors": false,
+      "link_state": "committed"
+    },
+    {
+      "id": "t3",
+      "session_id": "s2",
+      "source_id": "source-codex",
+      "source_platform": "codex",
+      "project_id": "project-one",
+      "submitted_at": "2026-04-15T11:00:00.000Z",
+      "last_message_at": "2026-04-15T12:00:00.000Z",
+      "text": "Review the fixture.",
+      "model": "model-fixture",
+      "total_tokens": 20,
+      "has_errors": false,
+      "link_state": "committed"
+    },
+    {
+      "id": "t4",
+      "session_id": "s3",
+      "source_id": "source-claude",
+      "source_platform": "claude_code",
+      "project_id": "project-two",
+      "submitted_at": "2026-04-14T14:00:00.000Z",
+      "last_message_at": "2026-04-14T15:00:00.000Z",
+      "text": "Review the fixture.",
+      "model": "model-fixture",
+      "total_tokens": 10,
+      "has_errors": false,
+      "link_state": "committed"
+    },
+    {
+      "id": "t5",
+      "session_id": "s4",
+      "source_id": "source-codex",
+      "source_platform": "codex",
+      "project_id": "project-one",
+      "submitted_at": "2026-04-16T08:00:00.000Z",
+      "last_message_at": "2026-04-16T09:00:00.000Z",
+      "text": "Review the fixture.",
+      "model": "model-fixture",
+      "total_tokens": 10,
+      "has_errors": false,
+      "link_state": "committed"
+    },
+    {
+      "id": "t6",
+      "session_id": "s6",
+      "source_id": "source-codex",
+      "source_platform": "codex",
+      "project_id": null,
+      "submitted_at": "2026-04-13T09:00:00.000Z",
+      "last_message_at": "2026-04-13T10:00:00.000Z",
+      "text": "Review the fixture.",
+      "model": null,
+      "total_tokens": null,
+      "has_errors": false,
+      "link_state": "unlinked"
+    }
+  ],
+  "canonical_session_order": [
+    "s4",
+    "s2",
+    "s1",
+    "s3",
+    "s6",
+    "s5"
+  ],
+  "canonical_turn_order": [
+    "t5",
+    "t3",
+    "t1",
+    "t2",
+    "t4",
+    "t6"
+  ],
+  "notes": [
+    "Hand-authored public rows, not native history. Short fixture ids stand in for complete canonical ids.",
+    "s4 is a delegated child of s1; s6 has no resolving parent. The explicit canonical turn order resolves the t3/t1 time tie from canonical created_at evidence.",
+    "s1 spans two projects; both project identities share /workspace/shared. Never substitute cwd for project_id.",
+    "s5 has no real message despite its newer native metadata.",
+    "No positive query implies automatic top-level filtering; latest/list templates request it."
+  ],
+  "queries": [
+    {
+      "id": "latest_sessions",
+      "journey": "Q1",
+      "sql": "SELECT id, title, last_message_at FROM sessions WHERE is_top_level = TRUE AND turn_count > 0 ORDER BY last_message_at DESC NULLS LAST LIMIT $1;",
+      "params": [
+        10
+      ],
+      "expected_ids": [
+        "s2",
+        "s1",
+        "s3",
+        "s6"
+      ]
+    },
+    {
+      "id": "source_time",
+      "journey": "Q2",
+      "sql": "SELECT id FROM sessions WHERE source_platform = $1 AND last_message_at >= $2 AND last_message_at < $3 ORDER BY last_message_at DESC NULLS LAST LIMIT 10;",
+      "params": [
+        "codex",
+        "2026-04-13T00:00:00Z",
+        "2026-04-16T00:00:00Z"
+      ],
+      "expected_ids": [
+        "s2",
+        "s1",
+        "s6"
+      ]
+    },
+    {
+      "id": "project_time",
+      "journey": "Q3",
+      "sql": "SELECT id, session_id, project_id FROM turns WHERE project_id = $1 AND submitted_at >= $2 ORDER BY submitted_at DESC LIMIT 10;",
+      "params": [
+        "project-one",
+        "2026-04-15T00:00:00Z"
+      ],
+      "expected_ids": [
+        "t5",
+        "t3",
+        "t1"
+      ]
+    },
+    {
+      "id": "projection_null",
+      "journey": "Q4",
+      "sql": "SELECT id, model, primary_project_id FROM sessions WHERE primary_project_id IS NULL LIMIT 10;",
+      "params": [],
+      "expected_ids": [
+        "s6"
+      ],
+      "expected_rows": [
+        {
+          "id": "s6",
+          "model": null,
+          "primary_project_id": null
+        }
+      ]
+    },
+    {
+      "id": "bound_text",
+      "journey": "Q4",
+      "sql": "SELECT id FROM sessions WHERE source_platform = $1 AND title LIKE $2 LIMIT 10;",
+      "params": [
+        "claude_code",
+        "%Alpha%"
+      ],
+      "expected_ids": [
+        "s3"
+      ]
+    },
+    {
+      "id": "null_comparison",
+      "journey": "Q4",
+      "sql": "SELECT id FROM sessions WHERE total_tokens = NULL LIMIT 10;",
+      "params": [],
+      "expected_ids": []
+    },
+    {
+      "id": "not_in_null",
+      "journey": "Q4",
+      "sql": "SELECT id FROM sessions WHERE id NOT IN ('s1', NULL) LIMIT 10;",
+      "params": [],
+      "expected_ids": []
+    },
+    {
+      "id": "list_sessions",
+      "journey": "Q5",
+      "sql": "SELECT id FROM sessions WHERE is_top_level = TRUE ORDER BY last_message_at DESC NULLS LAST LIMIT $1 OFFSET $2;",
+      "params": [
+        20,
+        0
+      ],
+      "expected_ids": [
+        "s2",
+        "s1",
+        "s3",
+        "s6",
+        "s5"
+      ]
+    },
+    {
+      "id": "latest_turns",
+      "journey": "Q5",
+      "sql": "SELECT id FROM turns ORDER BY submitted_at DESC LIMIT 20;",
+      "params": [],
+      "expected_ids": [
+        "t5",
+        "t3",
+        "t1",
+        "t2",
+        "t4",
+        "t6"
+      ]
+    },
+    {
+      "id": "bounded_boolean",
+      "journey": "Q4",
+      "sql": "SELECT id FROM sessions WHERE NOT (turn_count = 0 OR source_platform <> $1) AND title IN ('Alpha', 'Beta') LIMIT 20;",
+      "params": [
+        "codex"
+      ],
+      "expected_ids": [
+        "s2",
+        "s1"
+      ]
+    },
+    {
+      "id": "between",
+      "journey": "Q4",
+      "sql": "SELECT id FROM turns WHERE total_tokens BETWEEN 10 AND 20 LIMIT 10;",
+      "params": [],
+      "expected_ids": [
+        "t5",
+        "t3",
+        "t1",
+        "t2",
+        "t4"
+      ]
+    },
+    {
+      "id": "quoted_identifier",
+      "journey": "Q4",
+      "sql": "SELECT \"id\" FROM \"sessions\" WHERE is_top_level = TRUE LIMIT 2;",
+      "params": [],
+      "expected_ids": [
+        "s2",
+        "s1"
+      ]
+    },
+    {
+      "id": "injection_as_data",
+      "journey": "Q4",
+      "sql": "SELECT id FROM sessions WHERE title = $1 LIMIT 10;",
+      "params": [
+        "Alpha'; DELETE FROM sessions; --"
+      ],
+      "expected_ids": []
+    }
+  ],
+  "rejections": [
+    {
+      "id": "mutation",
+      "journey": "Q6",
+      "sql": "DELETE FROM sessions;",
+      "params": [],
+      "expected_rejection": "unsupported",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "multi_statement",
+      "journey": "Q6",
+      "sql": "SELECT id FROM sessions LIMIT 1; SELECT id FROM turns LIMIT 1;",
+      "params": [],
+      "expected_rejection": "unsupported",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "aggregate",
+      "journey": "Q6",
+      "sql": "SELECT count(*) FROM sessions LIMIT 1;",
+      "params": [],
+      "expected_rejection": "unsupported",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "join",
+      "journey": "Q6",
+      "sql": "SELECT s.id FROM sessions s JOIN turns t ON s.id = t.session_id LIMIT 1;",
+      "params": [],
+      "expected_rejection": "unsupported",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "locking",
+      "journey": "Q6",
+      "sql": "SELECT id FROM sessions LIMIT 1 FOR UPDATE;",
+      "params": [],
+      "expected_rejection": "unsupported",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "field",
+      "journey": "Q6",
+      "sql": "SELECT raw_text FROM sessions LIMIT 1;",
+      "params": [],
+      "expected_rejection": "field",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "collection",
+      "journey": "Q6",
+      "sql": "SELECT id FROM projects LIMIT 1;",
+      "params": [],
+      "expected_rejection": "field",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "missing_limit",
+      "journey": "Q6",
+      "sql": "SELECT id FROM sessions;",
+      "params": [],
+      "expected_rejection": "budget",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "missing_parameter",
+      "journey": "Q6",
+      "sql": "SELECT id FROM sessions WHERE source_platform = $1 LIMIT 1;",
+      "params": [],
+      "expected_rejection": "parameter",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "wrong_parameter",
+      "journey": "Q6",
+      "sql": "SELECT id FROM sessions WHERE source_platform = $1 LIMIT 1;",
+      "params": [
+        10
+      ],
+      "expected_rejection": "type",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "over_limit",
+      "journey": "Q6",
+      "sql": "SELECT id FROM sessions LIMIT 1001;",
+      "params": [],
+      "expected_rejection": "budget",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "subquery",
+      "journey": "Q6",
+      "sql": "SELECT id FROM sessions WHERE id IN (SELECT session_id FROM turns) LIMIT 1;",
+      "params": [],
+      "expected_rejection": "unsupported",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "function",
+      "journey": "Q6",
+      "sql": "SELECT lower(title) FROM sessions LIMIT 1;",
+      "params": [],
+      "expected_rejection": "unsupported",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "cast",
+      "journey": "Q6",
+      "sql": "SELECT id FROM sessions WHERE created_at >= $1::timestamp LIMIT 1;",
+      "params": [
+        "2026-04-12T00:00:00Z"
+      ],
+      "expected_rejection": "unsupported",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "unknown_nulls",
+      "journey": "Q6",
+      "sql": "SELECT id FROM sessions WHERE total_tokens IS DISTINCT FROM 0 LIMIT 1;",
+      "params": [],
+      "expected_rejection": "syntax",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "locale_matching",
+      "journey": "Q6",
+      "sql": "SELECT id FROM sessions WHERE title ILIKE 'alpha' LIMIT 1;",
+      "params": [],
+      "expected_rejection": "unsupported",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "invalid_date",
+      "journey": "Q6",
+      "sql": "SELECT id FROM sessions WHERE created_at >= $1 LIMIT 1;",
+      "params": [
+        "2026-02-30T00:00:00Z"
+      ],
+      "expected_rejection": "parameter",
+      "expected_native_reads": 0
+    }
+  ],
+  "generated_rejections": [
+    {
+      "id": "sql_bytes",
+      "journey": "Q6",
+      "generator": "SELECT id FROM sessions LIMIT 1; followed by a block comment that makes the UTF-8 SQL length 16385 bytes",
+      "expected_rejection": "budget",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "predicate_depth",
+      "journey": "Q6",
+      "generator": "SELECT id FROM sessions WHERE followed by nine NOT operators around (turn_count = 1), then LIMIT 1",
+      "expected_rejection": "budget",
+      "expected_native_reads": 0
+    },
+    {
+      "id": "predicate_count",
+      "journey": "Q6",
+      "generator": "SELECT id FROM sessions WHERE followed by 65 copies of turn_count = 1 joined with OR, then LIMIT 1",
+      "expected_rejection": "budget",
+      "expected_native_reads": 0
+    }
+  ],
+  "lifecycle": [
+    {
+      "id": "reuse_refresh",
+      "journey": "Q7",
+      "events": [
+        "initial preparation succeeds -> read g1",
+        "run latest_sessions twice -> read g1 both times; no further scan",
+        "refresh succeeds -> read g2",
+        "run latest_sessions -> read g2",
+        "refresh fails -> explicit scan_failed; still read g2",
+        "run latest_sessions -> read g2"
+      ],
+      "expected_scan_attempts": 3,
+      "expected_successful_preparations": 2
+    },
+    {
+      "id": "idle_close",
+      "journey": "Q8",
+      "events": [
+        "ready at fake clock 0 seconds",
+        "no input at 299 seconds -> open",
+        "no input at 300 seconds -> close, clear snapshot and parser ownership"
+      ],
+      "default_idle_seconds": 300
+    },
+    {
+      "id": "active_query",
+      "journey": "Q8",
+      "events": [
+        "ready at fake clock 0 seconds",
+        "input at 299 seconds starts query",
+        "query and output finish at 601 seconds -> still open",
+        "no further input -> expiry at 901 seconds"
+      ],
+      "expiry_during_active_work": false
+    },
+    {
+      "id": "explicit_close",
+      "journey": "Q8",
+      "events": [
+        "exit or EOF with no accepted pending request -> close immediately",
+        "EOF following accepted queued requests -> finish them in order, then close",
+        "idle-timeout 0 -> no idle timer; explicit exit and EOF still close"
+      ]
+    }
+  ]
+}

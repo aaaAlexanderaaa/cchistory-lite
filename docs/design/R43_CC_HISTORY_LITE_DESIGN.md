@@ -375,7 +375,10 @@ storage and TUI. It remains a useful parity oracle and implementation bridge.
 The 2026-07-25 follow-up implementation completed related-work parity, adaptive
 memory and the TUI startup OOM fix, standalone release closure, independent
 product profiles, API extension gating, and CI coverage. Passing corrective
-tests do not close the independent-review gate.
+tests do not close the independent-review gate. The adaptive heap policy was removed
+on 2026-09-08 after a failed macOS trial; the current platform-aware admission policy
+and Node-owned heap limits are recorded in
+[the correction report](../research/2026-09-08-macos-memory-ownership.md).
 
 ## Historical Implementation Record
 

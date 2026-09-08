@@ -5,7 +5,7 @@ import { getPlatformAdapter } from "../platforms/registry.js";
 import { firstNonEmptyTrimmedLineFromBuffer } from "./jsonl-records.js";
 import { asString, isObject } from "./type-guards.js";
 
-export const RULE_VERSION = "2026-03-10.1";
+export { EVIDENCE_RULE_VERSION as RULE_VERSION } from "@cchistory/domain";
 
 export function buildStageRunId(sourceId: string, stageKind: StageKind): string {
   return stableId("stage-run", sourceId, stageKind);

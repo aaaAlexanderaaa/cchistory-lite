@@ -1,0 +1,186 @@
+{
+  "draft": {
+    "id": "sess:claude_code:interpretation-fixture",
+    "source_session_id": "interpretation-fixture",
+    "source_id": "src-interpretation-fixture",
+    "source_platform": "claude_code",
+    "host_id": "host-fixture",
+    "title": "Review fixture evidence",
+    "working_directory": "/workspace/interpretation-fixture",
+    "source_native_project_ref": "interpretation-fixture",
+    "created_at": "2026-04-12T00:00:00.000Z",
+    "updated_at": "2026-04-12T00:00:07.000Z"
+  },
+  "blobs": [],
+  "records": [],
+  "fragments": [],
+  "atoms": [
+    {
+      "id": "atom-0",
+      "source_id": "src-interpretation-fixture",
+      "session_ref": "sess:claude_code:interpretation-fixture",
+      "seq_no": 0,
+      "actor_kind": "user",
+      "origin_kind": "user_authored",
+      "content_kind": "text",
+      "time_key": "2026-04-12T00:00:00.000Z",
+      "display_policy": "show",
+      "payload": {
+        "text": "Review the fixture."
+      },
+      "fragment_refs": [],
+      "source_format_profile_id": "profile-fixture"
+    },
+    {
+      "id": "atom-1",
+      "source_id": "src-interpretation-fixture",
+      "session_ref": "sess:claude_code:interpretation-fixture",
+      "seq_no": 1,
+      "actor_kind": "user",
+      "origin_kind": "injected_user_shaped",
+      "content_kind": "text",
+      "time_key": "2026-04-12T00:00:01.000Z",
+      "display_policy": "show",
+      "payload": {
+        "text": "<environment_context>Fixture environment</environment_context>"
+      },
+      "fragment_refs": [],
+      "source_format_profile_id": "profile-fixture"
+    },
+    {
+      "id": "atom-2",
+      "source_id": "src-interpretation-fixture",
+      "session_ref": "sess:claude_code:interpretation-fixture",
+      "seq_no": 2,
+      "actor_kind": "assistant",
+      "origin_kind": "assistant_authored",
+      "content_kind": "meta_signal",
+      "time_key": "2026-04-12T00:00:02.000Z",
+      "display_policy": "show",
+      "payload": {
+        "signal_kind": "token_usage_signal",
+        "message_id": "reply-fixture",
+        "token_usage": {
+          "input_tokens": 4,
+          "output_tokens": 2,
+          "total_tokens": 6
+        },
+        "model": "model-fixture"
+      },
+      "fragment_refs": [],
+      "source_format_profile_id": "profile-fixture"
+    },
+    {
+      "id": "atom-3",
+      "source_id": "src-interpretation-fixture",
+      "session_ref": "sess:claude_code:interpretation-fixture",
+      "seq_no": 3,
+      "actor_kind": "assistant",
+      "origin_kind": "assistant_authored",
+      "content_kind": "text",
+      "time_key": "2026-04-12T00:00:03.000Z",
+      "display_policy": "show",
+      "payload": {
+        "text": "Fixture review complete.",
+        "message_id": "reply-fixture",
+        "model": "model-fixture",
+        "stop_reason": "error"
+      },
+      "fragment_refs": [],
+      "source_format_profile_id": "profile-fixture"
+    },
+    {
+      "id": "atom-4",
+      "source_id": "src-interpretation-fixture",
+      "session_ref": "sess:claude_code:interpretation-fixture",
+      "seq_no": 4,
+      "actor_kind": "tool",
+      "origin_kind": "tool_generated",
+      "content_kind": "tool_call",
+      "time_key": "2026-04-12T00:00:04.000Z",
+      "display_policy": "show",
+      "payload": {
+        "tool_name": "read_file",
+        "call_id": "call-fixture",
+        "input": {
+          "path": "fixture.txt"
+        }
+      },
+      "fragment_refs": [],
+      "source_format_profile_id": "profile-fixture"
+    },
+    {
+      "id": "atom-5",
+      "source_id": "src-interpretation-fixture",
+      "session_ref": "sess:claude_code:interpretation-fixture",
+      "seq_no": 5,
+      "actor_kind": "tool",
+      "origin_kind": "tool_generated",
+      "content_kind": "tool_result",
+      "time_key": "2026-04-12T00:00:05.000Z",
+      "display_policy": "show",
+      "payload": {
+        "call_id": "call-fixture",
+        "output": "Fixture content"
+      },
+      "fragment_refs": [],
+      "source_format_profile_id": "profile-fixture"
+    },
+    {
+      "id": "atom-6",
+      "source_id": "src-interpretation-fixture",
+      "session_ref": "sess:claude_code:interpretation-fixture",
+      "seq_no": 6,
+      "actor_kind": "user",
+      "origin_kind": "user_authored",
+      "content_kind": "text",
+      "time_key": "2026-04-12T00:00:06.000Z",
+      "display_policy": "show",
+      "payload": {
+        "text": "Continue the fixture review."
+      },
+      "fragment_refs": [],
+      "source_format_profile_id": "profile-fixture"
+    },
+    {
+      "id": "atom-7",
+      "source_id": "src-interpretation-fixture",
+      "session_ref": "sess:claude_code:interpretation-fixture",
+      "seq_no": 7,
+      "actor_kind": "assistant",
+      "origin_kind": "assistant_authored",
+      "content_kind": "meta_signal",
+      "time_key": "2026-04-12T00:00:07.000Z",
+      "display_policy": "show",
+      "payload": {
+        "signal_kind": "token_usage_signal",
+        "message_id": "unanswered-fixture",
+        "token_usage": {
+          "input_tokens": 7,
+          "output_tokens": 3,
+          "total_tokens": 10
+        }
+      },
+      "fragment_refs": [],
+      "source_format_profile_id": "profile-fixture"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-spawn",
+      "source_id": "src-interpretation-fixture",
+      "session_ref": "sess:claude_code:interpretation-fixture",
+      "from_atom_id": "atom-4",
+      "to_atom_id": "atom-3",
+      "edge_kind": "spawned_from"
+    },
+    {
+      "id": "edge-result",
+      "source_id": "src-interpretation-fixture",
+      "session_ref": "sess:claude_code:interpretation-fixture",
+      "from_atom_id": "atom-5",
+      "to_atom_id": "atom-4",
+      "edge_kind": "tool_result_for"
+    }
+  ]
+}

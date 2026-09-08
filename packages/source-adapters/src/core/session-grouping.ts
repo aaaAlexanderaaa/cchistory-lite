@@ -259,7 +259,7 @@ interface BoundedJsonlLine {
   oversized: boolean;
 }
 
-async function* streamBoundedJsonlLines(
+export async function* streamBoundedJsonlLines(
   input: AsyncIterable<Buffer | string>,
   maxLineBytes: number,
 ): AsyncGenerator<BoundedJsonlLine> {

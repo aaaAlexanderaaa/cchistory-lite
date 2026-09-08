@@ -1,5 +1,6 @@
+import { interpretSessionEvidence } from "@cchistory/canonical";
 import assert from "node:assert/strict";
-import { access, appendFile, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { access, appendFile, copyFile, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
@@ -11,9 +12,6 @@ import { listPlatformAdapters, runSourceProbe } from "@cchistory/source-adapters
 import {
   assertLiteSourceRoot,
   buildLiveSnapshot,
-  buildAdaptiveNodeExecArgv,
-  calculateAdaptiveOldSpaceMiB,
-  isAdaptiveNodeMemoryApplied,
   LiveHistorySnapshot,
   maskCompactPreview,
   resolveLiteSources,
@@ -75,21 +73,6 @@ test("mapPool never runs more than the requested number of tasks at once", async
   assert.equal(inFlight, 0);
 });
 
-test("Lite Node heap policy uses half host memory capped at 4 GiB", () => {
-  assert.equal(calculateAdaptiveOldSpaceMiB(3 * 1024 ** 3), 1536);
-  assert.equal(calculateAdaptiveOldSpaceMiB(8 * 1024 ** 3), 4096);
-  assert.equal(calculateAdaptiveOldSpaceMiB(32 * 1024 ** 3), 4096);
-  assert.deepEqual(
-    buildAdaptiveNodeExecArgv(
-      ["--trace-warnings", "--max-old-space-size=1024", "--max_old_space_size", "768"],
-      1536,
-    ),
-    ["--trace-warnings", "--max-old-space-size=1536"],
-  );
-  assert.equal(isAdaptiveNodeMemoryApplied([], "1536", 1536), false);
-  assert.equal(isAdaptiveNodeMemoryApplied(["--max-old-space-size=1536"], "1536", 1536), true);
-  assert.equal(isAdaptiveNodeMemoryApplied(["--max-old-space-size=1024"], "1536", 1536), false);
-});
 
 test("settleLauncherExit reports rejected launcher failures to stderr", async () => {
   const originalWrite = process.stderr.write.bind(process.stderr);
@@ -149,7 +132,7 @@ test("Lite materializer resolves canonical history across the fixture-backed ada
         baseDir: path.join(mockDataRoot, relativePath),
       })),
     });
-    const probe = await runSourceProbe({ safe_mode: true }, sources);
+    const probe = await runSourceProbe(interpretSessionEvidence, { safe_mode: true }, sources);
     const askPayload = probe.sources.find((payload) => payload.source.platform === "codex");
     const askSession = askPayload?.sessions[0];
     const longTurn = askPayload?.turns.find((turn) => turn.session_id === askSession?.id);
@@ -356,7 +339,7 @@ test("every logical-session projection boundary preserves source-wide canonical 
       safeMode: true,
     } as const;
     const sources = await resolveLiteSources(scanOptions);
-    const sourceWide = buildLiveSnapshot(await runSourceProbe({ safe_mode: true }, sources));
+    const sourceWide = buildLiveSnapshot(await runSourceProbe(interpretSessionEvidence, { safe_mode: true }, sources));
     const grouped = await scanLiteHistory({ ...scanOptions, contextMode: "full" });
 
     assert.deepEqual(grouped.listResolvedSessions(), sourceWide.listResolvedSessions(), `${platform} sessions`);
@@ -755,7 +738,7 @@ test("Lite context-light Codex scanning preserves canonical turns while releasin
       sourceRefs: ["codex"],
       sourceRoots,
     });
-    const expectedProbe = await runSourceProbe({ safe_mode: true }, sources);
+    const expectedProbe = await runSourceProbe(interpretSessionEvidence, { safe_mode: true }, sources);
     const expected = buildLiveSnapshot(expectedProbe);
     const actual = await scanLiteHistory({
       homeDir: tempHome,
@@ -1104,6 +1087,176 @@ test("Lite matching-context scans retain only contexts needed by the requested r
   );
 });
 
+test("context retention preserves query semantics for every registered adapter with nonempty evidence", async (t) => {
+  const scratch = await mkdtemp(path.join(os.tmpdir(), "cchistory-context-matrix-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const roots = await prepareContextFixtureRoots(scratch);
+  assert.deepEqual(Object.keys(roots).sort(), listPlatformAdapters().map((adapter) => adapter.platform).sort());
+  for (const [sourceRef, baseDir] of Object.entries(roots)) {
+    await t.test(sourceRef, async (t) => {
+      // Some sanitized formats have no native timestamp. Freeze observation time
+      // as well as search recency instead of removing semantic dates from parity.
+      t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-05T00:00:00.000Z") });
+      const options = {
+        homeDir: path.join(mockDataRoot, "empty-home"),
+        hostname: `context-retention-${sourceRef}`,
+        sourceRefs: [sourceRef],
+        sourceRoots: [{ sourceRef, baseDir }],
+        safeMode: true,
+      };
+      const full = await scanLiteHistory({ ...options, contextMode: "full" });
+      assert.ok(full.listResolvedTurns().length > 0, `${sourceRef} needs a nonempty turn fixture`);
+      assert.ok(full.data.contexts.some((context) => context.assistant_replies.length > 0), `${sourceRef} needs assistant evidence`);
+      const compact = await scanLiteHistory({ ...options, contextMode: "none" });
+      assertContextIndependentParity(compact, full);
+      assert.deepEqual(compact.data.contexts, []);
+      for (const turn of compact.listResolvedTurns()) assert.equal(compact.getTurnContext(turn.id), undefined);
+
+      const target = full.listResolvedTurns()[0]!;
+      const matching = await scanLiteHistory({
+        ...options,
+        contextMode: "matching",
+        contextTarget: { kind: "turn", ref: target.id },
+      });
+      assertContextIndependentParity(matching, full);
+      assert.deepEqual(matching.data.contexts, full.data.contexts.filter((context) => context.turn_id === target.id));
+      assert.equal(full.data.contexts.length, full.listResolvedTurns().length);
+    });
+  }
+});
+
+async function prepareContextFixtureRoots(scratch: string): Promise<Record<string, string>> {
+  const fixtures = path.join(mockDataRoot, "fixtures/context-boundary");
+  const gemini = path.join(scratch, ".gemini");
+  const geminiChats = path.join(gemini, "tmp", "semantic", "chats");
+  const kimi = path.join(scratch, ".kimi-code");
+  const kimiSession = path.join(kimi, "sessions", "wd_fixture", "session_semantic");
+  const kimiMain = path.join(kimiSession, "agents", "main");
+  const zcode = path.join(scratch, ".zcode");
+  const zcodeDb = path.join(zcode, "cli", "db");
+  await mkdir(geminiChats, { recursive: true });
+  await mkdir(kimiMain, { recursive: true });
+  await mkdir(zcodeDb, { recursive: true });
+  await copyFile(path.join(fixtures, "gemini/session.json"), path.join(geminiChats, "session-semantic.json"));
+  await copyFile(path.join(fixtures, "kimi/wire.jsonl"), path.join(kimiMain, "wire.jsonl"));
+  await copyFile(path.join(fixtures, "kimi/state.json"), path.join(kimiSession, "state.json"));
+  const db = new DatabaseSync(path.join(zcodeDb, "db.sqlite"));
+  try {
+    db.exec(await readFile(path.join(fixtures, "zcode/fixture.sql"), "utf8"));
+  } finally {
+    db.close();
+  }
+  return {
+    ...Object.fromEntries(Object.entries(fixtureRoots).map(([source, relative]) => [source, path.join(mockDataRoot, relative)])),
+    gemini,
+    antigravity: path.join(fixtures, "antigravity"),
+    openclaw: path.join(fixtures, "openclaw"),
+    lobechat: path.join(fixtures, "lobechat"),
+    kimi,
+    zcode,
+  };
+}
+
+test("compact queries retain assistant usage and errors without expanding body search", async (t) => {
+  const scratch = await mkdtemp(path.join(os.tmpdir(), "cchistory-context-semantics-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fixtureRoot = path.join(mockDataRoot, "fixtures/context-boundary/claude");
+  const fixture = await readFile(path.join(fixtureRoot, "semantic-boundary.jsonl"), "utf8");
+  // Generate a known fake credential only in scratch space, keeping the fixture
+  // repository's credential scanner strict.
+  await writeFile(path.join(scratch, "semantic-boundary.jsonl"), fixture.replace("<MASKING_TEST_CREDENTIAL>", `sk-${"A".repeat(24)}`));
+  await copyFile(path.join(fixtureRoot, "unanswered-boundary.jsonl"), path.join(scratch, "unanswered-boundary.jsonl"));
+  const options = {
+    homeDir: path.join(mockDataRoot, "empty-home"),
+    hostname: "context-semantic-boundary",
+    sourceRefs: ["claude_code"],
+    sourceRoots: [{ sourceRef: "claude_code", baseDir: scratch }],
+    safeMode: true,
+  };
+  const full = await scanLiteHistory({ ...options, contextMode: "full" });
+  const compact = await scanLiteHistory({ ...options, contextMode: "none" });
+  assertContextIndependentParity(compact, full);
+  const session = compact.listResolvedSessions().find((session) => session.source_session_id === "semantic-boundary");
+  assert.ok(session);
+  const [answered, toolOnly] = compact.listSessionTurns(session.id);
+  const unanswered = compact.listResolvedTurns().find((turn) => turn.session_id !== session.id);
+  assert.ok(answered && toolOnly && unanswered);
+  assert.equal(answered.context_summary.assistant_reply_count, 2);
+  assert.equal(answered.context_summary.tool_call_count, 1);
+  assert.equal(answered.context_summary.total_tokens, 32, "deduplicate chunks, retain preceding and trailing orphan usage");
+  assert.equal(answered.context_summary.primary_model, "claude-fixture-old");
+  assert.equal(answered.context_summary.has_errors, true);
+  assert.equal(toolOnly.context_summary.assistant_reply_count, 0);
+  assert.equal(toolOnly.context_summary.tool_call_count, 1);
+  assert.equal(toolOnly.context_summary.zero_token_reason, "no_assistant_reply");
+  // Preserve this known limitation during structural changes. Correcting unanchored
+  // token signals is a separate usage-semantics change, not a detail optimization.
+  assert.equal(toolOnly.context_summary.total_tokens, undefined);
+  assert.equal(unanswered.context_summary.zero_token_reason, "no_assistant_reply");
+  assert.equal(unanswered.context_summary.tool_call_count, 0);
+  assert.notEqual(unanswered.project_id, answered.project_id);
+  assert.equal(compact.getSession(unanswered.session_id)?.title, session.title);
+  // The current Claude parser omits the native is_error flag from tool-result
+  // atoms. Assistant stop errors must not silently become family tool errors.
+  assert.equal(compact.getSessionContribution(session.id)?.stats.tool_error_count, 0);
+  assert.equal(compact.getTurnUsage(answered.id)?.total_tokens, 32);
+  assert.equal(compact.getTurnContext(unanswered.id), undefined);
+  assert.deepEqual(full.getTurnContext(unanswered.id)?.assistant_replies, []);
+
+  for (const target of [answered, unanswered]) {
+    const matching = await scanLiteHistory({
+      ...options,
+      contextMode: "matching",
+      contextTarget: { kind: "turn", ref: target.id },
+    });
+    assertContextIndependentParity(matching, full);
+    assert.deepEqual(matching.data.contexts, [full.getTurnContext(target.id)]);
+  }
+
+  const context = full.getTurnContext(answered.id);
+  assert.ok(context);
+  assert.deepEqual(context.assistant_replies.map((reply) => reply.model), ["claude-fixture-old", "claude-fixture-new"]);
+  assert.ok(context.assistant_replies[0]?.display_segments.some((segment) => segment.type === "masked"));
+  assert.doesNotMatch(context.assistant_replies[0]?.canonical_text ?? "", /sk-AAAAAAAA/u);
+  assert.ok(compact.search({ query: "/workspace/semantic-boundary" }).total > 0);
+  for (const query of ["assistant-only-reference.ts", "tool-input-only.ts", "tool-output-only.ts", "sk-AAAAAAAAAAAAAAAAAAAAAAAA"]) {
+    assert.equal(compact.search({ query }).total, 0, `${query} is not part of the current searchable projection`);
+    assert.equal(full.search({ query }).total, 0);
+  }
+});
+
+function assertContextIndependentParity(actual: LiveHistorySnapshot, expected: LiveHistorySnapshot): void {
+  assert.deepEqual(actual.projectionIssues, []);
+  assert.deepEqual(expected.projectionIssues, []);
+  assert.deepEqual(actual.listSources().map(withoutRunTimestamp), expected.listSources().map(withoutRunTimestamp));
+  assert.deepEqual(actual.listResolvedSessions(), expected.listResolvedSessions());
+  assert.deepEqual(actual.listTopLevelSessions(), expected.listTopLevelSessions());
+  assert.deepEqual(actual.listResolvedTurns(), expected.listResolvedTurns());
+  assert.deepEqual(actual.listProjects().map((project) => project.project_id), expected.listProjects().map((project) => project.project_id));
+  assert.deepEqual(normalizeProjects(actual.listProjects()), normalizeProjects(expected.listProjects()));
+  assert.deepEqual(actual.data.related_work, expected.data.related_work);
+  assert.deepEqual(actual.data.session_contributions, expected.data.session_contributions);
+  assert.deepEqual(actual.data.delegated_children, expected.data.delegated_children);
+  assert.deepEqual(actual.listSessionFamilies(), expected.listSessionFamilies());
+  assert.deepEqual(actual.listAskUserQuestionTurns(), expected.listAskUserQuestionTurns());
+  assert.deepEqual(actual.listLossAudits(), expected.listLossAudits());
+  assert.deepEqual(withoutGeneratedAt(actual.getUsageOverview({ include_known_zero_token: true })), withoutGeneratedAt(expected.getUsageOverview({ include_known_zero_token: true })));
+  for (const dimension of ["source", "project", "model", "day"] as const) {
+    assert.deepEqual(withoutGeneratedAt(actual.getUsageRollup(dimension)), withoutGeneratedAt(expected.getUsageRollup(dimension)));
+  }
+  // Compare ordered hits and highlights; relevance scores depend on query time.
+  for (const query of ["", "fixture", "review", "workspace", "definitely-absent-fixture-token"]) {
+    const result = actual.search({ query, limit: 10 });
+    const reference = expected.search({ query, limit: 10 });
+    assert.equal(result.total, reference.total);
+    assert.deepEqual(result.results.map((hit) => [hit.turn.id, hit.match_field, hit.highlights]), reference.results.map((hit) => [hit.turn.id, hit.match_field, hit.highlights]));
+    const sessions = actual.searchSessions({ query, limit: 10 });
+    const referenceSessions = expected.searchSessions({ query, limit: 10 });
+    assert.equal(sessions.total, referenceSessions.total);
+    assert.deepEqual(sessions.results.map((hit) => hit.session.id), referenceSessions.results.map((hit) => hit.session.id));
+  }
+}
+
 test("Lite display refs extend through collisions and remain actionable", () => {
   const host = {
     id: "host-display-ref",
@@ -1268,7 +1421,7 @@ test("Lite context-light Claude scanning assembles parent and subagent files bef
       sourceRefs: ["claude_code"],
       sourceRoots,
     });
-    const expectedProbe = await runSourceProbe({ safe_mode: true }, sources);
+    const expectedProbe = await runSourceProbe(interpretSessionEvidence, { safe_mode: true }, sources);
     const expected = buildLiveSnapshot(expectedProbe);
     const actual = await scanLiteHistory({
       homeDir: tempHome,
@@ -1352,7 +1505,7 @@ test("Lite groups Claude files by content session id across different project pa
       sourceRefs: ["claude_code"],
       sourceRoots,
     });
-    const expected = buildLiveSnapshot(await runSourceProbe({ safe_mode: true }, sources));
+    const expected = buildLiveSnapshot(await runSourceProbe(interpretSessionEvidence, { safe_mode: true }, sources));
     let sourceStarts = 0;
     const actual = await scanLiteHistory({
       homeDir: tempHome,
@@ -1517,7 +1670,7 @@ test("Lite Cursor composer-plus-transcript merge satisfies the projection contra
     );
     seedCursorComposerDb(path.join(userDir, "globalStorage", "state.vscdb"), composerId);
 
-    const probe = await runSourceProbe({}, [
+    const probe = await runSourceProbe(interpretSessionEvidence, {}, [
       {
         id: "src-cursor-lite-overlap",
         slot_id: "cursor",
@@ -1565,7 +1718,7 @@ test("Lite Cursor composer key-format and storage-root overlap satisfies the pro
       "utf8",
     );
 
-    const probe = await runSourceProbe({}, [
+    const probe = await runSourceProbe(interpretSessionEvidence, {}, [
       {
         id: "src-cursor-lite-composer-overlap",
         slot_id: "cursor",
@@ -1674,7 +1827,7 @@ test("Lite and Full agree on a synthetic Kimi source through the shared probe pi
       sourceRefs: ["kimi"],
       sourceRoots: [{ sourceRef: "kimi", baseDir: kimiRoot }],
     });
-    const probe = await runSourceProbe({ safe_mode: true }, sources);
+    const probe = await runSourceProbe(interpretSessionEvidence, { safe_mode: true }, sources);
     const liteFromProbe = buildLiveSnapshot(probe);
     assert.deepEqual(
       jsonNormalize(liteFromProbe.listResolvedSessions()),
@@ -1755,7 +1908,7 @@ test("Lite and Full agree on a synthetic Grok source through the shared probe pi
       sourceRefs: ["grok"],
       sourceRoots: [{ sourceRef: "grok", baseDir: grokRoot }],
     });
-    const probe = await runSourceProbe({ safe_mode: true }, sources);
+    const probe = await runSourceProbe(interpretSessionEvidence, { safe_mode: true }, sources);
     const liteFromProbe = buildLiveSnapshot(probe);
     assert.deepEqual(
       jsonNormalize(liteFromProbe.listResolvedSessions()),

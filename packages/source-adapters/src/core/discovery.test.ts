@@ -1,10 +1,11 @@
+import { runSourceProbe } from "../probe-reference.test.js";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile, utimes } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import type { SourceDefinition, SourceSyncPayload } from "@cchistory/domain";
-import { discoverDefaultSourcesForHost, discoverHostToolsForHost, runSourceProbe } from "../index.js";
+import { discoverDefaultSourcesForHost, discoverHostToolsForHost} from "../index.js";
 import { 
   assertFragmentKinds, 
   assertParserMetadata, 

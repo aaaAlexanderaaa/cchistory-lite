@@ -3,13 +3,6 @@ import { installRuntimeWarningFilter } from "@cchistory/canonical";
 // Install before any importer dynamically loads `node:sqlite` through adapters.
 installRuntimeWarningFilter();
 
-export {
-  buildAdaptiveNodeExecArgv,
-  calculateAdaptiveOldSpaceMiB,
-  isAdaptiveNodeMemoryApplied,
-  runWithAdaptiveNodeMemory,
-} from "./node-memory.js";
-
 export function settleLauncherExit(result: Promise<number>): void {
   result.then(
     (code) => {

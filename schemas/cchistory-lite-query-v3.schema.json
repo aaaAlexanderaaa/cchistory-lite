@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CC History Lite query v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "operations"
+  ],
+  "properties": {
+    "schema": {
+      "const": "cchistory-lite-query/v3"
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "sql"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "const": "sql"
+          },
+          "sql": {
+            "type": "string",
+            "minLength": 1
+          },
+          "params": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            },
+            "maxItems": 32
+          },
+          "complete": {
+            "type": "boolean"
+          }
+        }
+      },
+      "minItems": 1,
+      "maxItems": 16
+    }
+  }
+}

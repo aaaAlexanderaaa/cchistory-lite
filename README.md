@@ -77,6 +77,7 @@ Point an adapter somewhere else with `--source-root <slot>=<path>`, e.g.
 
 ## More
 
+- Finite SQL, bound templates, and shell lifetime: [`docs/guide/query.md`](docs/guide/query.md)
 - CLI, flags, `--json`, `query`, from-source build: [`docs/guide/lite.md`](docs/guide/lite.md)
 - Architecture: [`ARCHITECTURE.md`](ARCHITECTURE.md)
 - Releases: [`RELEASING.md`](RELEASING.md)

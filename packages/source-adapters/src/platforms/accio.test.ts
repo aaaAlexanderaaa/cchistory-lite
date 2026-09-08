@@ -1,9 +1,10 @@
+import { runSourceProbe } from "../probe-reference.test.js";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { runSourceProbe } from "../index.js";
+
 import { createSourceDefinition } from "../test-helpers.js";
 
 test("runSourceProbe ingests Accio agent session JSONL with user/assistant turns, tool calls, and token usage", async () => {

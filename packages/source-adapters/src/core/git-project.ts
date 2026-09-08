@@ -1,3 +1,5 @@
+import { normalizeGitRemote } from "@cchistory/domain";
+export { normalizeGitRemote } from "@cchistory/domain";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { GitProjectEvidence } from "./types.js";
@@ -79,18 +81,4 @@ async function runGitCommand(args: string[]): Promise<string | undefined> {
   } catch {
     return undefined;
   }
-}
-
-export function normalizeGitRemote(value: string | undefined): string | undefined {
-  const raw = value?.trim();
-  if (!raw) {
-    return undefined;
-  }
-
-  let normalized = raw.replace(/\.git$/iu, "").replace(/\/+$/u, "");
-  if (/^[^@]+@[^:]+:.+/u.test(normalized)) {
-    normalized = normalized.replace(/^([^@]+@[^:]+):/u, "ssh://$1/");
-  }
-
-  return normalized;
 }

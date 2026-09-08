@@ -371,8 +371,9 @@ test("the scan guard refuses a TUI startup scan that risks the machine", async (
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-guard-tui-"));
   try {
     // Sparse: reports 256 GiB without allocating real bytes.
-    const hugeFile = path.join(tempHome, "huge.bin");
-    await writeFile(hugeFile, "");
+    const hugeFile = path.join(tempHome, "huge.jsonl");
+    const fixture = await readFile(path.join(repoRoot, "mock_data/fixtures/source-shapes/codex/ordinary-fork.jsonl"), "utf8");
+    await writeFile(hugeFile, `${fixture.split("\n")[0]}\n`);
     await truncate(hugeFile, 256 * 1024 ** 3);
     const { stdout, stderr, io } = captureIo({ columns: 110, rows: 30 });
     const exitCode = await runLiteTui(
@@ -383,7 +384,8 @@ test("the scan guard refuses a TUI startup scan that risks the machine", async (
     // No frame is rendered when the guard refuses.
     assert.equal(stdout.join(""), "");
     assert.match(stderr.join(""), /Refusing to scan/);
-    assert.match(stderr.join(""), /CCHISTORY_SCAN_GUARD=0/);
+    assert.doesNotMatch(stderr.join(""), /CCHISTORY_SCAN_GUARD=0/);
+    assert.match(stderr.join(""), /remaining V8 heap:.*limiting resource: (heap|system)/);
   } finally {
     await rm(tempHome, { recursive: true, force: true });
   }

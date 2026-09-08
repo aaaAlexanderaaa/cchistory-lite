@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { FragmentKind, SourceDefinition, SourceSyncPayload } from "@cchistory/domain";
-import { discoverDefaultSourcesForHost, discoverHostToolsForHost, getDefaultSourcesForHost, getSourceFormatProfiles, runSourceProbe } from "./index.js";
+import { discoverDefaultSourcesForHost, discoverHostToolsForHost, getDefaultSourcesForHost, getSourceFormatProfiles } from "./index.js";
 import { buildAntigravityLiveSessionSeed, extractAntigravityLiveSeeds } from "./platforms/antigravity/live.js";
 import { extractGenericSessionMetadata } from "./platforms/generic/runtime.js";
 import { listGeminiSourceRoots } from "./platforms/gemini.js";

@@ -1,9 +1,10 @@
+import { runSourceProbe } from "../probe-reference.test.js";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { getDefaultSourcesForHost, listSourceFiles, runSourceProbe } from "../index.js";
+import { getDefaultSourcesForHost, listSourceFiles} from "../index.js";
 import { createSourceDefinition } from "../test-helpers.js";
 
 test("[cursor_agent] default discovery stays opt-in so cursor does not double-scan transcripts", async () => {

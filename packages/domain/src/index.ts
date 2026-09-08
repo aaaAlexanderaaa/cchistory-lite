@@ -1369,3 +1369,11 @@ export function decodeUriPath(value: string): string {
     return value;
   }
 }
+
+export * from "./parsed-session.js";
+export * from "./evidence-values.js";
+export * from "./token-evidence.js";
+export * from "./evidence-atoms.js";
+export * from "./masks.js";
+
+export type { QueryCollection, QueryValue, QueryValueType, QueryColumn, QueryPredicate, LogicalQuery, CanonicalQueryResult } from "./query.js";

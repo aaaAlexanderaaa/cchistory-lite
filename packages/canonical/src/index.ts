@@ -80,6 +80,7 @@ export {
 export {
   addContributionStats,
   buildSessionFamilyInventory,
+  hasSessionFamilyLinkTool,
   emptyContributionStats,
   FAMILY_IO_PREVIEW_CHARS,
   listDelegatedRelationsForFamilyChildren,
@@ -95,3 +96,10 @@ export {
   type ProjectionAuditIssue,
 } from "./projection-audit.js";
 export { installRuntimeWarningFilter } from "./runtime-warning-filter.js";
+
+export { interpretSessionEvidence } from "./session-interpreter.js";
+export { QUERY_COLUMNS, collectionQueryTemplate, executeCanonicalQuery, executeQueryRows } from "./query.js";
+
+export { summarizeDirectoryScope } from "./directory-scope.js";
+
+export { selectSampleSessions } from "./query.js";

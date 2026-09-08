@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cchistory.dev/schemas/cchistory-lite-source-inventory-v1.schema.json",
+  "title": "Lite source root inventory (no history read)",
+  "type": "object",
+  "required": [
+    "schema",
+    "kind",
+    "total",
+    "shown",
+    "sources"
+  ],
+  "properties": {
+    "schema": {
+      "const": "cchistory-lite-source-inventory/v1"
+    },
+    "kind": {
+      "const": "source_inventory"
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "shown": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "slot_id",
+          "base_dir",
+          "availability",
+          "history_read",
+          "total_sessions",
+          "total_turns"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slot_id": {
+            "type": "string"
+          },
+          "base_dir": {
+            "type": "string"
+          },
+          "availability": {
+            "enum": [
+              "present",
+              "missing",
+              "unreadable"
+            ]
+          },
+          "history_read": {
+            "const": false
+          },
+          "total_sessions": {
+            "type": "null"
+          },
+          "total_turns": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

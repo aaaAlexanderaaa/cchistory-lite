@@ -1,0 +1,18 @@
+[
+  {
+    "id": "lobe-semantic-a", "title": "Shared fixture title", "model": "lobe-model-a",
+    "createdAt": "2026-04-12T01:00:00.000Z", "updatedAt": "2026-04-12T01:00:02.000Z",
+    "messages": [
+      { "id": "a-user", "role": "user", "createdAt": "2026-04-12T01:00:01.000Z", "content": "Inspect the first LobeChat fixture." },
+      { "id": "a-assistant", "role": "assistant", "createdAt": "2026-04-12T01:00:02.000Z", "content": "First fixture inspected.", "usage": { "inputTokens": 10, "outputTokens": 4, "totalTokens": 14 }, "stopReason": "end_turn" }
+    ]
+  },
+  {
+    "id": "lobe-semantic-b", "title": "Shared fixture title", "model": "lobe-model-b",
+    "createdAt": "2026-04-12T02:00:00.000Z", "updatedAt": "2026-04-12T02:00:02.000Z",
+    "messages": [
+      { "id": "b-user", "role": "user", "createdAt": "2026-04-12T02:00:01.000Z", "content": "Inspect the second LobeChat fixture." },
+      { "id": "b-assistant", "role": "assistant", "createdAt": "2026-04-12T02:00:02.000Z", "content": "Second fixture inspected.", "usage": { "inputTokens": 20, "outputTokens": 6, "totalTokens": 26 }, "stopReason": "end_turn" }
+    ]
+  }
+]

@@ -7,6 +7,55 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Finite PostgreSQL-style `SELECT` over canonical history: `query --sql`,
+  `query --sql-file`, and one complete SQL line in `shell`. Bind `$1…$N`
+  with `--params` (a JSON array of scalars). `LIMIT` is required (1–1000);
+  `OFFSET`, typed comparisons, `IN`, `BETWEEN`, `LIKE`, and up to three
+  `ORDER BY` fields are supported. There is no join, subquery, aggregate,
+  mutation, or native SQL execution — the AST is allowlisted and lowered
+  into the in-memory collection executor. Guide and bound templates:
+  [`docs/guide/query.md`](docs/guide/query.md).
+- Query contract `cchistory-lite-query/v3` / `cchistory-lite-query-result/v3`.
+  Existing v2 operation batches remain valid. SQL returns selected public
+  columns; default `total` is null. `--complete` requests the exact matching
+  total and exhaustive diagnostics. `coverage` reports complete vs selective
+  execution.
+- Shell `--idle-timeout` (default 300 seconds, maximum 86400; `0` disables).
+  The timer runs only while waiting for input. A shell opens without scanning
+  and prepares on the first valid collection read or explicit `refresh`.
+- Native-byte read budgets and `read_budget_exceeded` on the error envelope
+  when an admitted source file or SQLite container exceeds the scan budget.
+- Metadata-only `sources` (and `ls sources`) by default, emitting
+  `cchistory-lite-source-inventory/v1`. `--complete` still runs the counted
+  sources report.
+
+### Changed
+
+- Collection commands (`latest`, `ls`, `sample`, `search`, and SQL) share
+  one logical query executor. Observable output of existing commands and v2
+  JSON is preserved; replaced filtering/ordering/pagination paths are gone.
+- One Codex latest-sessions SQL shape can skip full interpretation of older
+  sessions after native timestamp bounds are established. Other predicates,
+  sources, and `--complete` still take the complete path. File mtime is never
+  a conversation-time bound.
+- Scan admission prices remaining V8 heap and a corrected macOS memory
+  signal (free + inactive pages, not libuv's free-pages-only reading).
+  Adaptive heap re-execution and the internal
+  `CCHISTORY_ADAPTIVE_NODE_MEMORY_MB` launcher marker are removed. Lite does
+  not set the Node heap limit. `sample` and exact-id `show session` still
+  bypass the advisory lock, but they no longer skip memory admission.
+- Semantic masks, evidence atoms, parsed-session types, and token evidence
+  live in `@cchistory/domain`. Adapters stop at the parse boundary;
+  `canonical` owns interpretation.
+
+### Fixed
+
+- Directory-scoped JSON now reports `diagnostics.directory_scope`, including
+  sessions excluded because they have no working directory. Surfaces do not
+  widen scope to recover those rows.
+
 ## [0.4.5] - 2026-09-02
 
 ### Fixed

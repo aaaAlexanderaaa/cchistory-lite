@@ -1,6 +1,9 @@
+import { SourceReadBudgetExceededError, type SourceReadBudget } from "./read-budget.js";
+import type { InterpretParsedSession } from "@cchistory/domain";
 import os from "node:os";
 import path from "node:path";
 import { readFile, stat } from "node:fs/promises";
+import { assertSourceFileReadCurrent, assertSourceFileReadPlanCurrent, SourceFileReadPlanChangedError } from "./file-read-plan.js";
 import type {
   Host,
   SourceDefinition,
@@ -69,9 +72,6 @@ import { collectJsonlRecordsStreaming, isIncrementalJsonlPlatform } from "./json
 import { atomizeFragments, hydrateDraftFromAtoms } from "./atomizer.js";
 import { splitUserText } from "./user-text.js";
 import {
-  buildProjectObservationCandidates,
-  buildSubmissionGroups,
-  buildTurnsAndContext,
   buildAskUserQuestionTurns,
   buildStageRuns,
 } from "./projections.js";
@@ -121,7 +121,9 @@ function buildHost(): Host {
   };
 }
 
+/** Collect native evidence and apply the runtime-selected interpreter; no semantic default. */
 export async function runSourceProbe(
+  interpretSession: InterpretParsedSession,
   options: ProbeOptions = {},
   sources: readonly SourceDefinition[] = getDefaultSources(),
 ): Promise<{
@@ -187,7 +189,7 @@ export async function runSourceProbe(
       }
       state.filesObserved += 1;
     } else if (event.kind === "source_done") {
-      payloads.push(await finalizeSourcePayload(state, host, options));
+      payloads.push(await finalizeSourcePayload(interpretSession, state, host, options));
     }
   }
 
@@ -219,6 +221,7 @@ function absorbChunk(
 }
 
 async function finalizeSourcePayload(
+  interpretSession: InterpretParsedSession,
   state: {
     source: SourceDefinition;
     sourceFormatProfile: SourceFormatProfile;
@@ -261,6 +264,7 @@ async function finalizeSourcePayload(
   });
   const deriveStartedAt = Date.now();
   const processingCore = await processCollectedSessions(
+    interpretSession,
     state.sessionsById,
     state.orphanBlobs,
     state.lossAudits,
@@ -441,12 +445,12 @@ async function* streamSingleSource(
 }
 
 /**
- * Project one file's worth of SessionBuildInputs into the flat arrays that
- * the storage layer consumes. Used by streaming merge consumers that don't
- * re-merge across files (CLI sync). operatePerFile: each session is projected
- * independently; cross-file session merging is the caller's responsibility.
+ * Interpret supplied file-session evidence into flat probe arrays. Inputs are
+ * reconciled within this call; grouping evidence across calls remains the
+ * caller's responsibility. Interpretation is explicitly supplied by runtime.
  */
 export async function projectFileSessionInputs(
+  interpretSession: InterpretParsedSession,
   source: SourceDefinition,
   sessionInputs: readonly SessionBuildInput[],
   orphanBlobs: readonly CapturedBlob[],
@@ -457,7 +461,7 @@ export async function projectFileSessionInputs(
   for (const sessionInput of sessionInputs) {
     mergeSessionBuildInput(sessionsById, sessionInput);
   }
-  return processCollectedSessions(sessionsById, [...orphanBlobs], [...lossAudits], options);
+  return processCollectedSessions(interpretSession, sessionsById, [...orphanBlobs], [...lossAudits], options);
 }
 
 interface CollectedFile {
@@ -531,7 +535,8 @@ async function* streamCollectedFileInputs(
     message: `Listing source files under ${source.base_dir}`,
   });
   const listFilesStartedAt = Date.now();
-  const selectedFiles = options.source_file_paths?.[source.id] ?? options.source_file_paths?.[source.slot_id];
+  const readPlan = options.source_file_plans?.[source.id] ?? options.source_file_plans?.[source.slot_id];
+  const selectedFiles = options.source_file_paths?.[source.id] ?? options.source_file_paths?.[source.slot_id] ?? readPlan?.files;
   const listedFiles = selectedFiles
     ? [...selectedFiles].slice(0, remainingFileLimit)
     : await listSourceFiles(source.platform, source.base_dir, remainingFileLimit);
@@ -587,6 +592,11 @@ async function* streamSingleFileInputs(
     file_index: fileIndex + 1,
     file_count: fileCount,
   });
+
+  // Keep invalidated-budget failures outside the per-file parse-error recovery path.
+  const readPlan = options.source_file_plans?.[source.id] ?? options.source_file_plans?.[source.slot_id];
+  if (readPlan) await assertSourceFileReadCurrent(readPlan, filePath);
+  if (!isPathBackedSqliteSourceFile(source.platform, filePath)) options.read_budget?.admit(await getFileSize(filePath), filePath);
 
   const fileLossAudits: LossAuditRecord[] = [];
   const fileOrphanBlobs: CapturedBlob[] = [];
@@ -780,6 +790,8 @@ async function* streamSingleFileInputs(
     return;
   }
 
+  // Streaming and SQLite parsing may reopen the path after capture.
+  if (readPlan) await assertSourceFileReadCurrent(readPlan, filePath);
   try {
     const parseStartedAt = Date.now();
     const previousEntry = previousIndex?.byOriginPath.get(path.normalize(filePath));
@@ -797,7 +809,7 @@ async function* streamSingleFileInputs(
     }
     const adapterResults = appendedResults ?? (capturedBlob
       ? (capturedBlobHasFileBuffer(capturedBlob)
-        ? await processBlob(source, sourceFormatProfile, filePath, capturedBlob, options.target_session_refs)
+        ? await processBlob(source, sourceFormatProfile, filePath, capturedBlob, options.target_session_refs, options.read_budget)
         : capturedBlobIsStreaming(capturedBlob)
           ? await processStreamingJsonlBlob(source, sourceFormatProfile, filePath, capturedBlob)
           : await processPathBackedSqliteBlob(
@@ -806,6 +818,7 @@ async function* streamSingleFileInputs(
               filePath,
               capturedBlob.blob,
               options.target_session_refs,
+              options.read_budget,
             ))
       : []);
     const sessionsById = new Map<string, SessionBuildInput>();
@@ -832,12 +845,16 @@ async function* streamSingleFileInputs(
       elapsed_ms: Date.now() - parseStartedAt,
     });
     if (adapter?.getCompanionEvidencePaths && !options.safe_mode) {
-      for (const companionPath of await adapter.getCompanionEvidencePaths(source.base_dir, filePath)) {
+      const companionPaths = readPlan?.companions[filePath]
+        ?? await adapter.getCompanionEvidencePaths(source.base_dir, filePath);
+      if (readPlan) await assertSourceFileReadCurrent(readPlan, filePath);
+      for (const companionPath of companionPaths) {
         const normalizedCompanionPath = path.normalize(companionPath);
         if (capturedCompanionPaths.has(normalizedCompanionPath) || !(await pathExists(normalizedCompanionPath))) {
           continue;
         }
 
+        if (readPlan) await assertSourceFileReadPlanCurrent(readPlan, [normalizedCompanionPath]);
         capturedCompanionPaths.add(normalizedCompanionPath);
         try {
           const companionCaptured = await captureBlob(source, host.id, normalizedCompanionPath, captureRunId);
@@ -880,6 +897,7 @@ async function* streamSingleFileInputs(
       trustedBytesByBlobId: fileTrustedBytesByBlobId,
     };
   } catch (error) {
+    if (error instanceof SourceFileReadPlanChangedError || error instanceof SourceReadBudgetExceededError) throw error;
     const orphanBlob = capturedBlob?.blob;
     if (orphanBlob) {
       fileOrphanBlobs.push(orphanBlob);
@@ -917,6 +935,14 @@ async function* streamSingleFileInputs(
       errorDetail: fileErrorDetail,
     };
   }
+}
+
+export async function selectSourceSessionFiles(
+  source: SourceDefinition,
+  files: readonly string[],
+  sessionRefs: readonly string[],
+): Promise<string[]> {
+  return selectTargetSourceFiles(source, getPlatformAdapter(source.platform), files, sessionRefs);
 }
 
 async function selectTargetSourceFiles(
@@ -1911,6 +1937,7 @@ function parseChangedSinceMs(value: string | undefined): number | undefined {
 }
 
 async function processCollectedSessions(
+  interpretSession: InterpretParsedSession,
   sessionsById: ReadonlyMap<string, SessionBuildInput>,
   orphanBlobs: readonly CapturedBlob[],
   sourceLossAudits: readonly LossAuditRecord[],
@@ -1960,49 +1987,19 @@ async function processCollectedSessions(
     const gitProjectEvidence = options.safeMode
       ? undefined
       : await readGitProjectEvidence(sessionInput.draft.working_directory);
-    const sessionProjectCandidates = buildProjectObservationCandidates(
-      sessionInput.draft,
-      sessionInput.atoms,
-      gitProjectEvidence,
-    );
-    const submissionResult = buildSubmissionGroups(sessionInput.draft, sessionInput.atoms, sessionInput.edges);
-    const turnResult = buildTurnsAndContext(
-      sessionInput.draft,
-      sessionInput.fragments,
-      sessionInput.records,
-      sessionInput.blobs,
-      sessionInput.atoms,
-      submissionResult.groups,
-      submissionResult.edges,
-    );
-
-    const suppressEmptySession =
-      sessionInput.draft.source_platform === "codebuddy" &&
-      turnResult.turns.length === 0 &&
-      sessionInput.atoms.length === 0;
+    const interpreted = interpretSession({ ...sessionInput, gitProjectEvidence });
 
     blobs.push(...sessionInput.blobs);
     records.push(...sessionInput.records);
     fragments.push(...sessionInput.fragments);
     atoms.push(...sessionInput.atoms);
-    edges.push(...sessionInput.edges, ...submissionResult.edges);
-    if (!suppressEmptySession) {
-      candidates.push(
-        ...sessionProjectCandidates,
-        ...submissionResult.groups,
-        ...turnResult.turnCandidates,
-        ...turnResult.contextCandidates,
-      );
-      sessions.push(turnResult.session);
-      turns.push(...turnResult.turns);
-      contexts.push(...turnResult.contexts);
-      askUserQuestionTurns.push(
-        ...buildAskUserQuestionTurns(
-          sessionInput.draft,
-          sessionInput.atoms,
-          [...sessionInput.edges, ...submissionResult.edges],
-        ),
-      );
+    edges.push(...interpreted.edges);
+    candidates.push(...interpreted.candidates);
+    turns.push(...interpreted.turns);
+    contexts.push(...interpreted.contexts);
+    if (interpreted.session) {
+      sessions.push(interpreted.session);
+      askUserQuestionTurns.push(...buildAskUserQuestionTurns(sessionInput.draft, sessionInput.atoms, sessionInput.edges));
     }
     lossAudits.push(...sessionInput.loss_audits);
   }
@@ -2049,6 +2046,7 @@ async function processPathBackedSqliteBlob(
   filePath: string,
   blob: CapturedBlob,
   targetSessionRefs?: readonly string[],
+  budget?: SourceReadBudget,
 ): Promise<AdapterBlobResult[]> {
   return (await tryProcessPathOpenedContainer(
     source,
@@ -2057,6 +2055,7 @@ async function processPathBackedSqliteBlob(
     blob,
     Buffer.alloc(0),
     targetSessionRefs,
+    budget,
   )) ?? [];
 }
 
@@ -2067,6 +2066,7 @@ async function tryProcessPathOpenedContainer(
   blob: CapturedBlob,
   fileBuffer: Buffer,
   targetSessionRefs?: readonly string[],
+  budget?: SourceReadBudget,
 ): Promise<AdapterBlobResult[] | undefined> {
   const blobId = blob.id;
 
@@ -2091,7 +2091,7 @@ async function tryProcessPathOpenedContainer(
       extractRichTextText,
       collectConversationSeedsFromValue,
       firstDefinedNumber,
-    });
+    }, budget);
     if (chatStoreSeed && (!targetSessionRefs?.length || targetSessionRefs.some((ref) =>
       targetRefMatchesSession(ref, chatStoreSeed.seed.sessionId),
     ))) {
@@ -2140,7 +2140,7 @@ async function tryProcessPathOpenedContainer(
     return [];
   }
 
-  const multiSessionSeeds = await extractMultiSessionSeeds(source, filePath, fileBuffer, blobId, targetSessionRefs);
+  const multiSessionSeeds = await extractMultiSessionSeeds(source, filePath, fileBuffer, blobId, targetSessionRefs, budget);
   if (!multiSessionSeeds) {
     return undefined;
   }
@@ -2187,6 +2187,7 @@ async function processBlob(
   filePath: string,
   capturedBlob: CapturedBlobInput,
   targetSessionRefs?: readonly string[],
+  budget?: SourceReadBudget,
 ): Promise<AdapterBlobResult[]> {
   const { blob, fileBuffer } = capturedBlob;
   const pathOpened = await tryProcessPathOpenedContainer(
@@ -2196,6 +2197,7 @@ async function processBlob(
     blob,
     fileBuffer,
     targetSessionRefs,
+    budget,
   );
   if (pathOpened) {
     return pathOpened;

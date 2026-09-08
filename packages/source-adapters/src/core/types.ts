@@ -1,3 +1,5 @@
+import type { ParsedSessionMetadata, TokenUsageMetrics } from "@cchistory/domain";
+export type { GitProjectEvidence, TokenUsageMetrics, AssistantStopReason } from "@cchistory/domain";
 import type {
   ActorKind,
   AtomEdge,
@@ -61,12 +63,15 @@ export type {
 };
 
 export interface ProbeOptions {
+  read_budget?: import("./read-budget.js").SourceReadBudget;
   source_ids?: string[];
   limit_files_per_source?: number;
   safe_mode?: boolean;
   max_file_bytes?: number;
   changed_since?: string;
   source_file_paths?: Record<string, readonly string[] | undefined>;
+  /** Attempt-local reads and evidence versions; source_file_paths may select a subset for one group. */
+  source_file_plans?: Readonly<Record<string, import("./file-read-plan.js").SourceFileReadPlan | undefined>>;
   target_session_refs?: readonly string[];
   previous_payloads?: Record<string, SourceSyncPayload | undefined>;
   on_progress?: (event: SourceProbeProgressEvent) => void;
@@ -168,27 +173,9 @@ export interface HostDiscoveryEntry {
   candidates: HostDiscoveryCandidate[];
 }
 
-export interface SessionDraft {
-  id: string;
-  source_session_id?: string;
-  source_id: string;
-  source_platform: SourcePlatform;
-  host_id: string;
-  title?: string;
-  canonical_title?: string;
-  created_at?: string;
-  updated_at?: string;
-  model?: string;
-  working_directory?: string;
-  source_native_project_ref?: string;
-  resume_command?: string;
-  resume_working_directory?: string;
-  resume_command_confidence?: number;
+export interface SessionDraft extends ParsedSessionMetadata {
   last_cumulative_token_usage?: TokenUsageMetrics;
   cumulative_token_usage_by_baseline?: Record<string, TokenUsageMetrics>;
-  delegated_parent_session_id?: string;
-  delegated_history_start_ordinal?: number;
-  delegated_agent_key?: string;
 }
 
 export interface SessionBuildInput {
@@ -248,23 +235,6 @@ export interface UserTextChunk {
   originKind: OriginKind;
   text: string;
   displayPolicy?: DisplayPolicy;
-}
-
-export interface GitProjectEvidence {
-  repoRoot?: string;
-  repoRemote?: string;
-  repoFingerprint?: string;
-}
-
-export interface TokenUsageMetrics {
-  input_tokens?: number;
-  cache_read_input_tokens?: number;
-  cache_creation_input_tokens?: number;
-  cached_input_tokens?: number;
-  output_tokens?: number;
-  reasoning_output_tokens?: number;
-  total_tokens?: number;
-  model?: string;
 }
 
 export interface GenericSessionMetadata {
@@ -329,5 +299,3 @@ export interface LossAuditOptions {
   candidateRef?: string;
   sourceFormatProfileId?: string;
 }
-
-export type AssistantStopReason = "end_turn" | "tool_use" | "max_tokens" | "error";

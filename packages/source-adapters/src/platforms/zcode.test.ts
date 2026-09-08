@@ -1,10 +1,11 @@
+import { runSourceProbe } from "../probe-reference.test.js";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { getDefaultSourcesForHost, runSourceProbe, streamSourceProbe } from "../index.js";
+import { getDefaultSourcesForHost, streamSourceProbe } from "../index.js";
 import { extractMultiSessionSeeds } from "../core/parser.js";
 import { assertFragmentKinds } from "../test-helpers.js";
 

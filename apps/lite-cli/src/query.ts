@@ -1,7 +1,10 @@
 import {
+  compileSqlRequest, parseSqlRequest, SQL_REQUEST_SCHEMA, SQL_RESULT_SCHEMA,
+  type CompiledSqlRequest,
   AmbiguousReferenceError,
   type LiteContextTarget,
   type LiveHistorySnapshot,
+  type LiveQueryRead,
 } from "@cchistory/live-runtime";
 import {
   CONTENT_TRUST,
@@ -139,8 +142,44 @@ export function executeQuery(
       content_trust: CONTENT_TRUST,
       operations,
       projection_issues: snapshot.projectionIssues,
+      diagnostics: { directory_scope: snapshot.getDirectoryScopeDiagnostics(directoryScope), sources: snapshot.data.sources, loss_audits: snapshot.data.loss_audits },
     },
     hasOperationErrors,
+  };
+}
+
+export async function prepareQueryRequest(raw: string): Promise<QueryRequest | CompiledSqlRequest> {
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { return parseQueryRequest(raw); }
+  return value && typeof value === "object" && "schema" in value && value.schema === SQL_REQUEST_SCHEMA
+    ? await compileSqlRequest(parseSqlRequest(raw)) : parseQueryRequest(raw);
+}
+
+export function executePreparedQuery(request: QueryRequest | CompiledSqlRequest, snapshot: LiveHistorySnapshot, directoryScope?: string): QueryExecutionResult {
+  if (request.schema === QUERY_REQUEST_SCHEMA) return executeQuery(request, snapshot, directoryScope);
+  return sqlQueryResult({ identity: snapshot.readIdentity, directoryScope, sourceIds: snapshot.data.sources.map(s => s.id),
+    directoryScopeDiagnostics: snapshot.getDirectoryScopeDiagnostics(directoryScope), projectionIssues: snapshot.projectionIssues, sources: snapshot.data.sources, lossAudits: snapshot.data.loss_audits },
+  request.operations.map(op => ({ id: op.id, result: snapshot.executeCollectionQuery(op.query, { directoryScope }) })));
+}
+
+export function executeReadQuery(id: string, read: LiveQueryRead): QueryExecutionResult {
+  return sqlQueryResult(read, [{ id, result: read.result }]);
+}
+
+function sqlQueryResult(read: Pick<LiveQueryRead, "identity" | "directoryScope" | "sourceIds" | "projectionIssues" | "sources" | "lossAudits" | "directoryScopeDiagnostics">,
+  operations: { id: string; result: LiveQueryRead["result"] }[]): QueryExecutionResult {
+  return {
+    hasOperationErrors: false,
+    payload: {
+      schema: SQL_RESULT_SCHEMA, kind: "query_result", content_trust: CONTENT_TRUST,
+      read: { ...read.identity, scope: { directory: read.directoryScope ?? null, source_ids: read.sourceIds } },
+      operations: operations.map(op => {
+        const { ids: _ids, ...result } = op.result;
+        return { id: op.id, kind: "sql", status: "ok", result };
+      }),
+      projection_issues: read.projectionIssues,
+      diagnostics: { directory_scope: read.directoryScopeDiagnostics ?? null, sources: read.sources, loss_audits: read.lossAudits },
+    },
   };
 }
 
@@ -175,26 +214,12 @@ function executeOperation(
   if (operation.kind === "latest") {
     const target = operation.target ?? "sessions";
     const limit = operation.limit ?? 20;
-    if (target === "turns") {
-      const turns = snapshot.listResolvedTurns({ directoryScope });
-      const page = turns.slice(0, limit);
-      return {
-        target,
-        total: turns.length,
-        shown: page.length,
-        limit,
-        turns: page.map((turn) => turnSummary(turn, snapshot)),
-      };
-    }
-    const sessions = snapshot.listTopLevelSessions({ directoryScope })
-      .filter((session) => session.turn_count > 0);
-    const page = sessions.slice(0, limit);
+    const selected = snapshot.selectCollectionTemplate(target === "turns" ? "latest-turns" : "latest-sessions", limit, 0, { directoryScope });
     return {
-      target,
-      total: sessions.length,
-      shown: page.length,
-      limit,
-      sessions: page.map((session) => sessionSummary(session, snapshot)),
+      target, total: selected.total, shown: selected.shown, limit,
+      ...(target === "turns"
+        ? { turns: selected.ids.map(id => turnSummary(snapshot.getTurn(id)!, snapshot)) }
+        : { sessions: selected.ids.map(id => sessionSummary(snapshot.getSession(id)!, snapshot)) }),
     };
   }
 
@@ -227,16 +252,10 @@ function executeOperation(
         families: page.map((family) => familySummary(family, snapshot)),
       };
     }
-    const sessions = snapshot.listTopLevelSessions({ directoryScope });
-    const page = sessions.slice(offset, offset + limit);
+    const selected = snapshot.selectCollectionTemplate("list-sessions", limit, offset, { directoryScope });
     return {
-      collection: operation.collection,
-      unit: "session",
-      total: sessions.length,
-      shown: page.length,
-      offset,
-      limit,
-      sessions: page.map((session) => sessionSummary(session, snapshot)),
+      collection: operation.collection, unit: "session", total: selected.total, shown: selected.shown, offset, limit,
+      sessions: selected.ids.map(id => sessionSummary(snapshot.getSession(id)!, snapshot)),
     };
   }
 

@@ -1,10 +1,11 @@
+import { runSourceProbe } from "../probe-reference.test.js";
 import assert from "node:assert/strict";
 import { appendFile, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import type { SourceSyncPayload } from "@cchistory/domain";
-import { runSourceProbe } from "../index.js";
+
 import { 
   createSourceDefinition,
   getRepoMockDataRoot,

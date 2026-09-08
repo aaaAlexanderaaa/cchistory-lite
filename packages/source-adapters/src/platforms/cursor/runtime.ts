@@ -1,3 +1,4 @@
+import { readBudgetedSqliteRows, type SourceReadBudget } from "../../core/read-budget.js";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -238,13 +239,15 @@ export function extractCursorChatStoreSeed(
   filePath: string,
   fallbackObservedAtBase: string,
   helpers: CursorRuntimeHelpers,
+  budget?: SourceReadBudget,
 ): CursorChatStoreSeedResult | undefined {
   const db = new DatabaseSync(filePath, { readOnly: true });
 
   try {
-    const metaRow = db.prepare("SELECT value FROM meta ORDER BY key LIMIT 1").get() as { value: unknown } | undefined;
+    db.exec("BEGIN");
+    const metaRow = readBudgetedSqliteRows(db, "SELECT value FROM meta ORDER BY key LIMIT 1", ["value"], [], budget, `${filePath}:meta`)[0] as { value: unknown } | undefined;
     const meta = decodeCursorChatStoreMeta(metaRow?.value, helpers);
-    const blobRows = db.prepare("SELECT rowid AS rowid, id, data FROM blobs ORDER BY rowid").all() as Array<{
+    const blobRows = readBudgetedSqliteRows(db, "SELECT rowid AS rowid, id, data FROM blobs ORDER BY rowid", ["rowid", "id", "data"], [], budget, `${filePath}:blobs`) as Array<{
       rowid: unknown;
       id: unknown;
       data: unknown;

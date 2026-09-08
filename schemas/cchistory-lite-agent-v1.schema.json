@@ -98,11 +98,11 @@
         "process_model": { "type": "string", "minLength": 1 },
         "heap_ceiling": {
           "type": "object",
-          "required": ["formula", "min_old_space_mib", "max_old_space_mib"],
+          "required": ["policy", "automatic_reexec", "description"],
           "properties": {
-            "formula": { "type": "string", "minLength": 1 },
-            "min_old_space_mib": { "type": "integer", "minimum": 1 },
-            "max_old_space_mib": { "type": "integer", "minimum": 1 }
+            "policy": { "const": "node_default_or_explicit" },
+            "automatic_reexec": { "const": false },
+            "description": { "type": "string", "minLength": 1 }
           },
           "additionalProperties": false
         },
@@ -126,11 +126,10 @@
             "lock_wait_ms": { "type": "integer", "minimum": 1 },
             "watchdog_floor": {
               "type": "object",
-              "required": ["formula", "min_floor_bytes", "total_floor_fraction"],
+              "required": ["formula", "initial_available_fraction"],
               "properties": {
                 "formula": { "type": "string", "minLength": 1 },
-                "min_floor_bytes": { "type": "integer", "minimum": 1 },
-                "total_floor_fraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+                "initial_available_fraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
               },
               "additionalProperties": false
             },

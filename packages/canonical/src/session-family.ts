@@ -22,6 +22,10 @@ export const FAMILY_IO_PREVIEW_CHARS = 240;
 const FAMILY_IO_EVIDENCE_CHARS = 8192;
 const SPAWN_TOOL_NAMES = new Set(["spawn_subagent", "Task", "Agent", "task"]);
 
+export function hasSessionFamilyLinkTool(names: readonly string[]): boolean {
+  return names.some(name => SPAWN_TOOL_NAMES.has(asOptionalString(name) ?? ""));
+}
+
 export interface SessionFamilyInput {
   sessions: readonly SessionProjection[];
   turns?: readonly UserTurnProjection[];

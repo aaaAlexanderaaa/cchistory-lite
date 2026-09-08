@@ -3,7 +3,8 @@ import { test } from "node:test";
 import type { AtomEdge, ConversationAtom, LossAuditRecord } from "@cchistory/domain";
 import type { SessionDraft } from "./types.js";
 import { hydrateDraftFromAtoms } from "./atomizer.js";
-import { buildSubmissionGroups, buildTurnsAndContext, countLossAuditsByStage } from "./projections.js";
+import { countLossAuditsByStage } from "./projections.js";
+import { buildSubmissionGroups, buildTurnsAndContext } from "../probe-reference.test.js";
 
 test("buildTurnsAndContext derives many turn spans from indexed lookups", () => {
   const draft: SessionDraft = {

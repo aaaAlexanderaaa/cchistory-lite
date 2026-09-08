@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { chmod, cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
@@ -90,6 +91,32 @@ export async function buildLiteArtifact(options = {}) {
   for (const vendoredPackage of vendoredPackages) {
     includedPackages.push(await copyVendoredPackage(repoRoot, artifactDir, vendoredPackage));
   }
+  const external = new Map();
+  const copyExternal = async (name, parentDir) => {
+    const require = createRequire(path.join(parentDir, 'package.json'));
+    const manifestPath = require.resolve(`${name}/package.json`);
+    const manifest = await readJson(manifestPath);
+    const previous = external.get(name);
+    if (previous) {
+      if (previous.version !== manifest.version) throw new Error(`Conflicting artifact dependency versions for ${name}.`);
+      return;
+    }
+    const sourceDir = path.dirname(manifestPath);
+    const targetDir = path.join(artifactDir, 'node_modules', ...name.split('/'));
+    const entry = { package_name: name, version: manifest.version, relative_path: path.relative(artifactDir, targetDir) };
+    external.set(name, entry);
+    // Copy the published files, including licenses, but never workspace/pnpm links.
+    await cp(sourceDir, targetDir, { recursive: true, filter: file => file === sourceDir || !path.relative(sourceDir, file).split(path.sep).includes('node_modules') });
+    for (const dependency of Object.keys(manifest.dependencies ?? {})) await copyExternal(dependency, sourceDir);
+  };
+  for (const pkg of vendoredPackages) {
+    const sourceDir = path.join(repoRoot, pkg.sourceDir);
+    const manifest = await readJson(path.join(sourceDir, 'package.json'));
+    for (const name of Object.keys(manifest.dependencies ?? {})) {
+      if (!vendoredPackages.some(p => p.packageName === name)) await copyExternal(name, sourceDir);
+    }
+  }
+  includedPackages.push(...external.values());
   await writeLauncherFiles(artifactDir);
 
   const vendoredVersions = Object.fromEntries(
@@ -111,7 +138,7 @@ export async function buildLiteArtifact(options = {}) {
     },
     files: ['bin', 'apps', 'schemas', 'docs', 'skills', 'INSTALL.md', 'README.md', 'LICENSE'],
     dependencies: vendoredVersions,
-    bundleDependencies: vendoredPackages.map((entry) => entry.packageName),
+    bundleDependencies: includedPackages.map((entry) => entry.package_name),
     engines: { node: rootPackage.engines?.node ?? '>=22' },
     publishConfig: { access: 'public' },
   };
@@ -222,8 +249,8 @@ async function copyVendoredPackage(repoRoot, artifactDir, vendoredPackage) {
 }
 
 async function writeLauncherFiles(artifactDir) {
-  const cliModule = '#!/usr/bin/env node\nimport path from "node:path";\nimport process from "node:process";\nimport { fileURLToPath } from "node:url";\nimport { runWithAdaptiveNodeMemory, settleLauncherExit } from "@cchistory/live-runtime/bootstrap";\nconst binDir = path.dirname(fileURLToPath(import.meta.url));\nprocess.env.PATH = process.env.PATH ? `${binDir}${path.delimiter}${process.env.PATH}` : binDir;\nsettleLauncherExit(runWithAdaptiveNodeMemory(async () => {\n  const { runLiteCli } = await import("../apps/lite-cli/dist/index.js");\n  return runLiteCli(process.argv.slice(2));\n}));\n';
-  const tuiModule = '#!/usr/bin/env node\nimport process from "node:process";\nimport { runWithAdaptiveNodeMemory, settleLauncherExit } from "@cchistory/live-runtime/bootstrap";\nsettleLauncherExit(runWithAdaptiveNodeMemory(async () => {\n  const { runLiteTui } = await import("../apps/lite-tui/dist/index.js");\n  return runLiteTui(process.argv.slice(2));\n}));\n';
+  const cliModule = '#!/usr/bin/env node\nimport path from "node:path";\nimport process from "node:process";\nimport { fileURLToPath } from "node:url";\nimport { settleLauncherExit } from "@cchistory/live-runtime/bootstrap";\nconst binDir = path.dirname(fileURLToPath(import.meta.url));\nprocess.env.PATH = process.env.PATH ? `${binDir}${path.delimiter}${process.env.PATH}` : binDir;\nsettleLauncherExit((async () => {\n  const { runLiteCli } = await import("../apps/lite-cli/dist/index.js");\n  return runLiteCli(process.argv.slice(2));\n})());\n';
+  const tuiModule = '#!/usr/bin/env node\nimport process from "node:process";\nimport { settleLauncherExit } from "@cchistory/live-runtime/bootstrap";\nsettleLauncherExit((async () => {\n  const { runLiteTui } = await import("../apps/lite-tui/dist/index.js");\n  return runLiteTui(process.argv.slice(2));\n})());\n';
   const posix = (moduleName) => `#!/usr/bin/env sh\nDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexec node "$DIR/${moduleName}" "$@"\n`;
   const windows = (moduleName) => `@echo off\r\nset SCRIPT_DIR=%~dp0\r\nnode "%SCRIPT_DIR%${moduleName}" %*\r\n`;
   const files = [

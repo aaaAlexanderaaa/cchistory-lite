@@ -6,7 +6,6 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 import {
   formatScanGuardWarning,
-  runWithAdaptiveNodeMemory,
   scanLiteHistory,
   type LiteSourceRoot,
   type LiveHistorySnapshot,
@@ -612,7 +611,7 @@ function isDirectEntry(): boolean {
 }
 
 if (isDirectEntry()) {
-  runWithAdaptiveNodeMemory(() => runLiteTui(process.argv.slice(2))).then(
+  runLiteTui(process.argv.slice(2)).then(
     (code) => {
       process.exitCode = code;
     },

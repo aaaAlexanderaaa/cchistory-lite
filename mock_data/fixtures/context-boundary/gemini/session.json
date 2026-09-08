@@ -1,0 +1,10 @@
+{
+  "sessionId": "gemini-semantic",
+  "projectHash": "semantic",
+  "startTime": "2026-04-12T01:00:00.000Z",
+  "lastUpdated": "2026-04-12T01:00:03.000Z",
+  "messages": [
+    { "id": "user-1", "timestamp": "2026-04-12T01:00:01.000Z", "type": "user", "content": [{ "text": "Inspect the Gemini semantic fixture." }] },
+    { "id": "assistant-1", "timestamp": "2026-04-12T01:00:02.000Z", "type": "gemini", "model": "gemini-fixture", "content": [{ "text": "Gemini fixture inspected." }], "tokens": { "input": 10, "output": 4, "total": 14 } }
+  ]
+}

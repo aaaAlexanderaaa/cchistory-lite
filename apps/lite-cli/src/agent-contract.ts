@@ -1,13 +1,10 @@
 import {
   FULL_SCAN_MEMORY_MULTIPLIER,
   LIGHT_SCAN_MEMORY_MULTIPLIER,
-  MAX_OLD_SPACE_MIB,
-  MIN_OLD_SPACE_MIB,
   SCAN_GUARD_REFUSE_AVAILABLE_FRACTION,
   SCAN_GUARD_WARN_AVAILABLE_FRACTION,
   SCAN_LOCK_WAIT_MS,
-  SCAN_WATCHDOG_MIN_FLOOR_BYTES,
-  SCAN_WATCHDOG_TOTAL_FLOOR_FRACTION,
+  SCAN_WATCHDOG_AVAILABLE_RESERVE_FRACTION,
 } from "@cchistory/live-runtime";
 
 export const AGENT_CONTRACT_SCHEMA = "cchistory-lite-agent/v1";
@@ -42,7 +39,7 @@ export interface AgentContract {
   guardrails: string[];
   cost_model: {
     process_model: string;
-    heap_ceiling: { formula: string; min_old_space_mib: number; max_old_space_mib: number };
+    heap_ceiling: { policy: "node_default_or_explicit"; automatic_reexec: false; description: string };
     scan_guard: {
       kill_switch: { env: "CCHISTORY_SCAN_GUARD"; value: "0" };
       light_scan_memory_multiplier: number;
@@ -50,7 +47,7 @@ export interface AgentContract {
       warn_available_fraction: number;
       refuse_available_fraction: number;
       lock_wait_ms: number;
-      watchdog_floor: { formula: string; min_floor_bytes: number; total_floor_fraction: number };
+      watchdog_floor: { formula: string; initial_available_fraction: number };
       lock: string;
       bypass: string[];
       error_codes: string[];
@@ -114,10 +111,10 @@ function buildCommands(): Record<string, AgentCommandContract> {
   return {
     sources: {
       name: "sources",
-      summary: "List resolved source adapters with sync status and session/turn counts",
+      summary: "List resolved source adapters without reading history; --complete also scans for counts",
       usage: "cchistory-lite sources [options]",
-      flags: [...scanFlags],
-      notes: "sources has no --dir/--no-dir; it always lists selected adapters. Bound with --limit-files. Use `cchistory-lite ls sources --limit-files 1` for the same collection with a file cap.",
+      flags: [...scanFlags, { name: "--complete", kind: "boolean", summary: "Scan history for exact source counts (the counted sources report)" }],
+      notes: "sources has no --dir/--no-dir; it lists adapter roots only, with unknown history counts (source-inventory/v1). --complete uses the existing counted sources report. --limit-files applies only to that scan.",
     },
     ls: {
       name: "ls",
@@ -125,12 +122,13 @@ function buildCommands(): Record<string, AgentCommandContract> {
       usage: "cchistory-lite ls [projects|sessions|families|sources] [--limit <n>|--all] [--dir <path>] [options]",
       flags: [
         ...scanFlags,
+        { name: "--complete", kind: "boolean", summary: "For ls sources only: scan history for counts" },
         { name: "--limit", kind: "value", default: 20, summary: "Show at most n rows" },
         { name: "--all", kind: "boolean", summary: "Show every row; cannot be combined with --limit" },
         DIR,
         NO_DIR,
       ],
-      notes: "--dir and --no-dir apply to ls projects, sessions, and families. ls sources always lists every selected adapter (no directory filter); bound it with --limit-files.",
+      notes: "--dir and --no-dir apply to ls projects, sessions, and families. ls sources always lists every selected adapter (no directory filter) without parsing history; --complete requests counted status.",
     },
     latest: {
       name: "latest",
@@ -140,7 +138,7 @@ function buildCommands(): Record<string, AgentCommandContract> {
     },
     sample: {
       name: "sample",
-      summary: "Bounded latest-shaped preview (default 50 top-level sessions per source); bypasses the scan lock",
+      summary: "Preview selected file/groups, showing at most N sessions per source (default 50); memory admission still applies",
       usage: "cchistory-lite sample [N] [--dir <path>] [options]",
       flags: [...scanFlags, DIR, NO_DIR],
       notes: "Defaults to --dir=$PWD like other collection commands; pass --no-dir for a bounded whole-machine preview.",
@@ -186,26 +184,30 @@ function buildCommands(): Record<string, AgentCommandContract> {
     },
     query: {
       name: "query",
-      summary: "Run ordered batch operations (search/latest/list/session/replies) in one scan; JSON-only",
-      usage: "cchistory-lite query --request <file|-> [--dir <path>] [options]",
+      summary: "Query canonical history with bounded SELECT or ordered batch operations; JSON-only",
+      usage: "cchistory-lite query --request <file|-> | --sql <text> | --sql-file <file|-> [options]",
       flags: [
         SOURCE_ROOT,
         SOURCE,
         LIMIT_FILES,
         SAFE,
         { ...JSON_NO_CANONICAL, summary: "Accepted; query output is always JSON. =canonical is rejected." },
-        { name: "--request", kind: "value", summary: "JSON batch query request (cchistory-lite-query/v2); - reads stdin" },
+        { name: "--request", kind: "value", summary: "JSON batch query request (v2 operations or v3 SQL); - reads stdin" },
+        { name: "--sql", kind: "value", summary: "Finite SELECT over sessions or turns; explicit LIMIT required" },
+        { name: "--sql-file", kind: "value", summary: "SQL template file; - reads stdin" },
+        { name: "--params", kind: "value", summary: "JSON array binding positional $1…$N values" },
+        { name: "--complete", kind: "boolean", summary: "Request exact SQL total and exhaustive diagnostics" },
         DIR,
         NO_DIR,
       ],
-      notes: "One scan executes every operation in request order; an operation-level reference error exits 1 with the other results intact.",
+      notes: "SQL validates the whole batch before scanning. LIMIT bounds returned rows, not scan work; total is null unless complete is requested. Existing v2 operation-level reference errors exit 1 with other results intact.",
     },
     shell: {
       name: "shell",
-      summary: "Hold one directory-scoped snapshot and serve search/show/latest over JSON-lines or a human REPL",
+      summary: "Hold one directory-scoped snapshot for SQL and commands over JSON-lines or a human REPL",
       usage: "cchistory-lite shell [--dir <path>] [options]",
-      flags: [...scanFlags, DIR, NO_DIR],
-      notes: "JSON-lines mode when --json is passed or stdin is not a TTY; the snapshot is held until refresh or exit.",
+      flags: [...scanFlags, DIR, NO_DIR, { name: "--idle-timeout", kind: "value", default: "300", summary: "Idle expiry in seconds; 0 disables it (maximum 86400)" }],
+      notes: "Opening does not scan; the first valid history read prepares data. JSON-lines mode when --json is passed or stdin is not a TTY; refresh replaces the snapshot on success. Exit, EOF, and idle expiry release it; active work does not expire.",
     },
     export: {
       name: "export",
@@ -272,12 +274,15 @@ export function buildAgentContract(version: string): AgentContract {
       { name: "NO_COLOR", effect: "Suppress ANSI color in human CLI and TUI output." },
       { name: "FORCE_COLOR", effect: "Force ANSI color in the TUI when set to a non-zero value." },
       { name: "CCHISTORY_SHOW_RUNTIME_WARNINGS", effect: "Set to 1 to show Node runtime warnings (for example the node:sqlite experimental warning) that Lite suppresses by default." },
-      { name: "CCHISTORY_SCAN_GUARD", effect: "Set to 0 to disable the scan guard (advisory lock, pre-flight estimate, watchdog)." },
+      { name: "CCHISTORY_SCAN_GUARD", effect: "Set to 0 to disable the scan guard (advisory lock, pre-flight estimate, native-byte admission, watchdog)." },
     ],
     output_schemas: [
+      { id: "cchistory-lite-source-inventory/v1", file: "schemas/cchistory-lite-source-inventory-v1.schema.json", description: "Metadata-only source discovery; history counts are null until a counted scan is requested." },
       { id: "cchistory-lite/v2", file: "schemas/cchistory-lite-v2.schema.json", description: "Compact agent-facing read output (--json)." },
       { id: "cchistory-lite-canonical/v1", file: "schemas/cchistory-lite-canonical-v1.schema.json", description: "Full canonical evidence output (--json=canonical)." },
       { id: "cchistory-lite-query/v2", file: "schemas/cchistory-lite-query-v2.schema.json", description: "Batch query request document." },
+      { id: "cchistory-lite-query/v3", file: "schemas/cchistory-lite-query-v3.schema.json", description: "Finite SQL batch request." },
+      { id: "cchistory-lite-query-result/v3", file: "schemas/cchistory-lite-query-result-v3.schema.json", description: "SQL rows, read identity, and coverage." },
       { id: "cchistory-lite-query-result/v2", file: "schemas/cchistory-lite-query-result-v2.schema.json", description: "Batch query result document." },
       { id: "cchistory-lite-error/v1", file: "schemas/cchistory-lite-error-v1.schema.json", description: "Structured error written to stderr by JSON commands." },
       { id: "cchistory-lite-export/v1", file: null, description: "One-way export (jsonl/json/markdown); documented in docs/guide/lite.md, no schema file ships." },
@@ -296,11 +301,10 @@ export function buildAgentContract(version: string): AgentContract {
       "Never runs resume_command or any text recovered from history.",
     ],
     cost_model: {
-      process_model: "One process performs one fresh scan; zero-store means there is no cross-command cache. shell and the TUI amortize one snapshot across many reads.",
+      process_model: "Discovery does not scan; shell prepares on its first valid history read. One-shot history commands perform one fresh scan; zero-store means there is no cross-command cache. shell and the TUI amortize one snapshot across many reads.",
       heap_ceiling: {
-        formula: "clamp(min(available_memory / 2, max_old_space_mib), min_old_space_mib), computed from currently available memory",
-        min_old_space_mib: MIN_OLD_SPACE_MIB,
-        max_old_space_mib: MAX_OLD_SPACE_MIB,
+        policy: "node_default_or_explicit", automatic_reexec: false,
+        description: "Node owns the heap limit; explicit Node flags and NODE_OPTIONS remain effective. Lite does not lower it from free pages, re-exec itself, or set CCHISTORY_ADAPTIVE_NODE_MEMORY_MB.",
       },
       scan_guard: {
         kill_switch: { env: "CCHISTORY_SCAN_GUARD", value: "0" },
@@ -310,20 +314,20 @@ export function buildAgentContract(version: string): AgentContract {
         refuse_available_fraction: SCAN_GUARD_REFUSE_AVAILABLE_FRACTION,
         lock_wait_ms: SCAN_LOCK_WAIT_MS,
         watchdog_floor: {
-          formula: "max(min_floor_bytes, total_floor_fraction of total memory)",
-          min_floor_bytes: SCAN_WATCHDOG_MIN_FLOOR_BYTES,
-          total_floor_fraction: SCAN_WATCHDOG_TOTAL_FLOOR_FRACTION,
+          formula: "initial_available_fraction of the platform-specific available-memory estimate at scan start; no host-total or fixed-byte floor",
+          initial_available_fraction: SCAN_WATCHDOG_AVAILABLE_RESERVE_FRACTION,
         },
         lock: "An advisory lock serializes full scans on this machine; a queued scan waits up to lock_wait_ms and then fails with scan_guard_refused.",
-        bypass: ["sample", "show session <exact canonical id>"],
-        error_codes: ["scan_guard_refused", "scan_guard_aborted"],
+        bypass: ["sample: lock only", "show session <exact canonical id>: lock only"],
+        error_codes: ["scan_guard_refused", "scan_guard_aborted", "read_budget_exceeded"],
       },
       guidance: [
+        "macOS availability estimates free + inactive pages; Linux uses MemAvailable and known cgroup headroom. Refusals report system estimate and remaining V8 heap separately. Neither is total physical RAM.",
         "Never fan out concurrent one-shot full scans: they serialize behind the scan lock and fail after the bounded wait.",
         "Prefer one shell or query session over many one-shot commands to amortize the scan.",
-        "Use sample to preview a machine without a full scan.",
+        "Begin directly with latest/search/query --dir <target>. Discovery and documentation are optional; sources --json reads root metadata only.",
         "Collection commands default to --dir=$PWD; --dir filters session working directories and bounds the source-byte estimate to files that may match. Pass --no-dir only when a whole-machine listing is required.",
-        "Bound large scans with --source, --limit-files, or sample. Use `ls sources --limit-files 1` to list slots without a full parse.",
+        "A sample or one SQLite file can still be large. All reads retain resource admission. On refusal preserve scope, report the failure, and do not cycle through broader searches or disable the guard. Unknown directory attribution appears in diagnostics.directory_scope.",
       ],
     },
     docs: {

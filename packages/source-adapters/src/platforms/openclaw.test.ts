@@ -1,7 +1,8 @@
+import { runSourceProbe } from "../probe-reference.test.js";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
-import { runSourceProbe } from "../index.js";
+
 import { 
   getRepoMockDataRoot, 
   createSourceDefinition, 

@@ -1,28 +1,18 @@
 import { readFileSync, unlinkSync } from "node:fs";
 import { mkdir, open, readdir, readFile, stat, unlink } from "node:fs/promises";
 import os from "node:os";
+import { getHeapStatistics } from "node:v8";
 import path from "node:path";
 import process from "node:process";
-import { readAvailableMemoryBytes } from "./system-memory.js";
+import { readAvailableMemory, readAvailableMemoryBytes, type AvailableMemoryReading } from "./system-memory.js";
 
 /**
- * The scan guard: four cooperating components that keep a Lite scan — alone or
- * concurrently with sibling Lite processes and the host agent — from pushing
- * the machine into swap-death. Swap-death fails silently (allocations keep
- * succeeding, so neither the OOM killer nor the V8 heap limit fires), which is
- * why this layer fails fast instead.
- *
- *   1. The adaptive heap ceiling (node-memory.ts) budgets old-space from
- *      AVAILABLE memory rather than host totals.
- *   2. An advisory lock serializes full scans on this machine.
- *   3. A watchdog aborts a scan if available memory collapses mid-probe.
- *   4. A pre-flight estimate (sound because the lock serializes scans) refuses
- *      scans whose conservative peak estimate risks the machine.
- *
- * Everything here is best-effort: internal errors degrade to "proceed", never
- * to a blocked scan. Only the explicit refuse/abort paths stop one. The
- * kill-switch env is read by the caller (the live-runtime entry), not here, so
- * tests pass behavior explicitly.
+ * Best-effort scan admission: shared availability readings, a scan queue,
+ * preflight estimates and progress/checkpoint sampling. Native-byte admission
+ * is installed by live-runtime and consumed by adapters before payload reads.
+ * These heuristics cannot guarantee against every synchronous/native allocation
+ * or concurrent change in host load. Only explicit budget/refusal paths stop a
+ * scan; unavailable OS signals fall back to the remaining V8 heap for admission.
  */
 
 export type ScanGuardProfile = "light" | "full";
@@ -32,13 +22,12 @@ export type ScanGuardStatus = "ok" | "warn" | "refuse";
 // parsed from, and even a light scan peaks during per-session parsing (the
 // probe builds full turn context before contextMode "none" discards it). A
 // full scan additionally retains every turn's context until exit. Both
-// multipliers are deliberately conservative upper bounds on that anatomy.
+// multipliers are conservative planning heuristics, not proven allocation bounds.
 export const LIGHT_SCAN_MEMORY_MULTIPLIER = 4;
 export const FULL_SCAN_MEMORY_MULTIPLIER = 8;
 
-// Above 75% of currently-available memory the scan risks pushing the host into
-// swap; above 50% a warning is warranted because other processes may claim the
-// rest while the scan runs.
+// Use fractions of the smaller of estimated system availability and remaining
+// V8 heap. Leave room for allocation overhead and concurrent changes in load.
 export const SCAN_GUARD_REFUSE_AVAILABLE_FRACTION = 0.75;
 export const SCAN_GUARD_WARN_AVAILABLE_FRACTION = 0.5;
 
@@ -50,12 +39,13 @@ export const SCAN_LOCK_POLL_MS = 250;
 export const SCAN_LOCK_MAX_HOLDER_AGE_MS = 30 * 60_000;
 const SCAN_LOCK_MAX_STEALS = 3;
 
-// Below this floor the next V8 growth spurt — a Lite scan may legally grow
-// toward its old-space ceiling — plus the host agent can push the machine into
-// swap-death. 512 MiB covers small hosts; 5% of total scales the floor up on
-// big machines where a fixed MiB floor is noise.
-export const SCAN_WATCHDOG_MIN_FLOOR_BYTES = 512 * 1024 ** 2;
-export const SCAN_WATCHDOG_TOTAL_FLOOR_FRACTION = 0.05;
+// Reserve a quarter of the availability observed when this scan starts. This
+// shares the preflight consumption fraction and never uses host total in a container.
+export const SCAN_WATCHDOG_AVAILABLE_RESERVE_FRACTION = 1 - SCAN_GUARD_REFUSE_AVAILABLE_FRACTION;
+export function readRemainingHeapBytes(): number {
+  const heap = getHeapStatistics();
+  return Math.max(0, heap.heap_size_limit - heap.used_heap_size);
+}
 // A meminfo read is microseconds; every 64 files or 1s keeps the check off the
 // hot path while bounding how long a collapse goes unnoticed on slow scans.
 export const SCAN_WATCHDOG_CHECK_EVERY_FILES = 64;
@@ -73,8 +63,13 @@ export interface ScanRiskAssessment {
   profile: ScanGuardProfile;
   /** scannedBytes × the profile multiplier — the conservative peak estimate. */
   estimatedBytes: number;
-  /** Bytes the host can give right now; undefined when the platform cannot say. */
+  /** Effective admission headroom: smaller of the system estimate and V8 heap. */
   availableBytes?: number;
+  /** OS estimate, not total physical RAM or a guaranteed allocation allowance. */
+  systemAvailableBytes?: number;
+  heapAvailableBytes?: number;
+  memorySignal?: AvailableMemoryReading["source"] | "injected";
+  limitingResource?: "system" | "heap";
   /** Bytes the scan would probe under the selected roots, pre-multiplier. */
   scannedBytes: number;
   /** Per-root walk totals that summed to scannedBytes. */
@@ -104,8 +99,10 @@ export interface AssessScanRiskInput {
 }
 
 export interface AssessScanRiskDeps {
-  walkRootBytes?: (root: string, limitFiles?: number) => Promise<number>;
+  walkRootBytes?: (root: string, limitFiles?: number, slotId?: string) => Promise<number>;
   readAvailableBytes?: () => number | undefined;
+  readMemory?: () => AvailableMemoryReading;
+  readHeapBytes?: () => number;
 }
 
 export async function assessScanRisk(
@@ -122,7 +119,7 @@ export async function assessScanRisk(
   let walkFailed = false;
   for (const root of normalizedRoots) {
     try {
-      const bytes = await walk(root.path, input.limitFiles);
+      const bytes = await walk(root.path, input.limitFiles, root.slot_id);
       roots.push({ path: root.path, bytes, ...(root.slot_id ? { slot_id: root.slot_id } : {}) });
       scannedBytes += bytes;
     } catch {
@@ -132,16 +129,25 @@ export async function assessScanRisk(
     }
   }
   const estimatedBytes = scannedBytes * multiplier;
-  let availableBytes: number | undefined;
+  let memory: AvailableMemoryReading | { bytes?: number; source: "injected" | "unknown" };
   try {
-    availableBytes = (deps.readAvailableBytes ?? (() => readAvailableMemoryBytes()))();
+    memory = deps.readAvailableBytes
+      ? { bytes: deps.readAvailableBytes(), source: "injected" }
+      : (deps.readMemory ?? readAvailableMemory)();
   } catch {
-    availableBytes = undefined;
+    memory = { source: "unknown" };
   }
+  const heapBytes = Math.max(0, (deps.readHeapBytes ?? readRemainingHeapBytes)());
+  const systemAvailableBytes = memory.bytes;
+  const availableBytes = systemAvailableBytes === undefined ? heapBytes : Math.min(systemAvailableBytes, heapBytes);
   const shared = {
     profile: input.profile,
     estimatedBytes,
     availableBytes,
+    systemAvailableBytes,
+    heapAvailableBytes: heapBytes,
+    memorySignal: systemAvailableBytes === undefined ? "unknown" : memory.source,
+    limitingResource: systemAvailableBytes === undefined || heapBytes <= systemAvailableBytes ? "heap" : "system",
     scannedBytes,
     roots,
     ...(input.directoryScoped ? { directoryScoped: true } : {}),
@@ -153,31 +159,24 @@ export async function assessScanRisk(
       detail: "scan guard could not walk every selected root; proceeding without a complete estimate",
     };
   }
-  if (availableBytes === undefined) {
-    return {
-      ...shared,
-      status: "ok" as const,
-      detail: "available system memory is unknown; proceeding without a memory estimate",
-    };
-  }
   if (estimatedBytes > availableBytes * SCAN_GUARD_REFUSE_AVAILABLE_FRACTION) {
     return {
       ...shared,
       status: "refuse" as const,
-      detail: "estimated peak exceeds 75% of available memory",
+      detail: "estimated peak exceeds 75% of admission headroom",
     };
   }
   if (estimatedBytes > availableBytes * SCAN_GUARD_WARN_AVAILABLE_FRACTION) {
     return {
       ...shared,
       status: "warn" as const,
-      detail: "estimated peak exceeds 50% of available memory",
+      detail: "estimated peak exceeds 50% of admission headroom",
     };
   }
   return {
     ...shared,
     status: "ok" as const,
-    detail: "estimated peak within available memory",
+    detail: "estimated peak within admission headroom",
   };
 }
 
@@ -408,7 +407,9 @@ function isAlreadyExistsError(error: unknown): boolean {
 
 export interface ScanWatchdogDeps {
   readAvailableBytes?: () => number | undefined;
-  /** Host total memory, for the 5%-of-total floor component. */
+  /** Initial available bytes, sampled once when omitted. */
+  initialAvailableBytes?: number;
+  /** @deprecated Host total is deliberately ignored. */
   totalBytes?: number;
   /** Explicit floor override; wins over the computed one. */
   floorBytes?: number;
@@ -433,10 +434,11 @@ export interface ScanWatchdog {
 export function createScanWatchdog(deps: ScanWatchdogDeps = {}): ScanWatchdog {
   const now = deps.now ?? Date.now;
   const readAvailable = deps.readAvailableBytes ?? (() => readAvailableMemoryBytes());
-  const floorBytes = deps.floorBytes ?? Math.max(
-    SCAN_WATCHDOG_MIN_FLOOR_BYTES,
-    Math.floor((deps.totalBytes ?? os.totalmem()) * SCAN_WATCHDOG_TOTAL_FLOOR_FRACTION),
-  );
+  let initialAvailableBytes = deps.initialAvailableBytes;
+  if (initialAvailableBytes === undefined && deps.floorBytes === undefined) {
+    try { initialAvailableBytes = readAvailable(); } catch { /* unknown */ }
+  }
+  const floorBytes = deps.floorBytes ?? Math.floor((initialAvailableBytes ?? 0) * SCAN_WATCHDOG_AVAILABLE_RESERVE_FRACTION);
   const checkEveryFiles = deps.checkEveryFiles ?? SCAN_WATCHDOG_CHECK_EVERY_FILES;
   const checkIntervalMs = deps.checkIntervalMs ?? SCAN_WATCHDOG_CHECK_INTERVAL_MS;
   let filesSinceCheck = 0;
@@ -458,7 +460,7 @@ export function createScanWatchdog(deps: ScanWatchdogDeps = {}): ScanWatchdog {
       return; // A failed read never aborts a scan.
     }
     if (available === undefined) return; // Unknown availability: nothing to compare.
-    if (available < floorBytes) {
+    if (available === 0 || available < floorBytes) {
       breached = true;
       breachAvailableBytes = available;
       abort();
@@ -474,6 +476,7 @@ export function createScanWatchdog(deps: ScanWatchdogDeps = {}): ScanWatchdog {
     },
     assertHealthy() {
       if (breached) abort();
+      check();
     },
   };
 }
@@ -509,11 +512,10 @@ export class ScanGuardAbortedError extends Error {
 
   constructor(init: { availableBytes?: number; floorBytes: number }) {
     super(
-      `Scan aborted: available memory dropped to ${
+      `Scan aborted: system available-memory estimate dropped to ${
         init.availableBytes === undefined ? "an unknown level" : formatScanGuardBytes(init.availableBytes)
-      }, below the ${formatScanGuardBytes(init.floorBytes)} safety floor; failing fast is safer than letting this machine swap. ` +
-      `${formatScanBoundNextSteps()} ` +
-      `Retry when the machine is less loaded. Override the guard with CCHISTORY_SCAN_GUARD=0.`,
+      }, below the ${formatScanGuardBytes(init.floorBytes)} reserve set at scan start. ` +
+      formatScanBoundNextSteps(),
     );
     this.name = "ScanGuardAbortedError";
     this.availableBytes = init.availableBytes;
@@ -554,8 +556,7 @@ export function formatScanGuardWarning(assessment: ScanRiskAssessment): string {
   const multiplier = assessment.profile === "full" ? FULL_SCAN_MEMORY_MULTIPLIER : LIGHT_SCAN_MEMORY_MULTIPLIER;
   return `Scan guard warning: estimated peak memory ${formatScanGuardBytes(assessment.estimatedBytes)} ` +
     `(${assessment.profile} scan of ${formatScanGuardBytes(assessment.scannedBytes)} source bytes, ×${multiplier}) ` +
-    `exceeds 50% of the ${available} currently available; proceeding. ` +
-    `Consider \`sample\`, \`shell\`, or \`query\` to lower peak memory; CCHISTORY_SCAN_GUARD=0 disables the guard.`;
+    `exceeds 50% of the ${available} admission headroom; proceeding. ${formatMemorySignals(assessment)}`;
 }
 
 function buildRefusalMessage(init: {
@@ -572,9 +573,7 @@ function buildRefusalMessage(init: {
     const waitedSeconds = Math.round((init.waitedMs ?? 0) / 1000);
     return `Refusing to scan: another cchistory-lite scan is still running (${holderDescription}); ` +
       `waited ${waitedSeconds}s for it to finish. ` +
-      `Retry shortly, or amortize one scan over many reads with \`shell\` / \`query\`; ` +
-      `\`sample\` and \`show session <exact id>\` bypass the scan lock. ` +
-      `Override the guard with CCHISTORY_SCAN_GUARD=0.`;
+      `Wait for that scan to finish, or reuse its \`shell\` / \`query\` session.`;
   }
   const assessment = init.assessment;
   const multiplier = assessment?.profile === "full" ? FULL_SCAN_MEMORY_MULTIPLIER : LIGHT_SCAN_MEMORY_MULTIPLIER;
@@ -586,11 +585,18 @@ function buildRefusalMessage(init: {
     : "--dir also bounds the estimate when a collection command uses it; this scan has no --dir filter.";
   return `Refusing to scan: estimated peak memory ${formatScanGuardBytes(assessment?.estimatedBytes ?? 0)} ` +
     `(${assessment?.profile ?? "light"} scan of ${formatScanGuardBytes(assessment?.scannedBytes ?? 0)} source bytes, ×${multiplier}) ` +
-    `exceeds 75% of the ${available} currently available on this machine.` +
+    `exceeds 75% of the ${available} admission headroom. ${formatMemorySignals(assessment)}` +
     `${formatSelectedSourceRoots(assessment)} ` +
     `${directoryNote} ` +
-    `${formatScanBoundNextSteps()} ` +
-    `Override the guard with CCHISTORY_SCAN_GUARD=0.`;
+    formatScanBoundNextSteps();
+}
+
+function formatMemorySignals(assessment: ScanRiskAssessment | undefined): string {
+  const system = assessment?.systemAvailableBytes === undefined ? "unknown" : formatScanGuardBytes(assessment.systemAvailableBytes);
+  const heap = assessment?.heapAvailableBytes === undefined ? "unknown" : formatScanGuardBytes(assessment.heapAvailableBytes);
+  return `System available-memory estimate: ${system} (${assessment?.memorySignal ?? "unknown"}); ` +
+    `remaining V8 heap: ${heap}; limiting resource: ${assessment?.limitingResource ?? "unknown"}. ` +
+    "Lite does not set the Node heap limit.";
 }
 
 function formatSelectedSourceRoots(assessment: ScanRiskAssessment | undefined): string {
@@ -607,7 +613,6 @@ function formatSelectedSourceRoots(assessment: ScanRiskAssessment | undefined): 
 }
 
 function formatScanBoundNextSteps(): string {
-  return "Next: `sample` for a bounded preview, `--source <slot>` to scan one adapter, " +
-    "`--limit-files <n>` to cap files per adapter, or `cchistory-lite ls sources --limit-files 1` " +
-    "to list slots without a full parse; `shell` / `query` amortize one scan over many reads.";
+  return "No complete result was produced; keep the requested scope. `cchistory-lite sources --json` lists adapter roots without parsing history. " +
+    "Report the resource limit before changing scope or memory settings. File count and sample size are not memory bounds; shell reuses a successful read.";
 }

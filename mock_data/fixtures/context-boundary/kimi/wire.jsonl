@@ -1,0 +1,7 @@
+{"type":"metadata","protocol_version":"1","created_at":1775955600000}
+{"type":"config.update","modelAlias":"kimi-fixture","time":1775955600100}
+{"type":"turn.prompt","input":[{"type":"text","text":"Inspect the Kimi semantic fixture."}],"origin":{"kind":"user"},"time":1775955601000}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"reply-1","part":{"type":"text","text":"Kimi fixture inspected."}},"time":1775955602000}
+{"type":"context.append_loop_event","event":{"type":"tool.call","uuid":"call-1","toolCallId":"call-1","name":"Read","args":{"path":"state.json"}},"time":1775955603000}
+{"type":"context.append_loop_event","event":{"type":"tool.result","parentUuid":"call-1","toolCallId":"call-1","result":{"output":"Fixture state loaded."}},"time":1775955604000}
+{"type":"usage.record","model":"kimi-fixture","usageScope":"turn","usage":{"inputOther":100,"inputCacheRead":20,"inputCacheCreation":5,"output":30},"time":1775955605000}

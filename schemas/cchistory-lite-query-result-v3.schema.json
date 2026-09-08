@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CC History Lite query-result v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "kind",
+    "content_trust",
+    "read",
+    "operations",
+    "projection_issues",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema": {
+      "const": "cchistory-lite-query-result/v3"
+    },
+    "kind": {
+      "const": "query_result"
+    },
+    "content_trust": {},
+    "read": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "prepared_at",
+        "scope"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "prepared_at": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "directory",
+            "source_ids"
+          ],
+          "properties": {
+            "directory": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "result"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "const": "sql"
+          },
+          "status": {
+            "const": "ok"
+          },
+          "result": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "columns",
+              "rows",
+              "shown",
+              "limit",
+              "offset",
+              "total",
+              "coverage"
+            ],
+            "properties": {
+              "columns": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "name",
+                    "type",
+                    "nullable"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "string",
+                        "number",
+                        "boolean",
+                        "timestamp"
+                      ]
+                    },
+                    "nullable": {
+                      "type": "boolean"
+                    }
+                  }
+                },
+                "minItems": 1
+              },
+              "rows": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                }
+              },
+              "shown": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              },
+              "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100000
+              },
+              "total": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "coverage": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "execution",
+                  "rows",
+                  "diagnostics"
+                ],
+                "properties": {
+                  "execution": {
+                    "enum": [
+                      "complete",
+                      "selective"
+                    ]
+                  },
+                  "rows": {
+                    "const": "exact"
+                  },
+                  "diagnostics": {
+                    "enum": [
+                      "complete",
+                      "observed"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "minItems": 1,
+      "maxItems": 16
+    },
+    "projection_issues": {
+      "type": "array"
+    },
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sources",
+        "loss_audits"
+      ],
+      "properties": {
+        "sources": {
+          "type": "array"
+        },
+        "loss_audits": {
+          "type": "array"
+        },
+        "directory_scope": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,12 +1,14 @@
+import { once } from "node:events";
 import { createInterface } from "node:readline";
-import type { ScanLiteHistoryOptions, LiveHistorySnapshot } from "@cchistory/live-runtime";
+import { SQL_REQUEST_SCHEMA, QueryValidationError, MAX_QUERY_REQUEST_BYTES, type ScanLiteHistoryOptions, type LiveHistorySnapshot } from "@cchistory/live-runtime";
+import { resourceError } from "./resource-errors.js";
 import { compactPayload, CONTENT_TRUST } from "./json-v2.js";
 import {
+  QueryRequestError,
   QUERY_REQUEST_SCHEMA,
-  executeQuery,
-  parseQueryRequest,
+  executePreparedQuery,
+  prepareQueryRequest,
   queryContextTargets,
-  type QueryRequest,
 } from "./query.js";
 
 export interface LiteShellIo {
@@ -18,35 +20,56 @@ export interface LiteShellIo {
   stdin?: NodeJS.ReadableStream;
   readLine?: () => Promise<string | null>;
   readStdin?: () => Promise<string>;
+  flush?: () => Promise<void>;
 }
 
-export async function runLiteShell(input: {
+export interface ShellClock {
+  setTimeout: (callback: () => void, milliseconds: number) => unknown;
+  clearTimeout: (timer: unknown) => void;
+}
+const systemClock: ShellClock = { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: timer => clearTimeout(timer as NodeJS.Timeout) };
+interface ShellLifetime { idleTimeoutSeconds?: number; clock?: ShellClock }
+
+export async function runLiteShell(input: ShellLifetime & {
   io: LiteShellIo;
   jsonLines: boolean;
   directoryScope?: string;
   scan: (overrides?: Partial<ScanLiteHistoryOptions>) => Promise<LiveHistorySnapshot>;
 }): Promise<number> {
-  let snapshot = await input.scan({ contextMode: "none" });
-  const refresh = async () => {
-    snapshot = await input.scan({ contextMode: "none" });
+  const idle = input.idleTimeoutSeconds ?? 300;
+  if (!Number.isSafeInteger(idle) || idle < 0 || idle > 86400) throw new QueryValidationError("idle-timeout must be an integer from 0 to 86400 seconds.", "budget");
+  let snapshot: LiveHistorySnapshot | undefined;
+  const publish = (next: LiveHistorySnapshot) => {
+    snapshot = next;
+    if (!input.jsonLines) reportShellDiagnostics(next, input.io, input.directoryScope);
+    return next;
   };
-  if (input.jsonLines) {
-    return await runJsonLinesShell(input, () => snapshot, refresh);
-  }
-  return await runHumanShell(input, () => snapshot, refresh);
+  const getSnapshot = async () => snapshot ?? publish(await input.scan({ contextMode: "none" }));
+  const refresh = async () => { publish(await input.scan({ contextMode: "none" })); };
+  try {
+    if (input.jsonLines) return await runJsonLinesShell(input, getSnapshot, refresh);
+    return await runHumanShell(input, getSnapshot, refresh);
+  } finally { snapshot = undefined; }
+}
+
+function reportShellDiagnostics(snapshot: LiveHistorySnapshot, io: LiteShellIo, directoryScope?: string): void {
+  const scope = snapshot.getDirectoryScopeDiagnostics(directoryScope);
+  if (scope?.unknown_directory_sessions) io.stderr(`Directory attribution is unknown for ${scope.unknown_directory_sessions} observed sessions; excluded from this scoped result.\n`);
+  for (const source of snapshot.data.sources) if (source.error_message) io.stderr(`Source ${source.slot_id}: ${source.error_message}\n`);
+  for (const issue of snapshot.projectionIssues) io.stderr(`Projection issue ${issue.code}: ${issue.detail}\n`);
 }
 
 async function runJsonLinesShell(
-  input: {
+  input: ShellLifetime & {
     io: LiteShellIo;
     directoryScope?: string;
     scan: (overrides?: Partial<ScanLiteHistoryOptions>) => Promise<LiveHistorySnapshot>;
   },
-  getSnapshot: () => LiveHistorySnapshot,
+  getSnapshot: () => Promise<LiveHistorySnapshot>,
   refresh: () => Promise<void>,
 ): Promise<number> {
   let exitCode = 0;
-  for await (const line of readShellLines(input.io, false)) {
+  for await (const line of readShellLines(input.io, false, input)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     let parsed: unknown;
@@ -69,25 +92,25 @@ async function runJsonLinesShell(
         exitCode = 1;
         input.io.stdout(`${JSON.stringify(controlError(
           "scan_failed",
-          error instanceof Error ? error.message : String(error),
+          error instanceof Error ? error.message : String(error), error,
         ))}\n`);
       }
       continue;
     }
     try {
-      const request = normalizeShellQuery(parsed);
-      const contextTargets = queryContextTargets(request);
+      const request = await normalizeShellQuery(parsed);
+      const contextTargets = request.schema === SQL_REQUEST_SCHEMA ? [] : queryContextTargets(request);
       const snapshot = contextTargets.length > 0
         ? await input.scan({ contextMode: "matching", contextTargets })
-        : getSnapshot();
-      const result = executeQuery(request, snapshot, input.directoryScope);
+        : await getSnapshot();
+      const result = executePreparedQuery(request, snapshot, input.directoryScope);
       input.io.stdout(`${JSON.stringify(result.payload)}\n`);
       if (result.hasOperationErrors) exitCode = 1;
     } catch (error) {
       exitCode = 1;
       input.io.stdout(`${JSON.stringify(controlError(
-        "invalid_query_request",
-        error instanceof Error ? error.message : String(error),
+        error instanceof QueryValidationError || error instanceof QueryRequestError ? "invalid_query_request" : "scan_failed",
+        error instanceof Error ? error.message : String(error), error,
       ))}\n`);
     }
   }
@@ -95,19 +118,19 @@ async function runJsonLinesShell(
 }
 
 async function runHumanShell(
-  input: { io: LiteShellIo; directoryScope?: string; scan: (overrides?: Partial<ScanLiteHistoryOptions>) => Promise<LiveHistorySnapshot> },
-  getSnapshot: () => LiveHistorySnapshot,
+  input: ShellLifetime & { io: LiteShellIo; directoryScope?: string; scan: (overrides?: Partial<ScanLiteHistoryOptions>) => Promise<LiveHistorySnapshot> },
+  getSnapshot: () => Promise<LiveHistorySnapshot>,
   refresh: () => Promise<void>,
 ): Promise<number> {
   input.io.stderr(`Lite shell · directory ${input.directoryScope ?? "(all)"} · type help, refresh, or exit\n`);
-  for await (const line of readShellLines(input.io, true)) {
+  for await (const line of readShellLines(input.io, true, input)) {
     const tokens = tokenizeShellLine(line);
     if (tokens.length === 0) continue;
     const command = tokens[0]!;
     try {
       if (command === "exit" || command === "quit") break;
       if (command === "help") {
-        input.io.stdout("Commands: search <query>, latest [sessions|turns] [N], ls sessions|projects|families, show session|turn <ref>, refresh, exit\n");
+        input.io.stdout("Commands: search <query>, latest [sessions|turns] [N], ls sessions|projects|families, show session|turn <ref>, SELECT ... LIMIT N, refresh, exit\n");
         continue;
       }
       if (command === "refresh") {
@@ -115,26 +138,24 @@ async function runHumanShell(
         input.io.stdout("Refreshed.\n");
         continue;
       }
-      const snapshot = getSnapshot();
       if (command === "search") {
         const query = tokens.slice(1).join(" ").trim();
         if (!query) throw new Error("search requires a query.");
+        const snapshot = await getSnapshot();
         const result = snapshot.searchSessions({ query, directoryScope: input.directoryScope, limit: 20 });
         input.io.stdout(renderShellSearch(query, result.total, result.results));
         continue;
       }
       if (command === "latest") {
         const { kind, limit } = parseShellLatest(tokens.slice(1));
-        if (kind === "turns") {
-          const turns = snapshot.listResolvedTurns({ directoryScope: input.directoryScope }).slice(0, limit);
-          for (const turn of turns) {
+        const snapshot = await getSnapshot();
+        const selected = snapshot.selectCollectionTemplate(kind === "turns" ? "latest-turns" : "latest-sessions", limit, 0, { directoryScope: input.directoryScope });
+        for (const id of selected.ids) {
+          if (kind === "turns") {
+            const turn = snapshot.getTurn(id)!;
             input.io.stdout(`${turn.id}  ${singleLine(turn.canonical_text, 120)}\n`);
-          }
-        } else {
-          const sessions = snapshot.listTopLevelSessions({ directoryScope: input.directoryScope })
-            .filter((session) => session.turn_count > 0)
-            .slice(0, limit);
-          for (const session of sessions) {
+          } else {
+            const session = snapshot.getSession(id)!;
             input.io.stdout(`${session.id}  ${session.title ?? session.source_session_id ?? session.id}\n`);
           }
         }
@@ -142,12 +163,15 @@ async function runHumanShell(
       }
       if (command === "ls") {
         const collection = tokens[1] ?? "sessions";
+        if (!["projects", "sessions", "families"].includes(collection)) throw new Error("ls target must be sessions, projects, or families.");
+        const snapshot = await getSnapshot();
         if (collection === "projects") {
           for (const project of snapshot.listProjects({ directoryScope: input.directoryScope }).slice(0, 20)) {
             input.io.stdout(`${project.project_id}  ${project.display_name}\n`);
           }
         } else if (collection === "sessions") {
-          for (const session of snapshot.listTopLevelSessions({ directoryScope: input.directoryScope }).slice(0, 20)) {
+          for (const id of snapshot.selectCollectionTemplate("list-sessions", 20, 0, { directoryScope: input.directoryScope }).ids) {
+            const session = snapshot.getSession(id)!;
             input.io.stdout(`${session.id}  ${session.title ?? session.source_session_id ?? session.id}\n`);
           }
         } else if (collection === "families") {
@@ -165,6 +189,7 @@ async function runHumanShell(
         const ref = tokens[2];
         if ((kind !== "session" && kind !== "turn") || !ref) throw new Error("show requires session|turn and a reference.");
         if (kind === "session") {
+          const snapshot = await getSnapshot();
           const session = snapshot.getSession(ref);
           if (!session) throw new Error(`Session not found: ${ref}.`);
           input.io.stdout(`${session.title ?? session.id}\n`);
@@ -173,6 +198,7 @@ async function runHumanShell(
           }
         } else {
           const detail = await input.scan({ contextMode: "matching", contextTarget: { kind: "turn", ref } });
+          reportShellDiagnostics(detail, input.io, input.directoryScope);
           const turn = detail.getTurn(ref);
           if (!turn) throw new Error(`UserTurn not found: ${ref}.`);
           const compact = compactPayload({
@@ -185,6 +211,11 @@ async function runHumanShell(
           }, detail);
           input.io.stdout(`${JSON.stringify(compact, null, 2)}\n`);
         }
+        continue;
+      }
+      if (/^\s*(?:SELECT\b|--|\/\*)/iu.test(line)) {
+        const request = await prepareQueryRequest(JSON.stringify({ schema: SQL_REQUEST_SCHEMA, operations: [{ id: "query", kind: "sql", sql: line }] }));
+        input.io.stdout(`${JSON.stringify(executePreparedQuery(request, await getSnapshot(), input.directoryScope).payload, null, 2)}\n`);
         continue;
       }
       throw new Error(`Unknown shell command: ${command}. Type help.`);
@@ -215,23 +246,22 @@ function parseShellLatest(positionals: readonly string[]): { kind: "sessions" | 
   return { kind, limit };
 }
 
-function normalizeShellQuery(value: unknown): QueryRequest {
+async function normalizeShellQuery(value: unknown) {
   if (value && typeof value === "object" && !Array.isArray(value) && "operations" in value) {
-    return parseQueryRequest(JSON.stringify(value));
+    return prepareQueryRequest(JSON.stringify(value));
   }
-  const operation = value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
+  const operation = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
   if (!operation) throw new Error("Query line must be a JSON object.");
-  const id = typeof operation.id === "string" && operation.id.trim() ? operation.id : "op";
-  return parseQueryRequest(JSON.stringify({
-    schema: QUERY_REQUEST_SCHEMA,
+  const id = operation.kind === "sql" ? operation.id === undefined ? "query" : operation.id
+    : typeof operation.id === "string" && operation.id.trim() ? operation.id : "op";
+  return prepareQueryRequest(JSON.stringify({
+    schema: operation.kind === "sql" ? SQL_REQUEST_SCHEMA : QUERY_REQUEST_SCHEMA,
     operations: [{ ...operation, id }],
   }));
 }
 
-function controlError(code: string, message: string): Record<string, unknown> {
-  return { kind: "error", error: { code, message } };
+function controlError(code: string, message: string, cause?: unknown): Record<string, unknown> {
+  return { kind: "error", error: { code, message, ...resourceError(cause), ...(cause instanceof QueryValidationError ? { reason: cause.reason, operation_id: cause.operationId } : {}) } };
 }
 
 function renderShellSearch(
@@ -269,31 +299,45 @@ function tokenizeShellLine(line: string): string[] {
   return tokens;
 }
 
-async function* readShellLines(io: LiteShellIo, prompt: boolean): AsyncGenerator<string> {
-  if (io.readLine) {
-    while (true) {
-      const line = await io.readLine();
-      if (line === null) return;
-      yield line;
-    }
-  }
+async function* readShellLines(io: LiteShellIo, prompt: boolean, lifetime: ShellLifetime): AsyncGenerator<string> {
+  const clock = lifetime.clock ?? systemClock, milliseconds = (lifetime.idleTimeoutSeconds ?? 300) * 1000;
   const input = io.stdin ?? process.stdin;
-  const rl = createInterface({
-    input,
-    output: prompt ? process.stdout : undefined,
-    terminal: prompt ? Boolean(io.isTTY) : false,
-    crlfDelay: Infinity,
-  });
+  const rl = io.readLine ? undefined : createInterface({ input, output: prompt ? process.stdout : undefined, terminal: prompt ? Boolean(io.isTTY) : false, crlfDelay: Infinity });
+  const iterator = rl?.[Symbol.asyncIterator]();
+  let timer: unknown, waiting = false, expire: (() => void) | undefined;
+  let lineBytes = 0, inputError: Error | undefined;
+  const clear = () => { if (timer !== undefined) clock.clearTimeout(timer); timer = undefined; };
+  const reset = () => { clear(); if (waiting && milliseconds) timer = clock.setTimeout(() => expire?.(), milliseconds); };
+  const activity = (chunk: string | Buffer) => {
+    for (const piece of String(chunk).split(/(?<=\n)/u)) {
+      lineBytes += Buffer.byteLength(piece);
+      if (lineBytes > MAX_QUERY_REQUEST_BYTES) { inputError = new QueryValidationError("Shell line exceeds 1 MiB.", "budget"); expire?.(); rl?.close(); break; }
+      if (piece.endsWith("\n")) lineBytes = 0;
+    }
+    reset();
+  };
+  if (!io.readLine) input.on("data", activity);
   try {
-    if (prompt) {
-      rl.setPrompt("lite> ");
-      rl.prompt();
+    if (prompt && rl) { rl.setPrompt("lite> "); rl.prompt(); }
+    while (true) {
+      if (inputError) throw inputError;
+      waiting = true;
+      let expired = false;
+      const expiry = new Promise<null>(resolve => { expire = () => { expired = true; resolve(null); }; });
+      reset();
+      const pending = io.readLine ? io.readLine() : iterator!.next().then(result => result.done ? null : String(result.value));
+      const line = await Promise.race([pending, expiry]);
+      waiting = false; expire = undefined; clear();
+      if (inputError) throw inputError;
+      if (line === null) {
+        if (expired && prompt) io.stderr("Lite shell closed after idle timeout.\n");
+        return;
+      }
+      if (Buffer.byteLength(line) > MAX_QUERY_REQUEST_BYTES) throw new QueryValidationError("Shell line exceeds 1 MiB.", "budget");
+      yield line;
+      if (io.flush) await io.flush();
+      else if (process.stdout.writableNeedDrain) await once(process.stdout, "drain");
+      if (prompt) rl?.prompt();
     }
-    for await (const line of rl) {
-      yield String(line);
-      if (prompt) rl.prompt();
-    }
-  } finally {
-    rl.close();
-  }
+  } finally { waiting = false; clear(); input.off("data", activity); rl?.close(); }
 }

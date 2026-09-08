@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { access, cp, mkdir, mkdtemp, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
+import { appendFileSync, cpSync, utimesSync, writeFileSync } from "node:fs";
+import { access, cp, mkdir, mkdtemp, readFile, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -19,7 +20,7 @@ import {
   type ScanGuardRequest,
   type ScanGuardRuntimeDeps,
 } from "./index.js";
-import { calculateAdaptiveOldSpaceMiB, resolveAdaptiveOldSpaceMiB } from "./node-memory.js";
+import { SourceFileReadPlanChangedError } from "@cchistory/source-adapters";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const mockDataRoot = path.join(repoRoot, "mock_data");
@@ -93,7 +94,19 @@ test("scan guard multiplier: full scans estimate 8×, light scans 4×", async ()
   assert.equal(full.status, "refuse");
 });
 
-test("scan guard degrades to ok when the walk fails or availability is unknown", async () => {
+test("scan estimates distinguish adapter slots sharing the same root", async () => {
+  const assessment = await assessScanRisk({
+    roots: [{ path: "/shared", slot_id: "cursor" }, { path: "/shared", slot_id: "cursor_agent" }],
+    profile: "light",
+  }, {
+    walkRootBytes: async (_root, _limit, slotId) => slotId === "cursor" ? 100 : 10,
+    readAvailableBytes: () => 1024,
+  });
+  assert.deepEqual(assessment.roots?.map((root) => root.bytes), [100, 10]);
+  assert.equal(assessment.scannedBytes, 110);
+});
+
+test("scan guard records a failed walk and uses remaining heap when availability is unknown", async () => {
   const walkFailure = await assessScanRisk(
     { roots: ["/root"], profile: "light" },
     {
@@ -108,10 +121,10 @@ test("scan guard degrades to ok when the walk fails or availability is unknown",
 
   const unknown = await assessScanRisk(
     { roots: ["/root"], profile: "full" },
-    { walkRootBytes: async () => 10 * GIB, readAvailableBytes: () => undefined },
+    { walkRootBytes: async () => 10 * GIB, readAvailableBytes: () => undefined, readHeapBytes: () => GIB },
   );
-  assert.equal(unknown.status, "ok");
-  assert.match(unknown.detail, /unknown/);
+  assert.equal(unknown.status, "refuse");
+  assert.equal(unknown.availableBytes, GIB);
   assert.equal(unknown.estimatedBytes, 80 * GIB);
 });
 
@@ -156,7 +169,7 @@ test("scan guard walk treats a missing root as zero bytes", async () => {
 test("available memory prefers Linux MemAvailable, falls back to freemem, and obeys the cgroup cap", () => {
   const meminfo = "MemTotal: 33554432 kB\nMemFree: 1024 kB\nMemAvailable: 16777216 kB\nBuffers: 1 kB\n";
   assert.equal(
-    readAvailableMemoryBytes({
+    readAvailableMemoryBytes({ totalmem: () => 64 * GIB, availableMemory: () => { throw new Error("unavailable process signal"); },
       platform: "linux",
       readMeminfo: () => meminfo,
       freemem: () => 111,
@@ -166,7 +179,7 @@ test("available memory prefers Linux MemAvailable, falls back to freemem, and ob
   );
   // MemAvailable predates older kernels: fall back to freemem.
   assert.equal(
-    readAvailableMemoryBytes({
+    readAvailableMemoryBytes({ totalmem: () => 64 * GIB, availableMemory: () => { throw new Error("unavailable process signal"); },
       platform: "linux",
       readMeminfo: () => "MemTotal: 33554432 kB\nMemFree: 2048 kB\n",
       freemem: () => 4096,
@@ -176,7 +189,7 @@ test("available memory prefers Linux MemAvailable, falls back to freemem, and ob
   );
   // An unreadable meminfo falls back to freemem rather than unknown.
   assert.equal(
-    readAvailableMemoryBytes({
+    readAvailableMemoryBytes({ totalmem: () => 64 * GIB, availableMemory: () => { throw new Error("unavailable process signal"); },
       platform: "linux",
       readMeminfo: () => {
         throw new Error("EPERM");
@@ -186,14 +199,14 @@ test("available memory prefers Linux MemAvailable, falls back to freemem, and ob
     }),
     8192,
   );
-  // Non-Linux reads freemem directly.
+  // Other platforms fall back to freemem.
   assert.equal(
-    readAvailableMemoryBytes({ platform: "darwin", freemem: () => 16384, constrainedMemory: () => 0 }),
+    readAvailableMemoryBytes({ totalmem: () => 64 * GIB, availableMemory: () => { throw new Error("unavailable process signal"); }, platform: "win32", freemem: () => 16384, constrainedMemory: () => 0 }),
     16384,
   );
   // An enforced cgroup limit caps the host-wide signal.
   assert.equal(
-    readAvailableMemoryBytes({
+    readAvailableMemoryBytes({ totalmem: () => 64 * GIB, availableMemory: () => { throw new Error("unavailable process signal"); },
       platform: "linux",
       readMeminfo: () => meminfo,
       freemem: () => 0,
@@ -203,7 +216,7 @@ test("available memory prefers Linux MemAvailable, falls back to freemem, and ob
   );
   // Every signal failing means unknown, never an error.
   assert.equal(
-    readAvailableMemoryBytes({
+    readAvailableMemoryBytes({ totalmem: () => 64 * GIB, availableMemory: () => { throw new Error("unavailable process signal"); },
       platform: "linux",
       readMeminfo: () => {
         throw new Error("EPERM");
@@ -216,36 +229,6 @@ test("available memory prefers Linux MemAvailable, falls back to freemem, and ob
       },
     }),
     undefined,
-  );
-});
-
-// ── Adaptive heap ceiling ──
-
-test("adaptive heap ceiling tracks available memory between a 512 MiB floor and the 4 GiB cap", () => {
-  // Big idle machine: available ≈ total, so the R43 cap still holds.
-  assert.equal(calculateAdaptiveOldSpaceMiB(32 * GIB, 32 * GIB), 4096);
-  assert.equal(calculateAdaptiveOldSpaceMiB(32 * GIB, 8 * GIB), 4096);
-  // Memory-tight machine: half of what is actually free.
-  assert.equal(calculateAdaptiveOldSpaceMiB(32 * GIB, 4 * GIB), 2048);
-  assert.equal(calculateAdaptiveOldSpaceMiB(8 * GIB, 2 * GIB), 1024);
-  // Floor: below ~512 MiB old-space Lite could not project at all.
-  assert.equal(calculateAdaptiveOldSpaceMiB(32 * GIB, 600 * MIB), 512);
-  assert.equal(calculateAdaptiveOldSpaceMiB(32 * GIB, 1), 512);
-  // Unknown availability keeps the pre-guard total/2 policy, never worse.
-  assert.equal(calculateAdaptiveOldSpaceMiB(8 * GIB), 4096);
-  assert.equal(calculateAdaptiveOldSpaceMiB(3 * GIB), 1536);
-  assert.equal(calculateAdaptiveOldSpaceMiB(3 * GIB, Number.NaN), 1536);
-  assert.equal(calculateAdaptiveOldSpaceMiB(3 * GIB, 0), 1536);
-});
-
-test("resolveAdaptiveOldSpaceMiB treats a throwing reader as unknown availability", () => {
-  assert.equal(resolveAdaptiveOldSpaceMiB(32 * GIB, () => 4 * GIB), 2048);
-  assert.equal(resolveAdaptiveOldSpaceMiB(32 * GIB, () => undefined), 4096);
-  assert.equal(
-    resolveAdaptiveOldSpaceMiB(32 * GIB, () => {
-      throw new Error("no meminfo");
-    }),
-    4096,
   );
 });
 
@@ -382,15 +365,10 @@ test("the default scan lock lives in the runtime/temp dir and never under a Full
 
 // ── Scan watchdog ──
 
-test("scan watchdog floor is max(512 MiB, 5% of total memory)", () => {
-  assert.equal(
-    createScanWatchdog({ totalBytes: 8 * GIB, readAvailableBytes: () => undefined }).floorBytes,
-    512 * MIB,
-  );
-  assert.equal(
-    createScanWatchdog({ totalBytes: 64 * GIB, readAvailableBytes: () => undefined }).floorBytes,
-    Math.floor(64 * GIB * 0.05),
-  );
+test("watchdog reserve follows starting availability even on a large constrained host", () => {
+  assert.equal(createScanWatchdog({ totalBytes: 64 * GIB, initialAvailableBytes: 128 * MIB }).floorBytes, 32 * MIB);
+  assert.equal(createScanWatchdog({ totalBytes: 64 * GIB, readAvailableBytes: () => undefined }).floorBytes, 0);
+  assert.throws(() => createScanWatchdog({ readAvailableBytes: () => 0 }).assertHealthy(), ScanGuardAbortedError);
 });
 
 test("scan watchdog checks on the file cadence and aborts below the floor", () => {
@@ -472,7 +450,7 @@ test("CCHISTORY_SCAN_GUARD kill-switch parsing", () => {
   assert.equal(isScanGuardEnabled(" FALSE "), false);
 });
 
-test("refusal and warning text name the numbers, the bounds, and the override", async () => {
+test("refusal and warning text distinguish resource limits without recommending guard bypass", async () => {
   const assessment = await assessScanRisk(
     { roots: ["/root"], profile: "light" },
     { walkRootBytes: async () => 193, readAvailableBytes: () => 1024 },
@@ -485,12 +463,11 @@ test("refusal and warning text name the numbers, the bounds, and the override", 
   assert.match(estimateRefusal.message, /\/root/);
   assert.match(estimateRefusal.message, /193 B/);
   assert.match(estimateRefusal.message, /this scan has no --dir filter/);
-  assert.match(estimateRefusal.message, /--source <slot>/);
-  assert.match(estimateRefusal.message, /--limit-files/);
-  assert.match(estimateRefusal.message, /`sample`/);
-  assert.match(estimateRefusal.message, /ls sources --limit-files 1/);
-  assert.match(estimateRefusal.message, /`shell` \/ `query`/);
-  assert.match(estimateRefusal.message, /CCHISTORY_SCAN_GUARD=0/);
+  assert.match(estimateRefusal.message, /No complete result/);
+  assert.match(estimateRefusal.message, /keep the requested scope/);
+  assert.match(estimateRefusal.message, /sources --json/);
+  assert.match(estimateRefusal.message, /shell/);
+  assert.doesNotMatch(estimateRefusal.message, /CCHISTORY_SCAN_GUARD=0/);
   assert.doesNotMatch(estimateRefusal.message, /does not shrink source bytes/);
   assert.doesNotMatch(estimateRefusal.message, /Narrow the scan with --source, --dir/);
 
@@ -511,15 +488,15 @@ test("refusal and warning text name the numbers, the bounds, and the override", 
   });
   assert.match(lockRefusal.message, /pid 4321/);
   assert.match(lockRefusal.message, /waited 30s/);
-  assert.match(lockRefusal.message, /`shell` \/ `query`/);
-  assert.match(lockRefusal.message, /`sample` and `show session <exact id>` bypass/);
-  assert.match(lockRefusal.message, /CCHISTORY_SCAN_GUARD=0/);
+  assert.match(lockRefusal.message, /shell/);
+  assert.match(lockRefusal.message, /Wait for that scan to finish/);
+  assert.doesNotMatch(lockRefusal.message, /CCHISTORY_SCAN_GUARD=0/);
 
   const abort = new ScanGuardAbortedError({ availableBytes: 300 * MIB, floorBytes: 512 * MIB });
   assert.match(abort.message, /Scan aborted/);
   assert.match(abort.message, /300 MiB/);
   assert.match(abort.message, /512 MiB/);
-  assert.match(abort.message, /CCHISTORY_SCAN_GUARD=0/);
+  assert.doesNotMatch(abort.message, /CCHISTORY_SCAN_GUARD=0/);
 
   assert.equal(formatScanGuardBytes(512), "512 B");
   assert.equal(formatScanGuardBytes(1536), "1.5 KiB");
@@ -527,6 +504,211 @@ test("refusal and warning text name the numbers, the bounds, and the override", 
 });
 
 // ── Guarded scan integration ──
+
+test("unscoped --limit-files estimates the adapter-selected ZCode database and its WAL before reading", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-plan-zcode-"));
+  try {
+    const sourceRoot = path.join(root, ".zcode");
+    const db = path.join(sourceRoot, "cli/db/db.sqlite");
+    await mkdir(path.dirname(db), { recursive: true });
+    await writeFile(path.join(sourceRoot, "a-config.json"), "{}\n");
+    await writeFile(db, "");
+    await truncate(db, 128 * MIB);
+    await writeFile(`${db}-wal`, "");
+    await truncate(`${db}-wal`, 8 * MIB);
+    for (const safeMode of [true, false]) {
+      const parsedFiles: string[] = [];
+      await assert.rejects(scanLiteHistory({
+        homeDir: root,
+        sourceRefs: ["zcode"],
+        sourceRoots: [{ sourceRef: "zcode", baseDir: sourceRoot }],
+        limitFiles: 1,
+        safeMode,
+        scanGuard: { profile: "light" },
+        scanGuardDeps: { lock: { lockPath: path.join(root, "scan.lock") }, readAvailableBytes: () => 512 * MIB },
+        onProgress: (event) => {
+          if (event.stage === "file_start" && event.file_path) parsedFiles.push(event.file_path);
+        },
+      }), (error: unknown) => {
+        assert.ok(error instanceof ScanGuardRefusedError);
+        assert.equal(error.assessment?.scannedBytes, 136 * MIB);
+        return true;
+      });
+      assert.deepEqual(parsedFiles, []);
+      await assert.rejects(access(path.join(root, "scan.lock")));
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the guard includes Cursor supplemental storage outside the selected projects root", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-plan-cursor-"));
+  try {
+    const projects = path.join(root, ".cursor/projects");
+    const db = path.join(root, ".config/Cursor/User/workspaceStorage/fixture/state.vscdb");
+    await mkdir(projects, { recursive: true });
+    await mkdir(path.dirname(db), { recursive: true });
+    await writeFile(db, "");
+    await truncate(db, 128 * MIB);
+    await assert.rejects(scanLiteHistory({
+      homeDir: root,
+      sourceRefs: ["cursor"],
+      sourceRoots: [{ sourceRef: "cursor", baseDir: projects }],
+      limitFiles: 1,
+      safeMode: true,
+      scanGuard: { profile: "light" },
+      scanGuardDeps: { lock: { lockPath: path.join(root, "scan.lock") }, readAvailableBytes: () => 512 * MIB },
+    }), (error: unknown) => {
+      assert.ok(error instanceof ScanGuardRefusedError);
+      assert.equal(error.assessment?.scannedBytes, 128 * MIB);
+      return true;
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("whole-file session identity lookups are budgeted before locating the requested session", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-plan-identity-"));
+  try {
+    const file = path.join(root, "unrelated.json");
+    await cp(path.join(mockDataRoot, ".local/share/amp/threads/T-019d19fb-1a2b-7345-8cde-0f1a2b3c4d5e.json"), file);
+    await truncate(file, 256 * GIB);
+    await assert.rejects(scanLiteHistory({
+      homeDir: emptyHome,
+      sourceRefs: ["amp"],
+      sourceRoots: [{ sourceRef: "amp", baseDir: root }],
+      sessionRefs: ["sess:amp:requested"],
+      safeMode: true,
+      scanGuard: { profile: "light" },
+      scanGuardDeps: { lock: { lockPath: path.join(root, "scan.lock") }, readAvailableBytes: () => GIB },
+    }), (error: unknown) => {
+      assert.ok(error instanceof ScanGuardRefusedError);
+      assert.equal(error.assessment?.scannedBytes, 256 * GIB);
+      return true;
+    });
+    await assert.rejects(access(path.join(root, "scan.lock")));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("estimation and execution keep one inventory; the next scan discovers new files", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-plan-inventory-"));
+  try {
+    const sessions = path.join(root, "sessions");
+    await mkdir(sessions);
+    const first = path.join(sessions, "first.jsonl");
+    const second = path.join(sessions, "second.jsonl");
+    await cp(path.join(mockDataRoot, "fixtures/source-shapes/codex/ordinary-fork.jsonl"), first);
+    const bytes = (await stat(first)).size;
+    const events: ScanGuardEvent[] = [];
+    const parsedFiles: string[] = [];
+    const options = {
+      homeDir: root,
+      sourceRefs: ["codex"],
+      sourceRoots: [{ sourceRef: "codex", baseDir: sessions }],
+      safeMode: true,
+      contextMode: "none" as const,
+    };
+    const initial = await scanLiteHistory({
+      ...options,
+      scanGuard: { profile: "light" },
+      scanGuardDeps: {
+        lock: { lockPath: path.join(root, "scan.lock") },
+        readAvailableBytes: () => bytes * 6,
+        watchdog: { readAvailableBytes: () => GIB },
+      },
+      onScanGuardEvent: (event) => {
+        events.push(event);
+        cpSync(path.join(codexRoot, "2026/04/12/rollout-2026-04-12T09-00-00-codex-delegation-parent.jsonl"), second);
+      },
+      onProgress: (event) => {
+        if (event.stage === "file_start" && event.file_path) parsedFiles.push(event.file_path);
+      },
+    });
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.type, "warn");
+    if (events[0]?.type === "warn") assert.equal(events[0].assessment.scannedBytes, bytes);
+    assert.deepEqual(parsedFiles, [first]);
+    assert.equal(initial.listResolvedSessions().length, 1);
+    assert.deepEqual(initial.projectionIssues, []);
+    const refreshed = await scanLiteHistory(options);
+    assert.equal(refreshed.listResolvedSessions().length, 2);
+    assert.deepEqual(refreshed.projectionIssues, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a file changed after planning aborts before parsing and releases the scan lock", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-plan-change-"));
+  try {
+    const file = path.join(root, "rollout.jsonl");
+    await cp(path.join(mockDataRoot, "fixtures/source-shapes/codex/ordinary-fork.jsonl"), file);
+    let parseStarts = 0;
+    await assert.rejects(scanLiteHistory({
+      homeDir: emptyHome,
+      sourceRefs: ["codex"],
+      sourceRoots: [{ sourceRef: "codex", baseDir: root }],
+      safeMode: true,
+      scanGuard: { profile: "light" },
+      scanGuardDeps: { lock: { lockPath: path.join(root, "scan.lock") }, readAvailableBytes: () => GIB },
+      onProgress: (event) => {
+        if (event.stage === "file_start") {
+          appendFileSync(file, "\n");
+          const modified = new Date("2030-01-01T00:00:00.000Z");
+          utimesSync(file, modified, modified);
+        }
+        if (event.stage === "file_capture_done") parseStarts += 1;
+      },
+    }), SourceFileReadPlanChangedError);
+    assert.equal(parseStarts, 0);
+    await assert.rejects(access(path.join(root, "scan.lock")));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("directory pruning is invalidated when excluded metadata changes after estimation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-plan-scope-"));
+  try {
+    const inside = path.join(root, "inside.jsonl");
+    const outside = path.join(root, "outside.jsonl");
+    await cp(path.join(codexRoot, "2026/04/12/rollout-2026-04-12T09-00-00-codex-delegation-parent.jsonl"), inside);
+    await cp(path.join(mockDataRoot, "fixtures/source-shapes/codex/ordinary-fork.jsonl"), outside);
+    const outsideText = await readFile(outside, "utf8");
+    const bytes = (await stat(inside)).size;
+    let parsedFiles = 0;
+    let changed = false;
+    await assert.rejects(scanLiteHistory({
+      homeDir: emptyHome,
+      sourceRefs: ["codex"],
+      sourceRoots: [{ sourceRef: "codex", baseDir: root }],
+      directoryScope: "/workspace/codex-delegated",
+      safeMode: true,
+      scanGuard: { profile: "light" },
+      scanGuardDeps: {
+        lock: { lockPath: path.join(root, "scan.lock") },
+        readAvailableBytes: () => bytes * 6,
+        watchdog: { readAvailableBytes: () => GIB },
+      },
+      onScanGuardEvent: () => {
+        changed = true;
+        writeFileSync(outside, outsideText.replaceAll("/workspace/codex-ordinary-fork", "/workspace/codex-delegated"));
+        const modified = new Date("2030-01-01T00:00:00.000Z");
+        utimesSync(outside, modified, modified);
+      },
+      onProgress: (event) => { if (event.stage === "file_start") parsedFiles += 1; },
+    }), SourceFileReadPlanChangedError);
+    assert.ok(changed, "the scoped estimate must reach the warning callback");
+    assert.equal(parsedFiles, 0);
+    await assert.rejects(access(path.join(root, "scan.lock")));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("a guarded scan over the tiny fixture corpus assesses ok and succeeds without events", async () => {
   // The existing suite relies on this: mock_data fixtures are tiny, so the
@@ -602,7 +784,7 @@ test("an estimate refusal releases the scan lock", async () => {
       (error: unknown) => {
         assert.ok(error instanceof ScanGuardRefusedError);
         assert.equal(error.reason, "estimated_memory");
-        assert.match(error.message, /CCHISTORY_SCAN_GUARD=0/);
+        assert.doesNotMatch(error.message, /CCHISTORY_SCAN_GUARD=0/);
         return true;
       },
     );
@@ -624,9 +806,9 @@ test("a warn assessment emits exactly one event and the scan proceeds", async ()
     scanGuard: { profile: "light" },
     onScanGuardEvent: (event) => events.push(event),
     scanGuardDeps: {
-      walkRootBytes: async () => 100,
-      // 400 estimated > 350 (50% of 700) but < 525 (75%) → warn, then proceed.
-      readAvailableBytes: () => 700,
+      walkRootBytes: async () => 100 * MIB,
+      // Scaled MiB: 400 estimated > 350 (50% of 700) but < 525 (75%) → warn, then proceed.
+      readAvailableBytes: () => 700 * MIB,
     },
   });
   assert.ok(snapshot.listSources().length > 0);
@@ -649,8 +831,8 @@ test("the watchdog aborts a guarded scan when available memory collapses mid-pro
     ),
     (error: unknown) => {
       assert.ok(error instanceof ScanGuardAbortedError);
-      assert.match(error.message, /safety floor/);
-      assert.match(error.message, /CCHISTORY_SCAN_GUARD=0/);
+      assert.match(error.message, /reserve set at scan start/);
+      assert.doesNotMatch(error.message, /CCHISTORY_SCAN_GUARD=0/);
       return true;
     },
   );
@@ -777,4 +959,17 @@ test("CCHISTORY_SCAN_GUARD=0 disables the lock, the estimate, and the watchdog",
   } finally {
     delete process.env.CCHISTORY_SCAN_GUARD;
   }
+});
+
+test("process available memory wins over host totals and preserves actual exhaustion", () => {
+  for (const available of [0, 128 * MIB]) {
+    assert.equal(readAvailableMemoryBytes({ totalmem: () => 64 * GIB, availableMemory: () => available, platform: "linux",
+      constrainedMemory: () => GIB, readMeminfo: () => "MemAvailable: 16777216 kB\n", freemem: () => 16 * GIB }), available);
+  }
+});
+
+test("sample/exact queue bypass still refuses excessive native reads", async () => {
+  await assert.rejects(guardedFixtureScan({ profile: "light", bypass: true }, {
+    walkRootBytes: async () => MIB, readAvailableBytes: () => MIB, readHeapBytes: () => GIB,
+  }), ScanGuardRefusedError);
 });

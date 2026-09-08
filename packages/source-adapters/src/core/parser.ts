@@ -1,3 +1,4 @@
+import type { SourceReadBudget } from "./read-budget.js";
 import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -506,6 +507,7 @@ export async function extractMultiSessionSeeds(
   fileBuffer: Buffer,
   blobId: string,
   targetSessionRefs?: readonly string[],
+  budget?: SourceReadBudget,
 ): Promise<ExtractedSessionSeed[] | undefined> {
   if (source.platform === "cursor" && path.basename(filePath) === "state.vscdb") {
     const extractVscodeStateSeeds = await loadExtractVscodeStateSeeds();
@@ -529,7 +531,7 @@ export async function extractMultiSessionSeeds(
       extractRichTextText,
       collectConversationSeedsFromValue,
       firstDefinedNumber,
-    })) ?? [];
+    }, budget)) ?? [];
   }
   if (source.platform === "antigravity" && path.basename(filePath) === "state.vscdb") {
     const extractVscodeStateSeeds = await loadExtractVscodeStateSeeds();
@@ -553,7 +555,7 @@ export async function extractMultiSessionSeeds(
       extractRichTextText,
       collectConversationSeedsFromValue,
       firstDefinedNumber,
-    })) ?? [];
+    }, budget)) ?? [];
   }
   if (source.platform === "antigravity" && isAntigravityHistoryIndexFile(filePath)) {
     const historySeed = await extractAntigravityHistorySeed(filePath, fileBuffer, {
@@ -591,7 +593,7 @@ export async function extractMultiSessionSeeds(
       epochMillisToIso,
       nowIso,
       normalizeWorkspacePath,
-    }, targetSessionRefs);
+    }, targetSessionRefs, budget);
   }
   if (source.platform === "opencode" || source.platform === "gemini") {
     const exportSeeds = await extractConversationExportSeeds(source, filePath, fileBuffer, blobId);

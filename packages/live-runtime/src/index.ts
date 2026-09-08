@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { access, realpath, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import {
+  type LogicalQuery,
   deriveHostId,
   deriveSourceInstanceId,
   normalizeLocalPathIdentity,
@@ -30,7 +32,11 @@ import {
   type UserTurnProjection,
 } from "@cchistory/domain";
 import {
+  executeCanonicalQuery,
+  collectionQueryTemplate,
+  hasSessionFamilyLinkTool,
   auditProjectionConsistency,
+  interpretSessionEvidence,
   buildSessionLastMessageIndex,
   buildDirectoryScopedProjectTreeProjection,
   buildFallbackProjectObservationCandidates,
@@ -42,6 +48,8 @@ import {
   computeUsageRollup,
   deriveProjectLinkSnapshot,
   filterProjectsByDirectoryScope,
+  selectSampleSessions,
+  summarizeDirectoryScope,
   filterSessionsByDirectoryScope,
   filterTopLevelSessions,
   filterTurnsByDirectoryScope,
@@ -62,9 +70,13 @@ import {
   type TurnUsageProjection,
   type UsageFilters,
 } from "@cchistory/canonical";
-import { applyMaskTemplates, type SourceProbeProgressEvent } from "@cchistory/source-adapters";
+import { SourceReadBudgetExceededError, type SourceReadBudget, applyMaskTemplates, type SourceProbeProgressEvent, type SourceFileReadPlan } from "@cchistory/source-adapters";
 import { SAMPLE_RANK_CONCURRENCY, mapPool } from "./async-pool.js";
+import { isSelectiveLatestQuery, newQueryReadWork, type LiveQueryRead, type QueryReadWork, type SelectiveGroupPlan } from "./selective-query.js";
+import { PreparationMetadata } from "./preparation-metadata.js";
 import {
+  readRemainingHeapBytes,
+  LIGHT_SCAN_MEMORY_MULTIPLIER, FULL_SCAN_MEMORY_MULTIPLIER, SCAN_GUARD_REFUSE_AVAILABLE_FRACTION,
   acquireScanLock,
   assessScanRisk,
   createScanWatchdog,
@@ -77,14 +89,6 @@ import {
   type ScanWatchdogDeps,
 } from "./scan-guard.js";
 
-export {
-  buildAdaptiveNodeExecArgv,
-  calculateAdaptiveOldSpaceMiB,
-  isAdaptiveNodeMemoryApplied,
-  MAX_OLD_SPACE_MIB,
-  MIN_OLD_SPACE_MIB,
-  runWithAdaptiveNodeMemory,
-} from "./node-memory.js";
 
 export {
   acquireScanLock,
@@ -99,8 +103,7 @@ export {
   SCAN_GUARD_REFUSE_AVAILABLE_FRACTION,
   SCAN_GUARD_WARN_AVAILABLE_FRACTION,
   SCAN_LOCK_WAIT_MS,
-  SCAN_WATCHDOG_MIN_FLOOR_BYTES,
-  SCAN_WATCHDOG_TOTAL_FLOOR_FRACTION,
+  SCAN_WATCHDOG_AVAILABLE_RESERVE_FRACTION,
   ScanGuardAbortedError,
   ScanGuardRefusedError,
 } from "./scan-guard.js";
@@ -118,8 +121,10 @@ export type {
   ScanWatchdog,
   ScanWatchdogDeps,
 } from "./scan-guard.js";
-export { readAvailableMemoryBytes } from "./system-memory.js";
-export type { SystemMemoryDeps } from "./system-memory.js";
+import { readAvailableMemoryBytes } from "./system-memory.js";
+export { SourceReadBudgetExceededError } from "@cchistory/source-adapters";
+export { readAvailableMemory, readAvailableMemoryBytes } from "./system-memory.js";
+export type { AvailableMemoryReading, SystemMemoryDeps } from "./system-memory.js";
 
 installRuntimeWarningFilter();
 
@@ -149,6 +154,8 @@ export interface ResolveLiteSourcesOptions {
 }
 
 export interface ScanLiteHistoryOptions extends ResolveLiteSourcesOptions {
+  /** Attempt-local native allocation admission, installed by the runtime guard. */
+  readBudget?: SourceReadBudget;
   limitFiles?: number;
   safeMode?: boolean;
   contextMode?: LiteContextMode;
@@ -173,9 +180,8 @@ export interface ScanGuardRequest {
   /** light scans release context after projection; full scans (export, full-context show) retain it. */
   profile: ScanGuardProfile;
   /**
-   * Bounded probes (sample, targeted exact-id show) skip the advisory lock and
-   * the pre-flight estimate so they never queue behind — or get blocked by — a
-   * whole-machine scan. The watchdog still applies.
+   * Skip only the advisory scan queue (sample / exact-id show).
+   * Native read admission, preflight estimation and the watchdog still apply.
    */
   bypass?: boolean;
 }
@@ -185,6 +191,7 @@ export interface ScanGuardRuntimeDeps {
   watchdog?: ScanWatchdogDeps;
   walkRootBytes?: (root: string, limitFiles?: number) => Promise<number>;
   readAvailableBytes?: () => number | undefined;
+  readHeapBytes?: () => number;
 }
 
 export type LiteContextMode = "full" | "none" | "matching";
@@ -259,7 +266,14 @@ export interface LiveSearchOptions {
 }
 
 export class LiveHistorySnapshot {
+  selectSampleSessions(perSource: number, directoryScope?: string) {
+    return selectSampleSessions(this.data, perSource, directoryScope);
+  }
+  getDirectoryScopeDiagnostics(directoryScope?: string) {
+    return summarizeDirectoryScope(this.data.sessions, directoryScope);
+  }
   readonly data: LiveSnapshotData;
+  readonly readIdentity = { id: randomUUID(), prepared_at: new Date().toISOString() };
   /** Non-fatal projection diagnostics kept visible to read-only surfaces. */
   readonly projectionIssues: readonly ProjectionAuditIssue[];
   private readonly sourcesById: Map<string, SourceStatus>;
@@ -330,6 +344,14 @@ export class LiveHistorySnapshot {
       turns: this.data.turns,
       directoryScope: options.directoryScope,
     }));
+  }
+
+  executeCollectionQuery(query: LogicalQuery, options: LiveDirectoryScopeOptions = {}) {
+    return executeCanonicalQuery(this.data, query, options.directoryScope);
+  }
+
+  selectCollectionTemplate(kind: "latest-sessions" | "latest-turns" | "list-sessions", limit = 20, offset = 0, options: LiveDirectoryScopeOptions = {}) {
+    return this.executeCollectionQuery(collectionQueryTemplate(kind, limit, offset), options);
   }
 
   listResolvedSessions(options: LiveDirectoryScopeOptions = {}): SessionProjection[] {
@@ -625,6 +647,39 @@ export class LiveHistorySnapshot {
 }
 
 export async function scanLiteHistory(options: ScanLiteHistoryOptions = {}): Promise<LiveHistorySnapshot> {
+  return withPreparedScan(options, (sources, scanGuard, getPlan) =>
+    scanResolvedSources(scanGuard.guardedOptions(options), sources, scanGuard, getPlan));
+}
+
+/** Query-only selective reads never escape as a reusable full snapshot. */
+export async function scanLiteQuery(query: LogicalQuery, options: ScanLiteHistoryOptions = {}): Promise<LiveQueryRead> {
+  const work = newQueryReadWork();
+  options = { ...options, contextMode: "none" };
+  return withPreparedScan(options, async (sources, scanGuard, getPlan) => {
+    const guardedOptions = scanGuard.guardedOptions(options);
+    let selection: SelectiveGroupPlan | undefined;
+    for (const source of sources) {
+      const plan = await getPlan(source, options);
+      work.discoveredPrimaryFiles += plan.discoveredPrimaryFiles;
+      work.plannedPrimaryFiles += plan.readPlan.files.length;
+      work.metadataEvidenceFiles += new Set(plan.selectionEvidence.flatMap(e => [...e.files])).size;
+    }
+    if (isSelectiveLatestQuery(query) && sources.length === 1 && sources[0]!.platform === "codex" && !options.sample && !options.sessionRefs?.length) {
+      const source = sources[0]!, plan = await getPlan(source, options);
+      selection = await prepareSelectiveGroups(plan, query, work, scanGuard);
+    } else work.fallbackReason = query.complete ? "complete_requested" : "query_or_source_shape";
+    const snapshot = await scanResolvedSources(guardedOptions, sources, scanGuard, getPlan, work, selection);
+    const result = snapshot.executeCollectionQuery(query, { directoryScope: options.directoryScope });
+    if (selection?.stopped) result.coverage = { execution: "selective", rows: "exact", diagnostics: "observed" };
+    work.retainedSessions = snapshot.data.sessions.length; work.retainedTurns = snapshot.data.turns.length;
+    return { identity: snapshot.readIdentity, sourceIds: snapshot.data.sources.map(s => s.id), directoryScope: options.directoryScope,
+      result, projectionIssues: snapshot.projectionIssues, sources: snapshot.data.sources, lossAudits: snapshot.data.loss_audits, directoryScopeDiagnostics: snapshot.getDirectoryScopeDiagnostics(options.directoryScope), work };
+  });
+}
+
+async function withPreparedScan<T>(options: ScanLiteHistoryOptions,
+  run: (sources: SourceDefinition[], guard: ActiveScanGuard, getPlan: GetSourceScanPlan) => Promise<T>,
+): Promise<T> {
   if (options.contextMode === "matching" && resolveContextTargets(options).length === 0) {
     throw new Error("matching context mode requires at least one context target.");
   }
@@ -636,9 +691,21 @@ export async function scanLiteHistory(options: ScanLiteHistoryOptions = {}): Pro
       throw new Error(`No selected Lite source can resolve requested session ${options.sessionRefs?.join(", ")}.`);
     }
   }
-  const scanGuard = await beginScanGuard(options, sources);
+  const sourceAdapters = await import("@cchistory/source-adapters");
+  const metadata = new PreparationMetadata();
+  const plans = new Map<string, Promise<PreparedSourceScan>>();
+  const getPlan: GetSourceScanPlan = (source, scanOptions) => {
+    const key = JSON.stringify([source.id, scanOptions.sessionRefs ?? []]);
+    let pending = plans.get(key);
+    if (!pending) {
+      pending = prepareSourceScan(source, scanOptions, sourceAdapters, metadata);
+      plans.set(key, pending);
+    }
+    return pending;
+  };
+  const scanGuard = await beginScanGuard(options, sources, getPlan);
   try {
-    return await scanResolvedSources(scanGuard.guardedOptions(options), sources, scanGuard);
+    return await run(sources, scanGuard, getPlan);
   } finally {
     await scanGuard.release();
   }
@@ -647,6 +714,7 @@ export async function scanLiteHistory(options: ScanLiteHistoryOptions = {}): Pro
 interface ActiveScanGuard {
   guardedOptions(options: ScanLiteHistoryOptions): ScanLiteHistoryOptions;
   assertHealthy(): void;
+  assess(options: ScanLiteHistoryOptions): Promise<void>;
   release(): Promise<void>;
 }
 
@@ -660,12 +728,14 @@ interface ActiveScanGuard {
 async function beginScanGuard(
   options: ScanLiteHistoryOptions,
   sources: readonly SourceDefinition[],
+  getPlan: GetSourceScanPlan,
 ): Promise<ActiveScanGuard> {
   const request = options.scanGuard;
   if (!request || !isScanGuardEnabled(process.env.CCHISTORY_SCAN_GUARD)) {
     return {
       guardedOptions: (scanOptions) => scanOptions,
       assertHealthy: () => {},
+      assess: async () => {},
       release: async () => {},
     };
   }
@@ -684,36 +754,58 @@ async function beginScanGuard(
     lockHandle = lock.handle;
   }
 
-  try {
-    if (!request.bypass) {
-      const directoryScoped = Boolean(options.directoryScope);
-      const walkRootBytes = deps.walkRootBytes ?? (
-        directoryScoped && options.directoryScope
-          ? await createDirectoryScopedRootWalker(sources, options.directoryScope)
-          : undefined
-      );
-      const assessment = await assessScanRisk(
-        {
-          roots: sources.map((source) => ({ path: source.base_dir, slot_id: source.slot_id })),
-          limitFiles: options.limitFiles,
-          profile: request.profile,
-          ...(directoryScoped ? { directoryScoped: true } : {}),
-        },
-        { walkRootBytes, readAvailableBytes: deps.readAvailableBytes },
-      );
-      if (assessment.status === "refuse") {
-        throw new ScanGuardRefusedError({ reason: "estimated_memory", assessment });
-      }
-      if (assessment.status === "warn") {
-        options.onScanGuardEvent?.({ type: "warn", assessment });
-      }
+  const assess = async (scanOptions: ScanLiteHistoryOptions) => {
+    const directoryScoped = Boolean(scanOptions.directoryScope);
+    // Planning failures must propagate before the generic estimator's best-effort walk.
+    const prepared = new Map<string, PreparedSourceScan>();
+    if (!deps.walkRootBytes) {
+      for (const source of sources) prepared.set(source.slot_id, await getPlan(source, scanOptions));
     }
+    const walkRootBytes = deps.walkRootBytes ?? (async (_root: string, _limit: number | undefined, slotId?: string) => {
+      const plan = slotId && prepared.get(slotId);
+      if (!plan) throw new Error(`Scan estimate has no source for ${slotId}.`);
+      return plan.readPlan.bytes;
+    });
+    const assessment = await assessScanRisk(
+      {
+        roots: sources.map((source) => ({ path: source.base_dir, slot_id: source.slot_id })),
+        limitFiles: scanOptions.limitFiles,
+        profile: request.profile,
+        ...(directoryScoped ? { directoryScoped: true } : {}),
+      },
+      { walkRootBytes, readAvailableBytes: deps.readAvailableBytes, readHeapBytes: deps.readHeapBytes },
+    );
+    if (assessment.status === "refuse") {
+      throw new ScanGuardRefusedError({ reason: "estimated_memory", assessment });
+    }
+    if (assessment.status === "warn") {
+      options.onScanGuardEvent?.({ type: "warn", assessment });
+    }
+  };
+
+  try {
+    await assess(options);
   } catch (error) {
     // A refused scan must not keep siblings queued behind a lock it no longer needs.
     await lockHandle?.release();
     throw error;
   }
 
+  const multiplier = request.profile === "full" ? FULL_SCAN_MEMORY_MULTIPLIER : LIGHT_SCAN_MEMORY_MULTIPLIER;
+  const readHeadroom = () => {
+    let available: number | undefined;
+    try { available = (deps.readAvailableBytes ?? readAvailableMemoryBytes)(); } catch { /* use heap */ }
+    const heap = (deps.readHeapBytes ?? readRemainingHeapBytes)();
+    return Math.max(0, Math.min(heap, available ?? heap)) * SCAN_GUARD_REFUSE_AVAILABLE_FRACTION / multiplier;
+  };
+  let remaining = readHeadroom();
+  const readBudget: SourceReadBudget = {
+    admit(bytes, unit) {
+      const allowed = Math.floor(Math.min(remaining, readHeadroom()));
+      if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > allowed) throw new SourceReadBudgetExceededError(unit, bytes, allowed);
+      remaining -= bytes;
+    },
+  };
   const watchdog = createScanWatchdog({
     ...deps.watchdog,
     readAvailableBytes: deps.watchdog?.readAvailableBytes ?? deps.readAvailableBytes,
@@ -721,12 +813,14 @@ async function beginScanGuard(
   return {
     guardedOptions: (scanOptions) => ({
       ...scanOptions,
+      readBudget,
       onProgress: (event) => {
         watchdog.observeProgress(event);
         scanOptions.onProgress?.(event);
       },
     }),
     assertHealthy: () => watchdog.assertHealthy(),
+    assess,
     release: async () => {
       await lockHandle?.release();
     },
@@ -737,6 +831,9 @@ async function scanResolvedSources(
   options: ScanLiteHistoryOptions,
   sources: readonly SourceDefinition[],
   scanGuard: ActiveScanGuard,
+  getPlan: GetSourceScanPlan,
+  work?: QueryReadWork,
+  selection?: SelectiveGroupPlan,
 ): Promise<LiveHistorySnapshot> {
   const sourceAdapters = await import("@cchistory/source-adapters");
   const contextMode = options.contextMode ?? "full";
@@ -744,28 +841,19 @@ async function scanResolvedSources(
   const scanSources = async (scanOptions: ScanLiteHistoryOptions) => {
     const nextPayloads: LiveSourcePayload[] = [];
     let nextHost: Host | undefined;
-    // Rebuild the native file inventory on every invocation, then scan one
-    // source at a time so raw adapter payloads can be released promptly. Each
+    // Reuse this attempt's inventory, then scan one source at a time so raw
+    // adapter payloads can be released promptly. Each
     // adapter explicitly declares its minimum safe projection boundary; the
     // runtime never infers independence from a file-oriented source shape.
     for (const source of sources) {
-      const adapter = sourceAdapters.listPlatformAdapters().find((entry) => entry.platform === source.platform);
-      const result = adapter?.projectionBoundary === "logical_session"
-        ? await scanLogicalSessionGroups(
-            source,
-            scanOptions,
-            contextMode,
-            sourceAdapters,
-            (filePaths, includeWorkspaceMetadata) => sourceAdapters.inspectSourceFilesLogicalSessionMetadata(
-              source.platform,
-              filePaths,
-              {
-                includeWorkspaceMetadata,
-                workspaceScan: source.platform === "codex" && scanOptions.directoryScope ? "first" : "full",
-              },
-            ),
-          )
-        : await scanSourceWithCollector(source, scanOptions, contextMode, sourceAdapters);
+      const plan = await getPlan(source, scanOptions);
+      for (const evidence of plan.selectionEvidence) await sourceAdapters.assertSourceFileReadPlanCurrent(evidence);
+      await sourceAdapters.assertSourceFileReadPlanCurrent(plan.readPlan);
+      const result = plan.groups
+        ? await scanLogicalSessionGroups(source, scanOptions, contextMode, sourceAdapters, plan, () => scanGuard.assess(scanOptions), work, selection)
+        : await scanSourceWithCollector(source, scanOptions, contextMode, sourceAdapters, plan.readPlan.files, plan.readPlan, plan.selectSessionFiles, work);
+      for (const evidence of plan.selectionEvidence) await sourceAdapters.assertSourceFileReadPlanCurrent(evidence);
+      if (selection) await sourceAdapters.assertSourceFileReadPlanCurrent(plan.readPlan);
       nextHost ??= result.host;
       nextPayloads.push(result.payload);
       // Watchdog backstop: breaches recorded inside adapter progress callbacks
@@ -774,7 +862,7 @@ async function scanResolvedSources(
       scanGuard.assertHealthy();
     }
     if (!nextHost) {
-      const emptyProbe = await sourceAdapters.runSourceProbe({}, []);
+      const emptyProbe = await sourceAdapters.runSourceProbe(interpretSessionEvidence, {}, []);
       nextHost = emptyProbe.host;
     }
     return { host: nextHost, payloads: nextPayloads };
@@ -786,10 +874,9 @@ async function scanResolvedSources(
 
   const missingChildRefs = missingDelegatedChildSessionRefs(payloads, requestedSessionRefs);
   if (missingChildRefs.length > 0) {
-    ({ host, payloads } = await scanSources({
-      ...options,
-      sessionRefs: [...requestedSessionRefs, ...missingChildRefs],
-    }));
+    const expandedOptions = { ...options, sessionRefs: [...requestedSessionRefs, ...missingChildRefs] };
+    await scanGuard.assess(expandedOptions);
+    ({ host, payloads } = await scanSources(expandedOptions));
   }
 
   const combined = buildLiveSnapshot({ host, sources: payloads });
@@ -853,33 +940,104 @@ export function buildLiveSnapshot(probe: { host: Host; sources: readonly LiveSou
   }), candidates);
 }
 
+interface LogicalSessionScanGroup {
+  files: readonly string[];
+  targetSessionRefs?: readonly string[];
+}
+
+interface PreparedSourceScan {
+  discoveredPrimaryFiles: number;
+  readPlan: SourceFileReadPlan;
+  selectionEvidence: readonly SourceFileReadPlan[];
+  selectSessionFiles?: boolean;
+  groups?: readonly LogicalSessionScanGroup[];
+  fallbackFiles?: readonly string[];
+}
+
+type GetSourceScanPlan = (source: SourceDefinition, options: ScanLiteHistoryOptions) => Promise<PreparedSourceScan>;
+
+async function prepareSourceScan(
+  source: SourceDefinition,
+  options: ScanLiteHistoryOptions,
+  adapters: typeof import("@cchistory/source-adapters"),
+  metadata: PreparationMetadata,
+): Promise<PreparedSourceScan> {
+  const adapter = adapters.listPlatformAdapters().find((entry) => entry.platform === source.platform);
+  let files: readonly string[];
+  let discoveredPrimaryFiles: number;
+  let groups: readonly LogicalSessionScanGroup[] | undefined;
+  const selectionEvidence = new Set<SourceFileReadPlan>();
+  if (adapter?.projectionBoundary === "logical_session") {
+    ({ files, groups, discoveredPrimaryFiles } = await prepareLogicalSessionGroups(source, options, adapters,
+      async (filePaths, includeWorkspaceMetadata) => {
+        const inspected = await metadata.inspect(source, filePaths, {
+          includeWorkspaceMetadata,
+          workspaceScan: source.platform === "codex" && options.directoryScope ? "first" : "full",
+        });
+        for (const evidence of inspected.evidence) selectionEvidence.add(evidence);
+        return inspected.metadata;
+      }));
+  } else {
+    files = await adapters.listSourceFiles(source.platform, source.base_dir, options.limitFiles);
+    discoveredPrimaryFiles = files.length;
+    if (options.directoryScope) {
+      files = files.filter((file) => sourceFileMayBeInDirectoryScope(adapters, source, file, options.directoryScope!));
+    }
+    if (options.sample) files = await selectSampleSourceFiles(source, files, options.sample.perSource, adapters);
+  }
+  const selectedFiles = groups ? groups.flatMap((group) => group.files) : files;
+  const readPlan = await adapters.createSourceFileReadPlan(source, selectedFiles, options.safeMode ?? false);
+  // Some source-level identity lookups read whole JSON files. Budget all their
+  // candidates before doing that work; retain the probe's existing targeting rule.
+  const selectSessionFiles = adapter?.projectionBoundary !== "logical_session"
+    && !options.directoryScope && !options.sample && Boolean(options.sessionRefs?.length);
+  return { discoveredPrimaryFiles, readPlan, selectionEvidence: [...selectionEvidence], selectSessionFiles, groups, fallbackFiles: groups ? files : undefined };
+}
+
+async function prepareSelectiveGroups(plan: PreparedSourceScan, query: LogicalQuery, work: QueryReadWork, guard: ActiveScanGuard): Promise<SelectiveGroupPlan | undefined> {
+  if (!plan.groups?.length) { work.fallbackReason = "uncertain_grouping"; return undefined; }
+  const adapters = await import("@cchistory/source-adapters");
+  for (const evidence of plan.selectionEvidence) await adapters.assertSourceFileReadPlanCurrent(evidence);
+  await adapters.assertSourceFileReadPlanCurrent(plan.readPlan);
+  const byFile = new Map<string, import("@cchistory/source-adapters").CodexActivityEvidence>();
+  for (const file of plan.readPlan.files) {
+    const evidence = await adapters.inspectCodexActivityEvidence(plan.readPlan, file);
+    work.inventoryFiles++; work.inventoryBytesRead += evidence.bytesRead; work.inventoryRecordsDecoded += evidence.recordsDecoded;
+    byFile.set(file, evidence); guard.assertHealthy();
+    if (!evidence.supported || hasSessionFamilyLinkTool(evidence.toolNames)) {
+      work.fallbackReason = evidence.reason ?? "family_link_tool"; return undefined;
+    }
+  }
+  const groups = plan.groups.map(group => ({ group, evidence: group.files.map(file => byFile.get(file)!) }));
+  if (groups.some(g => new Set(g.evidence.map(e => e.sessionId)).size !== 1)
+    || new Set(groups.map(g => g.evidence[0]?.sessionId)).size !== groups.length) {
+    work.fallbackReason = "group_identity_mismatch"; return undefined;
+  }
+  const ranked = groups.map(g => ({ group: g.group, bound: g.evidence.reduce((max, e) => e.upperBound! > max ? e.upperBound! : max, "") }))
+    .sort((a, b) => b.bound.localeCompare(a.bound));
+  await adapters.assertSourceFileReadPlanCurrent(plan.readPlan);
+  return { groups: ranked.map(x => x.group), upperBounds: ranked.map(x => x.bound), query, stopped: false };
+}
+
 async function scanSourceWithCollector(
   source: SourceDefinition,
   options: ScanLiteHistoryOptions,
   contextMode: LiteContextMode,
   sourceAdapters: typeof import("@cchistory/source-adapters"),
-  sourceFiles?: readonly string[],
+  sourceFiles: readonly string[],
+  readPlan: SourceFileReadPlan,
+  selectSessionFiles = false,
+  work?: QueryReadWork,
 ): Promise<{ host: Host; payload: LiveSourcePayload }> {
-  let scopedFiles = sourceFiles;
-  const directoryScope = options.directoryScope;
-  if (scopedFiles === undefined && (directoryScope || options.sample)) {
-    const listed = await sourceAdapters.listSourceFiles(source.platform, source.base_dir, options.limitFiles);
-    scopedFiles = directoryScope
-      ? listed.filter((filePath) => sourceFileMayBeInDirectoryScope(
-        sourceAdapters,
-        source,
-        filePath,
-        directoryScope,
-      ))
-      : listed;
+  if (selectSessionFiles) {
+    sourceFiles = await sourceAdapters.selectSourceSessionFiles(source, sourceFiles, options.sessionRefs!);
+    await sourceAdapters.assertSourceFileReadPlanCurrent(readPlan);
   }
-  if (options.sample && scopedFiles) {
-    scopedFiles = await selectSampleSourceFiles(source, scopedFiles, options.sample.perSource, sourceAdapters);
-  }
-  const probe = await sourceAdapters.runSourceProbe(
+  const probe = await sourceAdapters.runSourceProbe(work ? evidence => { work.canonicalInterpretations++; return interpretSessionEvidence(evidence); } : interpretSessionEvidence,
     {
       ...buildProbeOptions(source, options),
-      ...(scopedFiles ? { source_file_paths: { [source.id]: scopedFiles } } : {}),
+      source_file_paths: { [source.id]: sourceFiles },
+      source_file_plans: { [source.id]: readPlan },
     },
     [source],
   );
@@ -887,6 +1045,7 @@ async function scanSourceWithCollector(
   if (!payload) {
     throw new Error(`Lite source probe produced no payload for ${source.display_name}.`);
   }
+  if (work) { work.payloadFilesProcessed += sourceFiles.length; work.payloadRecordsProcessed += payload.source.total_records; }
   const compacted = compactSourcePayload(payload, contextMode, resolveContextTargets(options));
   return {
     host: probe.host,
@@ -896,16 +1055,15 @@ async function scanSourceWithCollector(
   };
 }
 
-async function scanLogicalSessionGroups(
+async function prepareLogicalSessionGroups(
   source: SourceDefinition,
   options: ScanLiteHistoryOptions,
-  contextMode: LiteContextMode,
   sourceAdapters: typeof import("@cchistory/source-adapters"),
   inspectGroupFiles: (
     filePaths: readonly string[],
     includeWorkspaceMetadata: boolean,
   ) => Promise<import("@cchistory/source-adapters").SourceFileLogicalSessionMetadata[]>,
-): Promise<{ host: Host; payload: LiveSourcePayload }> {
+): Promise<{ files: readonly string[]; groups?: readonly LogicalSessionScanGroup[]; discoveredPrimaryFiles: number }> {
   const listedFiles = await sourceAdapters.listSourceFiles(source.platform, source.base_dir, options.limitFiles);
   let files = options.directoryScope
     ? listedFiles.filter((filePath) => sourceFileMayBeInDirectoryScope(
@@ -927,7 +1085,7 @@ async function scanLogicalSessionGroups(
     files = await selectSampleSourceFiles(source, files, options.sample.perSource, sourceAdapters);
   }
   if (files.length === 0) {
-    return scanSourceWithCollector(source, options, contextMode, sourceAdapters, []);
+    return { files: [], discoveredPrimaryFiles: listedFiles.length };
   }
 
   const filesByGroup = new Map<string, {
@@ -942,7 +1100,7 @@ async function scanLogicalSessionGroups(
     Boolean(options.directoryScope || requestedSessionRefs.length > 0),
   );
   if (inspectedFiles.some((metadata) => metadata.sessionKeyState === "uncertain")) {
-    return scanSourceWithCollector(source, options, contextMode, sourceAdapters, files);
+    return { files, discoveredPrimaryFiles: listedFiles.length };
   }
   for (const [fileIndex, filePath] of files.entries()) {
     const metadata = inspectedFiles[fileIndex]!;
@@ -1013,9 +1171,23 @@ async function scanLogicalSessionGroups(
     }));
 
   if (selectedGroupFiles.length === 0) {
-    return scanSourceWithCollector(source, options, contextMode, sourceAdapters, []);
+    return { files: [], discoveredPrimaryFiles: listedFiles.length };
   }
 
+  return { files, groups: selectedGroupFiles, discoveredPrimaryFiles: listedFiles.length };
+}
+
+async function scanLogicalSessionGroups(
+  source: SourceDefinition,
+  options: ScanLiteHistoryOptions,
+  contextMode: LiteContextMode,
+  sourceAdapters: typeof import("@cchistory/source-adapters"),
+  plan: PreparedSourceScan,
+  assessExpandedPlan: () => Promise<void>,
+  work?: QueryReadWork,
+  selection?: SelectiveGroupPlan,
+): Promise<{ host: Host; payload: LiveSourcePayload }> {
+  const selectedGroupFiles = selection?.groups ?? plan.groups!;
   const blobsById = new Map<string, SourceSyncPayload["blobs"][number]>();
   const candidatesById = new Map<string, SourceSyncPayload["candidates"][number]>();
   const sessionsById = new Map<string, SessionProjection>();
@@ -1033,11 +1205,12 @@ async function scanLogicalSessionGroups(
   let forwardedSourceStart = false;
   let host: Host | undefined;
 
-  for (const group of selectedGroupFiles) {
-    const probe = await sourceAdapters.runSourceProbe(
+  for (const [groupIndex, group] of selectedGroupFiles.entries()) {
+    const probe = await sourceAdapters.runSourceProbe(work ? evidence => { work.canonicalInterpretations++; return interpretSessionEvidence(evidence); } : interpretSessionEvidence,
       {
         ...buildProbeOptions(source, options, group.targetSessionRefs),
         source_file_paths: { [source.id]: group.files },
+        source_file_plans: { [source.id]: plan.readPlan },
         on_progress: (event) => {
           if (event.stage === "source_start") {
             if (forwardedSourceStart) return;
@@ -1057,6 +1230,7 @@ async function scanLogicalSessionGroups(
     if (!groupPayload) {
       throw new Error(`Lite source probe produced no payload for ${source.display_name}.`);
     }
+    if (work) { work.payloadFilesProcessed += group.files.length; work.payloadRecordsProcessed += groupPayload.source.total_records; }
     totalRecords += groupPayload.source.total_records;
     totalFragments += groupPayload.source.total_fragments;
     totalAtoms += groupPayload.source.total_atoms;
@@ -1083,10 +1257,33 @@ async function scanLogicalSessionGroups(
       flattenRelatedWorkIndex(buildSessionRelatedWorkIndex(groupPayload.sessions, groupPayload.fragments)),
     ));
     lossAudits.push(...groupPayload.loss_audits);
+    if (selection && !requiresSourceCollector) {
+      // Unexpected cross-session relationships invalidate the narrow independence proof.
+      if (sessionRelationFragments.length || familyInventories.some(f => f.children.length > 0)) {
+        if (work) work.fallbackReason = "derived_relationship";
+        selection = undefined;
+      } else {
+        const turns = [...turnsById.values()].sort(compareTurnsByRecency);
+        const sessions = orderSessionsByLastMessage([...sessionsById.values()], turns);
+        const current = executeCanonicalQuery({ sessions, turns, related_work: [] }, selection.query, options.directoryScope);
+        const cutoff = current.rows.at(-1)?.last_message_at;
+        const nextBound = selection.upperBounds[groupIndex + 1];
+        if (current.shown === selection.query.limit && typeof cutoff === "string" && nextBound !== undefined && nextBound < cutoff) {
+          selection.stopped = true;
+          if (work) work.skippedPrimaryFiles = selectedGroupFiles.slice(groupIndex + 1).reduce((n, g) => n + g.files.length, 0);
+          break;
+        }
+      }
+    }
   }
 
   if (requiresSourceCollector) {
-    return scanSourceWithCollector(source, options, contextMode, sourceAdapters, files);
+    plan.readPlan = await sourceAdapters.createSourceFileReadPlan(source, plan.fallbackFiles!, options.safeMode ?? false);
+    await assessExpandedPlan();
+    await sourceAdapters.assertSourceFileReadPlanCurrent(plan.readPlan);
+    if (selection) selection.stopped = false;
+    if (work) work.fallbackReason = "duplicate_identity";
+    return scanSourceWithCollector(source, options, contextMode, sourceAdapters, plan.readPlan.files, plan.readPlan, false, work);
   }
   if (!host) {
     throw new Error(`Lite logical-session scan produced no host for ${source.display_name}.`);
@@ -1235,117 +1432,6 @@ function sourceFileMayBeInDirectoryScope(
   return pathMatchesDirectoryScope(preview.workingDirectory, directoryScope);
 }
 
-/**
- * Files a `--dir` scan would pass to the probe. Layout/`preview` rejects match
- * `scanSourceWithCollector`; logical-session adapters also apply the same
- * first-cwd / group keep rule as `scanLogicalSessionGroups` so the estimate
- * does not price files the scan would drop after inspect.
- */
-async function selectDirectoryScopedProbeFiles(
-  sourceAdapters: typeof import("@cchistory/source-adapters"),
-  source: SourceDefinition,
-  listedFiles: readonly string[],
-  directoryScope: string,
-): Promise<string[]> {
-  const candidates = listedFiles.filter((filePath) => sourceFileMayBeInDirectoryScope(
-    sourceAdapters,
-    source,
-    filePath,
-    directoryScope,
-  ));
-  const adapter = sourceAdapters.listPlatformAdapters().find((entry) => entry.platform === source.platform);
-  if (adapter?.projectionBoundary !== "logical_session" || candidates.length === 0) {
-    return candidates;
-  }
-  const inspected = await sourceAdapters.inspectSourceFilesLogicalSessionMetadata(
-    source.platform,
-    candidates,
-    {
-      includeWorkspaceMetadata: true,
-      workspaceScan: source.platform === "codex" ? "first" : "full",
-    },
-  );
-  if (inspected.some((metadata) => metadata.sessionKeyState === "uncertain")) {
-    return candidates;
-  }
-  // Same merge + keep rule as scanLogicalSessionGroups: a group with
-  // conflicting known cwds becomes uncertain and is fully probed.
-  const filesByGroup = new Map<string, {
-    files: string[];
-    workingDirectoryState: "known" | "absent" | "uncertain";
-    workingDirectory?: string;
-  }>();
-  for (const [fileIndex, filePath] of candidates.entries()) {
-    const metadata = inspected[fileIndex]!;
-    const group = filesByGroup.get(metadata.sessionKey);
-    if (group) {
-      group.files.push(filePath);
-      mergeLogicalSessionWorkingDirectory(group, metadata);
-      continue;
-    }
-    filesByGroup.set(metadata.sessionKey, {
-      files: [filePath],
-      workingDirectoryState: metadata.workingDirectoryState,
-      workingDirectory: metadata.workingDirectory,
-    });
-  }
-  return [...filesByGroup.values()]
-    .filter((group) =>
-      group.workingDirectoryState !== "known"
-      || !group.workingDirectory
-      || pathMatchesDirectoryScope(group.workingDirectory, directoryScope),
-    )
-    .flatMap((group) => group.files);
-}
-
-function mergeLogicalSessionWorkingDirectory(
-  group: { workingDirectoryState: "known" | "absent" | "uncertain"; workingDirectory?: string },
-  metadata: { workingDirectoryState: "known" | "absent" | "uncertain"; workingDirectory?: string },
-): void {
-  if (
-    group.workingDirectoryState === "uncertain"
-    || metadata.workingDirectoryState === "uncertain"
-    || (
-      group.workingDirectoryState === "known"
-      && metadata.workingDirectoryState === "known"
-      && group.workingDirectory !== metadata.workingDirectory
-    )
-  ) {
-    group.workingDirectoryState = "uncertain";
-    group.workingDirectory = undefined;
-    return;
-  }
-  if (group.workingDirectoryState === "absent" && metadata.workingDirectoryState === "known") {
-    group.workingDirectoryState = metadata.workingDirectoryState;
-    group.workingDirectory = metadata.workingDirectory;
-  }
-}
-
-async function createDirectoryScopedRootWalker(
-  sources: readonly SourceDefinition[],
-  directoryScope: string,
-): Promise<(root: string, limitFiles?: number) => Promise<number>> {
-  const sourceAdapters = await import("@cchistory/source-adapters");
-  const byRoot = new Map(sources.map((source) => [path.normalize(source.base_dir), source]));
-  return async (root, limitFiles) => {
-    const source = byRoot.get(path.normalize(root));
-    if (!source) {
-      throw new Error(`scan estimate has no source for ${root}`);
-    }
-    const listed = await sourceAdapters.listSourceFiles(source.platform, source.base_dir, limitFiles);
-    const files = await selectDirectoryScopedProbeFiles(sourceAdapters, source, listed, directoryScope);
-    let totalBytes = 0;
-    for (const filePath of files) {
-      try {
-        totalBytes += (await stat(filePath)).size;
-      } catch {
-        // Listed then vanished: the scan would skip this file too.
-      }
-    }
-    return totalBytes;
-  };
-}
-
 function buildProbeOptions(
   source: SourceDefinition,
   options: ScanLiteHistoryOptions,
@@ -1353,6 +1439,7 @@ function buildProbeOptions(
 ) {
   return {
     source_ids: [source.id],
+    read_budget: options.readBudget,
     target_session_refs: targetSessionRefs,
     limit_files_per_source: options.limitFiles,
     safe_mode: options.safeMode,
@@ -1836,3 +1923,8 @@ function normalizeJsonShapeForJsonOutputMutating<T>(value: T): T {
   }
   return value;
 }
+
+export { compileSql, compileSqlRequest, parseSqlRequest, QueryValidationError, SQL_REQUEST_SCHEMA, SQL_RESULT_SCHEMA, MAX_SQL_BYTES, MAX_QUERY_REQUEST_BYTES } from "./sql-query.js";
+export type { SqlRequest, SqlOperation, CompiledSqlRequest } from "./sql-query.js";
+
+export type { LiveQueryRead, QueryReadWork } from "./selective-query.js";

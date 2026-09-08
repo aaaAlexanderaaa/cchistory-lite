@@ -7,6 +7,7 @@ import type {
   SessionProjection,
   SourceFragment,
   SourceStatus,
+  TurnContextProjection,
   UserTurnProjection,
 } from "@cchistory/domain";
 import { listSessionRelatedWork } from "./related-work.js";
@@ -141,6 +142,68 @@ test("session family inventory splits a shared container blob proportionally to 
   // Atoms stay on their own session instead of collapsing onto the first record owner.
   assert.equal(contributionA?.stats.tool_call_count, 1);
   assert.equal(contributionB?.stats.tool_call_count, 2);
+});
+
+test("family summaries preserve projected spawn I/O when raw atoms lack matching evidence", () => {
+  const source = createSource();
+  const parent = createSession(source, "sess:grok:context-parent", "parent", "/parent.jsonl");
+  const child = createSession(source, "sess:grok:context-child", "child", "/child.jsonl");
+  const turn = createTurn(source, parent, 40);
+  const context: TurnContextProjection = {
+    turn_id: turn.id,
+    system_messages: [],
+    assistant_replies: [],
+    raw_event_refs: [],
+    tool_calls: [{
+      id: "projected-spawn-call",
+      tool_name: "spawn_subagent",
+      input: { subagent_id: "child", extra: "Fixture input without a prompt or description." },
+      input_summary: "Projected input summary.",
+      input_display_segments: [{ type: "text", content: "Projected input summary." }],
+      output: "Full output that must not displace the projected preview.",
+      output_preview: "Projected output preview.",
+      status: "success",
+      reply_id: "reply-parent",
+      sequence: 0,
+      created_at: parent.created_at,
+    }],
+  };
+  const input = {
+    sessions: [parent, child],
+    turns: [turn],
+    related_work: [{
+      id: "context-related",
+      query_session_ref: parent.id,
+      source_id: source.id,
+      source_platform: source.platform,
+      source_session_ref: parent.id,
+      parent_session_ref: parent.id,
+      child_session_ref: child.id,
+      relation_kind: "delegated_session" as const,
+      target_kind: "session" as const,
+      direction: "outbound" as const,
+      target_session_ref: child.id,
+      transcript_primary: true,
+      evidence_confidence: 0.9,
+      created_at: parent.created_at,
+      updated_at: parent.updated_at,
+      fragment_refs: [],
+      raw_detail: { description: "Relation input fallback.", output: "Relation output fallback." },
+    }],
+    // This is valid incomplete evidence. Its call must not accidentally match
+    // the child just because that child's id is a substring of its target.
+    atoms: [createAtom("unrelated-spawn", parent.id, "tool_call", {
+      tool_name: "spawn_subagent",
+      call_id: "raw-other-call",
+      input: { subagent_id: "child-other", prompt: "Wrong input." },
+    })],
+  };
+  const complete = buildSessionFamilyInventory({ ...input, contexts: [context] });
+  const discarded = buildSessionFamilyInventory({ ...input, contexts: [] });
+  assert.equal(complete.children[0]?.input_preview, "Projected input summary.");
+  assert.equal(complete.children[0]?.output_preview, "Projected output preview.");
+  assert.equal(discarded.children[0]?.input_preview, "Relation input fallback.");
+  assert.equal(discarded.children[0]?.output_preview, "Relation output fallback.");
 });
 
 test("session family inventory marks a single-session SQLite blob as shared storage", () => {
