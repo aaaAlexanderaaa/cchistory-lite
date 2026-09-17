@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-import { settleLauncherExit } from "@cchistory/live-runtime/bootstrap";
+import { runWithAdaptiveHeap, settleLauncherExit } from "@cchistory/live-runtime/bootstrap";
 
-settleLauncherExit((async () => {
+settleLauncherExit(runWithAdaptiveHeap(async () => {
   const { runLiteTui } = await import("./index.js");
   return runLiteTui(process.argv.slice(2));
-})());
+}));

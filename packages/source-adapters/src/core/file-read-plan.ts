@@ -23,7 +23,7 @@ export class SourceFileReadPlanChangedError extends Error {
   readonly code = "source_read_plan_changed";
 
   constructor(filePath: string) {
-    super(`Source evidence changed after scan planning: ${filePath}. Retry the read with a new scan.`);
+    super(`Source selection evidence changed: ${filePath}. The version-dependent optimization is no longer valid.`);
     this.name = "SourceFileReadPlanChangedError";
   }
 }
@@ -92,7 +92,8 @@ async function readVersion(file: string): Promise<FileVersion | null> {
     return { dev: value.dev, ino: value.ino, size: value.size, mtime: value.mtimeMs, ctime: value.ctimeMs };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    // Let the normal per-file reader retain missing/unreadable input diagnostics.
+    if (code === "ENOENT" || code === "ENOTDIR" || code === "EACCES" || code === "EPERM") return null;
     throw error;
   }
 }

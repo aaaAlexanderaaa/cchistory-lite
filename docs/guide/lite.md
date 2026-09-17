@@ -272,9 +272,10 @@ and exits `1`; an invalid request or scan failure writes
 `cchistory-lite-error/v1` to stderr and leaves stdout empty. The release artifact
 ships all public contracts in `schemas/`.
 
-Lite leaves the heap limit to Node's default or the operator's explicit Node flags /
-`NODE_OPTIONS`. It does not resize the heap from free pages or use
-`CCHISTORY_ADAPTIVE_NODE_MEMORY_MB`; that removed internal marker has no effect.
+The CLI and TUI launchers grow Node's default heap to half the available-memory
+estimate when that materially exceeds the current default. This ceiling does not
+reserve that memory. Explicit Node heap flags / `NODE_OPTIONS` are preserved; library
+calls use the caller's heap. Unknown or small availability leaves the default alone.
 The guard reports the system availability estimate and remaining V8 heap separately.
 macOS estimates free + inactive pages; Linux uses `MemAvailable` and known cgroup
 headroom. These are conservative estimates, not a universal OOM boundary; see the
@@ -285,7 +286,10 @@ works, including through `NODE_OPTIONS`. Keep the guard enabled: increasing heap
 not create physical memory or remove a container constraint. `CCHISTORY_SCAN_GUARD=0`
 remains an explicit diagnostic escape hatch that disables the scan lock, estimate,
 watchdog and native-byte admission. It changes no Node/OS memory limit and can cause
-OOM. It is not the normal response to a refusal. Preserve scope and report the limit;
+OOM. Aggregate estimates only warn; individual inputs that exceed read headroom
+leave diagnostics while other history stays available. Normal appends and WAL changes
+do not abort scans, and invalidated selection optimizations fall back to ordinary
+reads. It is not the normal response to a refusal. Preserve scope and report the limit;
 do not automatically retry with broader filters or a disabled guard.
 
 ## Lite TUI

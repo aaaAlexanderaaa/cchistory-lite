@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-import { settleLauncherExit } from "@cchistory/live-runtime/bootstrap";
+import { runWithAdaptiveHeap, settleLauncherExit } from "@cchistory/live-runtime/bootstrap";
 
-settleLauncherExit((async () => {
+settleLauncherExit(runWithAdaptiveHeap(async () => {
   const { runLiteCli } = await import("./index.js");
   return runLiteCli(process.argv.slice(2));
-})());
+}));

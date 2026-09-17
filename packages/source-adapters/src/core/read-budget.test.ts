@@ -37,7 +37,7 @@ test("SQLite admission counts selected bytes and empty-row overhead before retri
   } finally { await rm(scratch, { recursive: true, force: true }); }
 });
 
-test("ZCode and both Cursor container paths propagate budget refusal past per-file recovery", async () => {
+test("ZCode and both Cursor container paths retain budget failures as per-file diagnostics", async () => {
   const scratch = await mkdtemp(path.join(os.tmpdir(), "lite-container-budget-"));
   try {
     for (const kind of ["zcode", "cursor-store", "cursor-state"] as const) {
@@ -51,7 +51,8 @@ test("ZCode and both Cursor container paths propagate budget refusal past per-fi
       const source = getDefaultSourcesForHost({ homeDir: scratch, includeMissing: true }).find(s => s.platform === (kind === "zcode" ? "zcode" : "cursor"))!;
       const selected = { ...source, base_dir: base };
       const before = await readFile(file);
-      await assert.rejects(runSourceProbe({ safe_mode: true, source_file_paths: { [source.id]: [file] }, read_budget: budget(0) }, [selected]), SourceReadBudgetExceededError, kind);
+      const result = await runSourceProbe({ safe_mode: true, source_file_paths: { [source.id]: [file] }, read_budget: budget(0) }, [selected]);
+      assert.ok(result.sources[0]?.loss_audits.some(a => a.detail.includes("Read budget exceeded")), kind);
       assert.deepEqual(await readFile(file), before);
     }
   } finally { await rm(scratch, { recursive: true, force: true }); }

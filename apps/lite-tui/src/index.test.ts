@@ -367,23 +367,23 @@ test("a failed refresh keeps the previous complete snapshot and reports it in th
   assert.equal(await session.exitCode, 0);
 });
 
-test("the scan guard refuses a TUI startup scan that risks the machine", async () => {
+test("the TUI renders usable history and diagnostics when a single file exceeds read headroom", async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-guard-tui-"));
   try {
     // Sparse: reports 256 GiB without allocating real bytes.
     const hugeFile = path.join(tempHome, "huge.jsonl");
     const fixture = await readFile(path.join(repoRoot, "mock_data/fixtures/source-shapes/codex/ordinary-fork.jsonl"), "utf8");
     await writeFile(hugeFile, `${fixture.split("\n")[0]}\n`);
+    await writeFile(path.join(tempHome, "readable.jsonl"), fixture);
     await truncate(hugeFile, 256 * 1024 ** 3);
     const { stdout, stderr, io } = captureIo({ columns: 110, rows: 30 });
     const exitCode = await runLiteTui(
       ["--source-root", `codex=${tempHome}`, "--source", "codex", "--safe", "--no-color"],
       io,
     );
-    assert.equal(exitCode, 1);
-    // No frame is rendered when the guard refuses.
-    assert.equal(stdout.join(""), "");
-    assert.match(stderr.join(""), /Refusing to scan/);
+    assert.equal(exitCode, 0);
+    assert.match(stdout.join(""), /CC History Lite TUI/);
+    assert.match(stderr.join(""), /Scan guard warning/);
     assert.doesNotMatch(stderr.join(""), /CCHISTORY_SCAN_GUARD=0/);
     assert.match(stderr.join(""), /remaining V8 heap:.*limiting resource: (heap|system)/);
   } finally {

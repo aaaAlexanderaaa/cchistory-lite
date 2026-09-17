@@ -7,7 +7,7 @@ export interface SourceReadBudget {
 
 export class SourceReadBudgetExceededError extends Error {
   constructor(readonly unit: string, readonly requestedBytes: number, readonly remainingBytes: number) {
-    super(`Read budget exceeded for ${unit}: needs ${requestedBytes} native bytes, ${remainingBytes} bytes remain. No complete result was produced; the requested scope was retained.`);
+    super(`Read budget exceeded for ${unit}: needs ${requestedBytes} native bytes, ${remainingBytes} bytes of read headroom remain. This input was skipped; other readable history is retained.`);
     this.name = "SourceReadBudgetExceededError";
   }
 }

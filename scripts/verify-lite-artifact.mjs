@@ -268,7 +268,7 @@ async function assertNodeHeapOwnership(modules, executables, tempRoot) {
       { flags: ['--max-old-space-size=384'], options: '--max-old-space-size=768', marker: undefined },
     ];
     for (const scenario of cases) {
-      const env = { ...process.env, TEST_LITE_LAUNCHER_TRACE: trace,
+      const env = { ...process.env, TEST_LITE_LAUNCHER_TRACE: trace, TEST_LITE_LAUNCHER_CAPACITY: '32GiB',
         NODE_OPTIONS: `${scenario.options} --require ${JSON.stringify(preload)}`.trim() };
       delete env.CCHISTORY_ADAPTIVE_NODE_MEMORY_MB;
       if (scenario.marker !== undefined) env.CCHISTORY_ADAPTIVE_NODE_MEMORY_MB = scenario.marker;
@@ -276,20 +276,26 @@ async function assertNodeHeapOwnership(modules, executables, tempRoot) {
         await writeFile(trace, '');
         await execFile(command, args, { cwd: traceRoot, env, timeout: 30_000 });
         const rows = (await readFile(trace, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
-        if (rows.length !== 1) throw new Error(`Launcher ${command} created ${rows.length} Node processes; expected one.`);
-        return rows[0];
+        if (rows.length < 1 || rows.length > 2) throw new Error(`Launcher ${command} created ${rows.length} Node processes; expected at most one adaptive child.`);
+        return rows;
       };
-      const baseline = await run(process.execPath, [...scenario.flags, '-e', 'void 0']);
-      const check = async (command, args) => {
+      const [baseline] = await run(process.execPath, [...scenario.flags, '-e', 'void 0']);
+      const check = async (command, args, adaptive) => {
         const launched = await run(command, args);
-        if (launched.heapLimit !== baseline.heapLimit || launched.adaptiveMarker !== baseline.adaptiveMarker) {
+        const explicit = scenario.flags.length > 0 || scenario.options.length > 0;
+        if (launched.some(row => row.adaptiveMarker !== baseline.adaptiveMarker || row.heapLimit < baseline.heapLimit)
+            || explicit && (launched.length !== 1 || launched[0].heapLimit !== baseline.heapLimit)) {
           throw new Error(`Launcher changed Node memory settings: ${JSON.stringify({ command, baseline, launched })}`);
         }
+        if (!explicit && adaptive && baseline.heapLimit < 12 * 1024 ** 3
+            && (launched.length !== 2 || !launched.some(row => row.heapLimit >= 16 * 1024 ** 3))) {
+          throw new Error(`Launcher did not grow its default heap with available capacity: ${JSON.stringify({ command, launched })}`);
+        }
       };
-      for (const entry of modules) await check(process.execPath, [...scenario.flags, entry, '--help']);
-      if (scenario.flags.length === 0) for (const entry of executables) await check(entry, ['--help']);
+      for (const entry of modules) await check(process.execPath, [...scenario.flags, entry, '--help'], path.basename(entry) !== 'index.js');
+      if (scenario.flags.length === 0) for (const entry of executables) await check(entry, ['--help'], true);
     }
-    console.log('[cchistory] actual launchers preserve Node default/explicit heap and use one process');
+    console.log('[cchistory] actual launchers preserve explicit heap settings and bound adaptive relaunch to one child');
   } finally {
     await rm(traceRoot, { recursive: true, force: true });
   }

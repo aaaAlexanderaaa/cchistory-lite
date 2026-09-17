@@ -94,7 +94,7 @@ template's top-level/nonempty predicate and descending activity order, offset ze
 `--complete`. Select Codex with `--source codex`. Changed fields or predicates, other/multiple
 sources, and multi-operation batches use complete reads. Unknown record shapes, uncertain time or
 identity evidence, and possible delegated work also use complete reads. A changed admitted file
-invalidates the attempt and requires a new read. File mtime is never a conversation-time bound.
+invalidates the optimization and falls back to an ordinary read automatically. File mtime is never a conversation-time bound.
 This is a conditional reduction in interpretation work; small inputs can be slower.
 
 By default `total` is null, including when the complete path happens to know the count. Pass

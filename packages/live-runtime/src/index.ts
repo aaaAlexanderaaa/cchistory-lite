@@ -102,6 +102,7 @@ export {
   LIGHT_SCAN_MEMORY_MULTIPLIER,
   SCAN_GUARD_REFUSE_AVAILABLE_FRACTION,
   SCAN_GUARD_WARN_AVAILABLE_FRACTION,
+  SCAN_WATCHDOG_MAX_RESERVE_BYTES,
   SCAN_LOCK_WAIT_MS,
   SCAN_WATCHDOG_AVAILABLE_RESERVE_FRACTION,
   ScanGuardAbortedError,
@@ -666,7 +667,13 @@ export async function scanLiteQuery(query: LogicalQuery, options: ScanLiteHistor
     }
     if (isSelectiveLatestQuery(query) && sources.length === 1 && sources[0]!.platform === "codex" && !options.sample && !options.sessionRefs?.length) {
       const source = sources[0]!, plan = await getPlan(source, options);
-      selection = await prepareSelectiveGroups(plan, query, work, scanGuard);
+      try {
+        selection = await prepareSelectiveGroups(plan, query, work, scanGuard, guardedOptions.readBudget);
+      } catch (error) {
+        const { SourceFileReadPlanChangedError } = await import("@cchistory/source-adapters");
+        if (!(error instanceof SourceFileReadPlanChangedError)) throw error;
+        work.fallbackReason = "source_changed";
+      }
     } else work.fallbackReason = query.complete ? "complete_requested" : "query_or_source_shape";
     const snapshot = await scanResolvedSources(guardedOptions, sources, scanGuard, getPlan, work, selection);
     const result = snapshot.executeCollectionQuery(query, { directoryScope: options.directoryScope });
@@ -698,7 +705,16 @@ async function withPreparedScan<T>(options: ScanLiteHistoryOptions,
     const key = JSON.stringify([source.id, scanOptions.sessionRefs ?? []]);
     let pending = plans.get(key);
     if (!pending) {
-      pending = prepareSourceScan(source, scanOptions, sourceAdapters, metadata);
+      pending = prepareSourceScan(source, scanOptions, sourceAdapters, metadata).catch(async (error) => {
+        if (!(error instanceof sourceAdapters.SourceFileReadPlanChangedError)) throw error;
+        // Live metadata is an optimization, not a prerequisite for reading history.
+        const files = await sourceAdapters.listSourceFiles(source.platform, source.base_dir, scanOptions.limitFiles);
+        const selected = scanOptions.sample
+          ? await selectSampleSourceFiles(source, files, scanOptions.sample.perSource, sourceAdapters) : files;
+        return { discoveredPrimaryFiles: files.length,
+          readPlan: await sourceAdapters.createSourceFileReadPlan(source, selected, scanOptions.safeMode ?? false),
+          selectionEvidence: [] };
+      });
       plans.set(key, pending);
     }
     return pending;
@@ -720,7 +736,7 @@ interface ActiveScanGuard {
 
 /**
  * Runs the guard layer around a scan: serialize full scans on this machine,
- * refuse when the conservative peak estimate risks swap-death, and arm the
+ * warn when the conservative peak estimate is high, and arm the
  * watchdog that aborts the scan if available memory collapses mid-probe. The
  * kill-switch env is read here — the live-runtime entry — so the guard module
  * and its tests stay explicit about behavior.
@@ -775,10 +791,7 @@ async function beginScanGuard(
       },
       { walkRootBytes, readAvailableBytes: deps.readAvailableBytes, readHeapBytes: deps.readHeapBytes },
     );
-    if (assessment.status === "refuse") {
-      throw new ScanGuardRefusedError({ reason: "estimated_memory", assessment });
-    }
-    if (assessment.status === "warn") {
+    if (assessment.status !== "ok") {
       options.onScanGuardEvent?.({ type: "warn", assessment });
     }
   };
@@ -798,12 +811,12 @@ async function beginScanGuard(
     const heap = (deps.readHeapBytes ?? readRemainingHeapBytes)();
     return Math.max(0, Math.min(heap, available ?? heap)) * SCAN_GUARD_REFUSE_AVAILABLE_FRACTION / multiplier;
   };
-  let remaining = readHeadroom();
   const readBudget: SourceReadBudget = {
     admit(bytes, unit) {
-      const allowed = Math.floor(Math.min(remaining, readHeadroom()));
+      // Parsed temporary payloads are released between groups. Lifetime input
+      // bytes are not resident memory; price the next allocation against live headroom.
+      const allowed = Math.floor(readHeadroom());
       if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > allowed) throw new SourceReadBudgetExceededError(unit, bytes, allowed);
-      remaining -= bytes;
     },
   };
   const watchdog = createScanWatchdog({
@@ -847,13 +860,27 @@ async function scanResolvedSources(
     // runtime never infers independence from a file-oriented source shape.
     for (const source of sources) {
       const plan = await getPlan(source, scanOptions);
-      for (const evidence of plan.selectionEvidence) await sourceAdapters.assertSourceFileReadPlanCurrent(evidence);
-      await sourceAdapters.assertSourceFileReadPlanCurrent(plan.readPlan);
-      const result = plan.groups
-        ? await scanLogicalSessionGroups(source, scanOptions, contextMode, sourceAdapters, plan, () => scanGuard.assess(scanOptions), work, selection)
-        : await scanSourceWithCollector(source, scanOptions, contextMode, sourceAdapters, plan.readPlan.files, plan.readPlan, plan.selectSessionFiles, work);
-      for (const evidence of plan.selectionEvidence) await sourceAdapters.assertSourceFileReadPlanCurrent(evidence);
-      if (selection) await sourceAdapters.assertSourceFileReadPlanCurrent(plan.readPlan);
+      let result;
+      try {
+        for (const evidence of plan.selectionEvidence) await sourceAdapters.assertSourceFileReadPlanCurrent(evidence);
+        if (selection) await sourceAdapters.assertSourceFileReadPlanCurrent(plan.readPlan);
+        result = plan.groups
+          ? await scanLogicalSessionGroups(source, scanOptions, contextMode, sourceAdapters, plan, () => scanGuard.assess(scanOptions), work, selection)
+          : await scanSourceWithCollector(source, scanOptions, contextMode, sourceAdapters, plan.readPlan.files, plan.readPlan, plan.selectSessionFiles, work);
+        for (const evidence of plan.selectionEvidence) await sourceAdapters.assertSourceFileReadPlanCurrent(evidence);
+        if (selection) await sourceAdapters.assertSourceFileReadPlanCurrent(plan.readPlan);
+      } catch (error) {
+        if (!(error instanceof sourceAdapters.SourceFileReadPlanChangedError)) throw error;
+        if (selection) selection.stopped = false;
+        if (work) { work.fallbackReason = "source_changed"; work.skippedPrimaryFiles = 0; }
+        // Re-read this source without version-dependent grouping/pruning. Keep
+        // this attempt's inventory, including files excluded by stale metadata.
+        const inventory = [...new Set([...plan.readPlan.files, ...plan.selectionEvidence.flatMap(e => [...e.files])])];
+        const files = scanOptions.sample
+          ? await selectSampleSourceFiles(source, inventory, scanOptions.sample.perSource, sourceAdapters) : inventory;
+        const readPlan = await sourceAdapters.createSourceFileReadPlan(source, files, scanOptions.safeMode ?? false);
+        result = await scanSourceWithCollector(source, scanOptions, contextMode, sourceAdapters, files, readPlan, false, work);
+      }
       nextHost ??= result.host;
       nextPayloads.push(result.payload);
       // Watchdog backstop: breaches recorded inside adapter progress callbacks
@@ -994,13 +1021,19 @@ async function prepareSourceScan(
   return { discoveredPrimaryFiles, readPlan, selectionEvidence: [...selectionEvidence], selectSessionFiles, groups, fallbackFiles: groups ? files : undefined };
 }
 
-async function prepareSelectiveGroups(plan: PreparedSourceScan, query: LogicalQuery, work: QueryReadWork, guard: ActiveScanGuard): Promise<SelectiveGroupPlan | undefined> {
+async function prepareSelectiveGroups(plan: PreparedSourceScan, query: LogicalQuery, work: QueryReadWork, guard: ActiveScanGuard, budget?: SourceReadBudget): Promise<SelectiveGroupPlan | undefined> {
   if (!plan.groups?.length) { work.fallbackReason = "uncertain_grouping"; return undefined; }
   const adapters = await import("@cchistory/source-adapters");
   for (const evidence of plan.selectionEvidence) await adapters.assertSourceFileReadPlanCurrent(evidence);
   await adapters.assertSourceFileReadPlanCurrent(plan.readPlan);
   const byFile = new Map<string, import("@cchistory/source-adapters").CodexActivityEvidence>();
   for (const file of plan.readPlan.files) {
+    try { budget?.admit(plan.readPlan.versions[file]?.size ?? 0, file); }
+    catch (error) {
+      if (!(error instanceof SourceReadBudgetExceededError)) throw error;
+      work.fallbackReason = "read_budget";
+      return undefined;
+    }
     const evidence = await adapters.inspectCodexActivityEvidence(plan.readPlan, file);
     work.inventoryFiles++; work.inventoryBytesRead += evidence.bytesRead; work.inventoryRecordsDecoded += evidence.recordsDecoded;
     byFile.set(file, evidence); guard.assertHealthy();
@@ -1029,9 +1062,8 @@ async function scanSourceWithCollector(
   selectSessionFiles = false,
   work?: QueryReadWork,
 ): Promise<{ host: Host; payload: LiveSourcePayload }> {
-  if (selectSessionFiles) {
+  if (selectSessionFiles && !options.readBudget) {
     sourceFiles = await sourceAdapters.selectSourceSessionFiles(source, sourceFiles, options.sessionRefs!);
-    await sourceAdapters.assertSourceFileReadPlanCurrent(readPlan);
   }
   const probe = await sourceAdapters.runSourceProbe(work ? evidence => { work.canonicalInterpretations++; return interpretSessionEvidence(evidence); } : interpretSessionEvidence,
     {
@@ -1257,6 +1289,12 @@ async function scanLogicalSessionGroups(
       flattenRelatedWorkIndex(buildSessionRelatedWorkIndex(groupPayload.sessions, groupPayload.fragments)),
     ));
     lossAudits.push(...groupPayload.loss_audits);
+    if (selection && groupPayload.loss_audits.length > 0) {
+      // Missing payloads cannot prove a latest-row cutoff even with stable metadata.
+      selection.stopped = false;
+      selection = undefined;
+      if (work) work.fallbackReason = "read_loss";
+    }
     if (selection && !requiresSourceCollector) {
       // Unexpected cross-session relationships invalidate the narrow independence proof.
       if (sessionRelationFragments.length || familyInventories.some(f => f.children.length > 0)) {
@@ -1280,7 +1318,6 @@ async function scanLogicalSessionGroups(
   if (requiresSourceCollector) {
     plan.readPlan = await sourceAdapters.createSourceFileReadPlan(source, plan.fallbackFiles!, options.safeMode ?? false);
     await assessExpandedPlan();
-    await sourceAdapters.assertSourceFileReadPlanCurrent(plan.readPlan);
     if (selection) selection.stopped = false;
     if (work) work.fallbackReason = "duplicate_identity";
     return scanSourceWithCollector(source, options, contextMode, sourceAdapters, plan.readPlan.files, plan.readPlan, false, work);

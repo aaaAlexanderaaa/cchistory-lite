@@ -4,7 +4,7 @@ import { copyFile, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/prom
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { SourceFileReadPlanChangedError } from "@cchistory/source-adapters";
+
 import { scanLiteHistory, scanLiteQuery, type ScanLiteHistoryOptions } from "./index.js";
 import { compileSql } from "./sql-query.js";
 import { isSelectiveLatestQuery } from "./selective-query.js";
@@ -120,7 +120,7 @@ test("M3: complete totals and other query shapes bypass the inventory; insuffici
   });
 });
 
-test("M3: a skipped file changing after inventory aborts the attempt", async () => {
+test("M3: a skipped file changing after inventory falls back to a complete read", async () => {
   await withCorpus(async (root, options) => {
     let changed = false;
     options.onProgress = event => {
@@ -130,7 +130,13 @@ test("M3: a skipped file changing after inventory aborts the attempt", async () 
       appendFileSync(file, JSON.stringify(variants.changed) + "\n");
       utimesSync(file, new Date("2026-08-02T00:00:00Z"), new Date("2026-08-02T00:00:00Z"));
     };
-    await assert.rejects(scanLiteQuery(query, options), SourceFileReadPlanChangedError);
+    const read = await scanLiteQuery(query, options);
+    const full = await scanLiteHistory(options);
+    assert.deepEqual(read.result.rows, full.executeCollectionQuery(query).rows);
+    assert.equal(read.result.coverage.execution, "complete");
+    assert.equal(read.work.fallbackReason, "source_changed");
+    assert.equal(read.work.skippedPrimaryFiles, 0);
+    assert.deepEqual(read.projectionIssues, []);
     assert.ok(changed);
   });
 });

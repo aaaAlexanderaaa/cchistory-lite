@@ -3,6 +3,7 @@ import {
   LIGHT_SCAN_MEMORY_MULTIPLIER,
   SCAN_GUARD_REFUSE_AVAILABLE_FRACTION,
   SCAN_GUARD_WARN_AVAILABLE_FRACTION,
+  SCAN_WATCHDOG_MAX_RESERVE_BYTES,
   SCAN_LOCK_WAIT_MS,
   SCAN_WATCHDOG_AVAILABLE_RESERVE_FRACTION,
 } from "@cchistory/live-runtime";
@@ -39,15 +40,17 @@ export interface AgentContract {
   guardrails: string[];
   cost_model: {
     process_model: string;
-    heap_ceiling: { policy: "node_default_or_explicit"; automatic_reexec: false; description: string };
+    heap_ceiling: { policy: "adaptive_default_or_explicit"; automatic_reexec: true; description: string };
     scan_guard: {
       kill_switch: { env: "CCHISTORY_SCAN_GUARD"; value: "0" };
       light_scan_memory_multiplier: number;
       full_scan_memory_multiplier: number;
       warn_available_fraction: number;
       refuse_available_fraction: number;
+      estimate_policy: "warning_only";
+      read_budget_policy: "live_headroom_per_read";
       lock_wait_ms: number;
-      watchdog_floor: { formula: string; initial_available_fraction: number };
+      watchdog_floor: { formula: string; initial_available_fraction: number; max_reserve_bytes: number };
       lock: string;
       bypass: string[];
       error_codes: string[];
@@ -271,6 +274,7 @@ export function buildAgentContract(version: string): AgentContract {
       { code: 2, meaning: "Usage error: unknown command or option, invalid flag value, or an unresolved or ambiguous reference." },
     ],
     env: [
+      { name: "NODE_OPTIONS", effect: "Explicit Node heap settings (for example --max-old-space-size=8192) override adaptive sizing while keeping scan protection enabled." },
       { name: "NO_COLOR", effect: "Suppress ANSI color in human CLI and TUI output." },
       { name: "FORCE_COLOR", effect: "Force ANSI color in the TUI when set to a non-zero value." },
       { name: "CCHISTORY_SHOW_RUNTIME_WARNINGS", effect: "Set to 1 to show Node runtime warnings (for example the node:sqlite experimental warning) that Lite suppresses by default." },
@@ -303,8 +307,8 @@ export function buildAgentContract(version: string): AgentContract {
     cost_model: {
       process_model: "Discovery does not scan; shell prepares on its first valid history read. One-shot history commands perform one fresh scan; zero-store means there is no cross-command cache. shell and the TUI amortize one snapshot across many reads.",
       heap_ceiling: {
-        policy: "node_default_or_explicit", automatic_reexec: false,
-        description: "Node owns the heap limit; explicit Node flags and NODE_OPTIONS remain effective. Lite does not lower it from free pages, re-exec itself, or set CCHISTORY_ADAPTIVE_NODE_MEMORY_MB.",
+        policy: "adaptive_default_or_explicit", automatic_reexec: true,
+        description: "Launchers grow the default heap to half the available-memory estimate when that materially exceeds the Node default. Explicit Node flags and NODE_OPTIONS are preserved; library calls keep the caller heap.",
       },
       scan_guard: {
         kill_switch: { env: "CCHISTORY_SCAN_GUARD", value: "0" },
@@ -312,10 +316,13 @@ export function buildAgentContract(version: string): AgentContract {
         full_scan_memory_multiplier: FULL_SCAN_MEMORY_MULTIPLIER,
         warn_available_fraction: SCAN_GUARD_WARN_AVAILABLE_FRACTION,
         refuse_available_fraction: SCAN_GUARD_REFUSE_AVAILABLE_FRACTION,
+        estimate_policy: "warning_only",
+        read_budget_policy: "live_headroom_per_read",
         lock_wait_ms: SCAN_LOCK_WAIT_MS,
         watchdog_floor: {
-          formula: "initial_available_fraction of the platform-specific available-memory estimate at scan start; no host-total or fixed-byte floor",
+          formula: "min(max_reserve_bytes, initial_available_fraction of available memory at scan start); no host-total floor",
           initial_available_fraction: SCAN_WATCHDOG_AVAILABLE_RESERVE_FRACTION,
+          max_reserve_bytes: SCAN_WATCHDOG_MAX_RESERVE_BYTES,
         },
         lock: "An advisory lock serializes full scans on this machine; a queued scan waits up to lock_wait_ms and then fails with scan_guard_refused.",
         bypass: ["sample: lock only", "show session <exact canonical id>: lock only"],

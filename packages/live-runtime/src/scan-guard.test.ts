@@ -20,7 +20,7 @@ import {
   type ScanGuardRequest,
   type ScanGuardRuntimeDeps,
 } from "./index.js";
-import { SourceFileReadPlanChangedError } from "@cchistory/source-adapters";
+
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const mockDataRoot = path.join(repoRoot, "mock_data");
@@ -44,7 +44,7 @@ function guardedFixtureScan(scanGuard: ScanGuardRequest, scanGuardDeps?: ScanGua
 
 // ── Pre-flight estimate ──
 
-test("scan guard thresholds: ok at exactly 50%, warn up to exactly 75%, refuse above", async () => {
+test("scan guard thresholds: ok at exactly 50%, warn above it without treating estimates as proof", async () => {
   const available = 1024;
   const assess = (bytes: number, profile: "light" | "full" = "light") =>
     assessScanRisk(
@@ -55,7 +55,7 @@ test("scan guard thresholds: ok at exactly 50%, warn up to exactly 75%, refuse a
   assert.equal((await assess(128)).status, "ok");
   assert.equal((await assess(129)).status, "warn");
   assert.equal((await assess(192)).status, "warn");
-  assert.equal((await assess(193)).status, "refuse");
+  assert.equal((await assess(193)).status, "warn");
   const refusal = await assess(193);
   assert.equal(refusal.estimatedBytes, 193 * 4);
   assert.equal(refusal.scannedBytes, 193);
@@ -91,7 +91,7 @@ test("scan guard multiplier: full scans estimate 8×, light scans 4×", async ()
   assert.equal(light.status, "ok");
   const full = await assessScanRisk({ roots: ["/root"], profile: "full" }, deps);
   assert.equal(full.estimatedBytes, 800);
-  assert.equal(full.status, "refuse");
+  assert.equal(full.status, "warn");
 });
 
 test("scan estimates distinguish adapter slots sharing the same root", async () => {
@@ -123,7 +123,7 @@ test("scan guard records a failed walk and uses remaining heap when availability
     { roots: ["/root"], profile: "full" },
     { walkRootBytes: async () => 10 * GIB, readAvailableBytes: () => undefined, readHeapBytes: () => GIB },
   );
-  assert.equal(unknown.status, "refuse");
+  assert.equal(unknown.status, "warn");
   assert.equal(unknown.availableBytes, GIB);
   assert.equal(unknown.estimatedBytes, 80 * GIB);
 });
@@ -369,6 +369,9 @@ test("watchdog reserve follows starting availability even on a large constrained
   assert.equal(createScanWatchdog({ totalBytes: 64 * GIB, initialAvailableBytes: 128 * MIB }).floorBytes, 32 * MIB);
   assert.equal(createScanWatchdog({ totalBytes: 64 * GIB, readAvailableBytes: () => undefined }).floorBytes, 0);
   assert.throws(() => createScanWatchdog({ readAvailableBytes: () => 0 }).assertHealthy(), ScanGuardAbortedError);
+  const roomy = createScanWatchdog({ initialAvailableBytes: 32 * GIB, readAvailableBytes: () => 4 * GIB });
+  assert.equal(roomy.floorBytes, 512 * MIB);
+  assert.doesNotThrow(() => roomy.assertHealthy());
 });
 
 test("scan watchdog checks on the file cadence and aborts below the floor", () => {
@@ -517,8 +520,10 @@ test("unscoped --limit-files estimates the adapter-selected ZCode database and i
     await writeFile(`${db}-wal`, "");
     await truncate(`${db}-wal`, 8 * MIB);
     for (const safeMode of [true, false]) {
+      const expectedBytes = (await stat(db)).size + (await stat(`${db}-wal`)).size + (await stat(`${db}-shm`).catch(() => ({ size: 0 }))).size;
       const parsedFiles: string[] = [];
-      await assert.rejects(scanLiteHistory({
+      const events: ScanGuardEvent[] = [];
+      const snapshot = await scanLiteHistory({
         homeDir: root,
         sourceRefs: ["zcode"],
         sourceRoots: [{ sourceRef: "zcode", baseDir: sourceRoot }],
@@ -526,15 +531,15 @@ test("unscoped --limit-files estimates the adapter-selected ZCode database and i
         safeMode,
         scanGuard: { profile: "light" },
         scanGuardDeps: { lock: { lockPath: path.join(root, "scan.lock") }, readAvailableBytes: () => 512 * MIB },
+        onScanGuardEvent: event => events.push(event),
         onProgress: (event) => {
           if (event.stage === "file_start" && event.file_path) parsedFiles.push(event.file_path);
         },
-      }), (error: unknown) => {
-        assert.ok(error instanceof ScanGuardRefusedError);
-        assert.equal(error.assessment?.scannedBytes, 136 * MIB);
-        return true;
       });
-      assert.deepEqual(parsedFiles, []);
+      assert.equal(events[0]?.assessment.scannedBytes, expectedBytes);
+      assert.deepEqual(parsedFiles, [db]);
+      assert.ok(snapshot.data.loss_audits.length > 0);
+      assert.deepEqual(snapshot.projectionIssues, []);
       await assert.rejects(access(path.join(root, "scan.lock")));
     }
   } finally {
@@ -551,19 +556,20 @@ test("the guard includes Cursor supplemental storage outside the selected projec
     await mkdir(path.dirname(db), { recursive: true });
     await writeFile(db, "");
     await truncate(db, 128 * MIB);
-    await assert.rejects(scanLiteHistory({
+    const events: ScanGuardEvent[] = [];
+    const snapshot = await scanLiteHistory({
       homeDir: root,
       sourceRefs: ["cursor"],
       sourceRoots: [{ sourceRef: "cursor", baseDir: projects }],
       limitFiles: 1,
+      onScanGuardEvent: event => events.push(event),
       safeMode: true,
       scanGuard: { profile: "light" },
       scanGuardDeps: { lock: { lockPath: path.join(root, "scan.lock") }, readAvailableBytes: () => 512 * MIB },
-    }), (error: unknown) => {
-      assert.ok(error instanceof ScanGuardRefusedError);
-      assert.equal(error.assessment?.scannedBytes, 128 * MIB);
-      return true;
     });
+    assert.equal(events[0]?.assessment.scannedBytes, 128 * MIB);
+    assert.ok(snapshot.data.loss_audits.length > 0);
+    assert.deepEqual(snapshot.projectionIssues, []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -583,11 +589,7 @@ test("whole-file session identity lookups are budgeted before locating the reque
       safeMode: true,
       scanGuard: { profile: "light" },
       scanGuardDeps: { lock: { lockPath: path.join(root, "scan.lock") }, readAvailableBytes: () => GIB },
-    }), (error: unknown) => {
-      assert.ok(error instanceof ScanGuardRefusedError);
-      assert.equal(error.assessment?.scannedBytes, 256 * GIB);
-      return true;
-    });
+    }), /did not find requested session/);
     await assert.rejects(access(path.join(root, "scan.lock")));
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -642,13 +644,13 @@ test("estimation and execution keep one inventory; the next scan discovers new f
   }
 });
 
-test("a file changed after planning aborts before parsing and releases the scan lock", async () => {
+test("ongoing appends remain readable and release the scan lock", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-plan-change-"));
   try {
     const file = path.join(root, "rollout.jsonl");
     await cp(path.join(mockDataRoot, "fixtures/source-shapes/codex/ordinary-fork.jsonl"), file);
     let parseStarts = 0;
-    await assert.rejects(scanLiteHistory({
+    const snapshot = await scanLiteHistory({
       homeDir: emptyHome,
       sourceRefs: ["codex"],
       sourceRoots: [{ sourceRef: "codex", baseDir: root }],
@@ -663,8 +665,10 @@ test("a file changed after planning aborts before parsing and releases the scan 
         }
         if (event.stage === "file_capture_done") parseStarts += 1;
       },
-    }), SourceFileReadPlanChangedError);
-    assert.equal(parseStarts, 0);
+    });
+    assert.ok(parseStarts > 0);
+    assert.equal(snapshot.listResolvedSessions().length, 1);
+    assert.deepEqual(snapshot.projectionIssues, []);
     await assert.rejects(access(path.join(root, "scan.lock")));
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -682,7 +686,7 @@ test("directory pruning is invalidated when excluded metadata changes after esti
     const bytes = (await stat(inside)).size;
     let parsedFiles = 0;
     let changed = false;
-    await assert.rejects(scanLiteHistory({
+    const snapshot = await scanLiteHistory({
       homeDir: emptyHome,
       sourceRefs: ["codex"],
       sourceRoots: [{ sourceRef: "codex", baseDir: root }],
@@ -701,9 +705,11 @@ test("directory pruning is invalidated when excluded metadata changes after esti
         utimesSync(outside, modified, modified);
       },
       onProgress: (event) => { if (event.stage === "file_start") parsedFiles += 1; },
-    }), SourceFileReadPlanChangedError);
+    });
     assert.ok(changed, "the scoped estimate must reach the warning callback");
-    assert.equal(parsedFiles, 0);
+    assert.equal(parsedFiles, 2);
+    assert.equal(snapshot.listResolvedSessions({ directoryScope: "/workspace/codex-delegated" }).length, 2);
+    assert.deepEqual(snapshot.projectionIssues, []);
     await assert.rejects(access(path.join(root, "scan.lock")));
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -768,30 +774,17 @@ test("a guarded scan refuses behind a held lock; bypassed probes skip the lock",
   }
 });
 
-test("an estimate refusal releases the scan lock", async () => {
+test("an excessive aggregate estimate warns, preserves readable history, and releases the lock", async () => {
   const lockDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-scan-lock-"));
   try {
     const lockPath = path.join(lockDir, "scan.lock");
-    await assert.rejects(
-      guardedFixtureScan(
-        { profile: "light" },
-        {
-          lock: { lockPath },
-          walkRootBytes: async () => GIB,
-          readAvailableBytes: () => 96 * MIB,
-        },
-      ),
-      (error: unknown) => {
-        assert.ok(error instanceof ScanGuardRefusedError);
-        assert.equal(error.reason, "estimated_memory");
-        assert.doesNotMatch(error.message, /CCHISTORY_SCAN_GUARD=0/);
-        return true;
-      },
-    );
+    const snapshot = await guardedFixtureScan({ profile: "light" }, {
+      lock: { lockPath }, walkRootBytes: async () => GIB, readAvailableBytes: () => 96 * MIB,
+    });
+    assert.ok(snapshot.listResolvedSessions().length > 0);
+    assert.deepEqual(snapshot.projectionIssues, []);
     await assert.rejects(access(lockPath));
-  } finally {
-    await rm(lockDir, { recursive: true, force: true });
-  }
+  } finally { await rm(lockDir, { recursive: true, force: true }); }
 });
 
 test("a warn assessment emits exactly one event and the scan proceeds", async () => {
@@ -859,8 +852,7 @@ test("a --dir estimate prices matching source files and ignores junk plus out-of
     await truncate(outsideSession, 256 * GIB);
     const tightMemory = { readAvailableBytes: () => 512 * MIB };
 
-    await assert.rejects(
-      scanLiteHistory({
+    const unscoped = await scanLiteHistory({
         homeDir: emptyHome,
         hostname: "cchistory-lite-dir-estimate-host",
         sourceRefs: ["codex"],
@@ -869,15 +861,10 @@ test("a --dir estimate prices matching source files and ignores junk plus out-of
         contextMode: "none",
         scanGuard: { profile: "light" },
         scanGuardDeps: tightMemory,
-      }),
-      (error: unknown) => {
-        assert.ok(error instanceof ScanGuardRefusedError);
-        assert.equal(error.reason, "estimated_memory");
-        assert.equal(error.assessment?.directoryScoped, undefined);
-        assert.match(error.message, /this scan has no --dir filter/);
-        return true;
-      },
-    );
+      });
+    assert.ok(unscoped.listResolvedSessions().length > 0);
+    assert.ok(unscoped.data.loss_audits.some(a => a.detail.includes("Read budget exceeded")));
+    assert.deepEqual(unscoped.projectionIssues, []);
 
     const scoped = await scanLiteHistory({
       homeDir: emptyHome,
@@ -916,8 +903,7 @@ test("a --dir estimate keeps a logical-session group whose known cwds conflict",
     await writeSession("split-a.jsonl", "/workspace/alpha", "1");
     const splitB = await writeSession("split-b.jsonl", "/workspace/beta", "2");
     await truncate(splitB, 256 * GIB);
-    await assert.rejects(
-      scanLiteHistory({
+    const snapshot = await scanLiteHistory({
         homeDir: emptyHome,
         hostname: "cchistory-lite-dir-conflict-host",
         sourceRefs: ["codex"],
@@ -927,15 +913,9 @@ test("a --dir estimate keeps a logical-session group whose known cwds conflict",
         contextMode: "none",
         scanGuard: { profile: "light" },
         scanGuardDeps: { readAvailableBytes: () => 512 * MIB },
-      }),
-      (error: unknown) => {
-        assert.ok(error instanceof ScanGuardRefusedError);
-        assert.equal(error.reason, "estimated_memory");
-        assert.equal(error.assessment?.directoryScoped, true);
-        assert.ok((error.assessment?.scannedBytes ?? 0) >= 256 * GIB);
-        return true;
-      },
-    );
+      });
+    assert.ok(snapshot.data.loss_audits.some(a => a.detail.includes("Read budget exceeded")));
+    assert.deepEqual(snapshot.projectionIssues, []);
   } finally {
     await rm(tempHome, { recursive: true, force: true });
   }
@@ -968,8 +948,10 @@ test("process available memory wins over host totals and preserves actual exhaus
   }
 });
 
-test("sample/exact queue bypass still refuses excessive native reads", async () => {
-  await assert.rejects(guardedFixtureScan({ profile: "light", bypass: true }, {
+test("sample/exact queue bypass retains local read admission without refusing the aggregate estimate", async () => {
+  const snapshot = await guardedFixtureScan({ profile: "light", bypass: true }, {
     walkRootBytes: async () => MIB, readAvailableBytes: () => MIB, readHeapBytes: () => GIB,
-  }), ScanGuardRefusedError);
+  });
+  assert.ok(snapshot.listResolvedSessions().length > 0);
+  assert.deepEqual(snapshot.projectionIssues, []);
 });

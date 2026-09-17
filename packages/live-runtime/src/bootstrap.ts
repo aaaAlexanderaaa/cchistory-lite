@@ -1,4 +1,5 @@
 import { installRuntimeWarningFilter } from "@cchistory/canonical";
+export { runWithAdaptiveHeap } from "./launcher-memory.js";
 
 // Install before any importer dynamically loads `node:sqlite` through adapters.
 installRuntimeWarningFilter();

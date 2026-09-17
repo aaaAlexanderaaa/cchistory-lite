@@ -53,15 +53,16 @@ source errors and loss audits before interpreting an empty result. Do not silent
 switch to `--no-dir` or substitute keyword search for directory membership.
 
 A file, session, or SQLite row can be large. `LIMIT`, `sample N` and `--limit-files`
-are not memory guarantees. A resource refusal (`scan_guard_refused`,
-`scan_guard_aborted`, `read_budget_exceeded`) means no complete result was produced.
+are not memory guarantees. Aggregate estimates warn and proceed. Per-input `read_budget_exceeded` diagnostics
+can accompany usable history; inspect them before claiming exhaustive coverage. A scan
+refusal (`scan_guard_refused`, `scan_guard_aborted`) produces no complete result.
 Preserve the requested scope and report the limitation; do not cycle through sample,
 source and file limits or disable the guard hoping to make the query succeed.
 Source/file restrictions are available when the task explicitly calls for a subset.
 Memory refusals distinguish the system estimate from remaining V8 heap and identify
-which limits the read. Neither number is total machine RAM. Lite leaves the heap
-limit to Node; do not infer a sandbox quota from free pages, set internal memory
-markers, or change heap settings automatically.
+which limits the read. Neither number is total machine RAM. Launchers automatically
+grow the default heap when available memory allows and preserve explicit Node settings.
+Do not infer a sandbox quota from free pages or disable protections.
 
 Prefer one shell or one `query --request -` batch to repeated scans; avoid parallel
 one-shot history reads. `sample` is an optional file/group preview with at most N
@@ -113,8 +114,8 @@ template scoped to `--source codex` can skip older sessions' full interpretation
 but still reads/decodes every admitted file to prove timestamp bounds. Selective
 results have exact rows and observed-only diagnostics. Complete requests and
 valid queries outside this optimization use complete reads, as do unknown native
-shapes or uncertain evidence. Unsupported SQL is rejected; changed admitted
-evidence requires a new read. Do not treat this as a general
+shapes or uncertain evidence. Unsupported SQL is rejected; changed selection
+evidence automatically falls back to an ordinary read. Do not treat this as a general
 I/O or memory bound. Full syntax, field/null/order semantics, budgets, and shipped
 templates: [query guide](../../docs/guide/query.md).
 

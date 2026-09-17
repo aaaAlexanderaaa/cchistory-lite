@@ -30,10 +30,9 @@ derivation → one in-memory snapshot → projections → the surface you called
 History reads build the canonical object graph in memory. Discovery does not read
 history; a shell opens without preparing data and prepares on the first valid read.
 
-Node owns the heap limit. Lite uses Node's default and honors explicit Node flags or
-`NODE_OPTIONS`; it does not re-exec to resize the heap or set an internal memory
-budget. Total physical RAM, available system memory and remaining V8 heap are
-separate quantities. Old space is not total RSS.
+Launchers may relaunch once to grow the default heap to half the system availability
+estimate. They preserve explicit Node flags and `NODE_OPTIONS`. Library calls retain
+the caller's heap. Total RAM, available memory, remaining V8 heap and RSS are separate.
 
 On macOS, availability is estimated from `vm_stat` free + inactive pages, rather
 than Node's free-page-only signal. This is a reclaimability estimate, not a guaranteed
@@ -44,15 +43,16 @@ Resource admission applies to sample and exact-id reads as well as full reads:
 
 1. Full scans share an advisory lock (30s maximum wait). Sample and exact-id reads
    skip only that queue; they still undergo all memory checks.
-2. Preflight estimates selected native bytes ×4 (light) or ×8 (full), compared with
-   the smaller of the system availability estimate and remaining V8 heap: warning at >50%,
-   refusal at >75%. These expansion factors are heuristics, not capacity proofs.
-3. An attempt-wide native-byte budget uses the same headroom and expansion factor.
-   Cursor/ZCode/VS Code SQLite readers check selected value lengths and row overhead
-   in a read transaction before retrieving values into JS. Exhaustion propagates as
-   `read_budget_exceeded`, never as an empty source or exact query success.
-4. The watchdog reserves 25% of estimated system availability at scan start, without a
-   fixed byte minimum or host-total fraction. It checks at progress/checkpoints;
+2. Preflight estimates selected native bytes ×4 (light) or ×8 (full). Above 50% of
+   the smaller of system availability and remaining heap, they warn and proceed.
+   Aggregate file sizes are not proof that the snapshot cannot fit.
+3. Each payload read checks current headroom, leaving 25% in reserve and applying
+   the profile's expansion factor. Temporary input bytes are not permanently charged.
+   SQLite readers check selected value lengths and row overhead inside a read transaction.
+   An input that exceeds its budget leaves loss diagnostics; other readable history
+   remains available. Do not interpret a result with read-loss diagnostics as exhaustive.
+4. The watchdog reserves 25% of estimated system availability at scan start, capped
+   at 512 MiB so normal host load changes with gigabytes still free do not abort a scan. It checks at progress/checkpoints;
    it cannot interrupt a synchronous native allocation.
 
 A refusal reports `systemAvailableBytes`, `heapAvailableBytes`, `memorySignal` and
@@ -60,8 +60,9 @@ A refusal reports `systemAvailableBytes`, `heapAvailableBytes`, `memorySignal` a
 not machine capacity. A refusal preserves scope and produces no complete result. Report it; do not widen
 `--dir`, disable the guard or cycle through file/source limits automatically.
 `--source`, `--limit-files` and `sample` select subsets, not guaranteed memory bounds.
-Large-container preflight remains conservative; successful reads of arbitrary
-histories on low-memory machines are not established. Reuse a successful read with
+Concurrent appends and WAL changes are normal. Version-dependent query optimizations
+fall back to ordinary reads when evidence changes. Snapshots need not contain the
+latest write from every source. Reuse a successful read with
 one shell or a query batch. Do not discard stderr.
 
 For empty scoped results, inspect `diagnostics.directory_scope`: unknown directory

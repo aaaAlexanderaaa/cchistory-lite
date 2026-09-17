@@ -44,8 +44,8 @@ timestamp are not valid substitutes for this bound. Possible cross-session depen
 the narrow independence proof and retain the complete path.
 
 Admitted evidence is revalidated before/after inventory and before publishing a selective answer,
-including skipped files. A changed version aborts this attempt; it does not mix versions or silently
-reuse a stale bound. This is not an atomic native transaction: files newly appearing outside the
+including skipped files. A changed version disables the optimization and triggers an ordinary
+read; stale bounds are not reused. This is not an atomic native transaction: files newly appearing outside the
 admitted inventory and changes after final validation have the same limits as the complete reader.
 
 A selective read returns query rows, observed diagnostics and a process-local read identity. It
@@ -67,7 +67,7 @@ the checked-in variant records. Mtime changes are explicit; elapsed timing is no
 | New real message followed by old metadata | Maximum timestamp protects the result; no last-line shortcut |
 | Missing timestamp/identity, unknown shape, malformed JSON, oversized line | Complete fallback; reference rows and diagnostic counts preserved |
 | Native child metadata or family-link tool, including whitespace in its name | Complete fallback; child eligibility and tool-name normalization follow the canonical reference |
-| Changed skipped file after inventory | Attempt fails with `source_read_plan_changed` before returning rows |
+| Changed skipped file after inventory | Falls back to an ordinary read before returning rows |
 | Complete totals, changed fields/offset, multiple sources | Complete reference behavior; no activity inventory |
 | Matching and excluding directory scope | Same rows as the complete scoped executor |
 | Fewer eligible rows than LIMIT | Reads all groups and reports complete coverage |

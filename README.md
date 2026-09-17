@@ -75,6 +75,20 @@ emit those transcripts twice.
 Point an adapter somewhere else with `--source-root <slot>=<path>`, e.g.
 `--source-root claude_code=/mnt/history/.claude/projects`.
 
+## Live reads and memory
+
+Other agents can keep running while Lite reads their history. Appends and SQLite
+WAL updates are normal; the snapshot may be slightly behind the writer. Changed
+selection evidence falls back to an ordinary read. Unreadable or oversized inputs
+leave diagnostics alongside the history that could be read.
+
+The CLI and TUI automatically grow Node's default heap when available system memory
+allows, leaving half that capacity for other uses. Estimates warn; they do not
+reject the whole scan. Per-read memory checks and the pressure watchdog remain on.
+Explicit `NODE_OPTIONS='--max-old-space-size=8192'` selects an 8 GiB heap ceiling
+while keeping those protections enabled. See the [memory guide](docs/guide/lite.md)
+for details; disabling the guard is not required for normal use.
+
 ## More
 
 - Finite SQL, bound templates, and shell lifetime: [`docs/guide/query.md`](docs/guide/query.md)

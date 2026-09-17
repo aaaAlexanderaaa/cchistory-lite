@@ -731,10 +731,23 @@ export async function captureBlob(
   hostId: string,
   filePath: string,
   captureRunId: string,
+  budget?: SourceReadBudget,
 ): Promise<CapturedBlobInput> {
-  const beforeStats = await fs.stat(filePath);
-  const fileBuffer = await fs.readFile(filePath);
-  const afterStats = await fs.stat(filePath);
+  const handle = await fs.open(filePath, "r");
+  const { beforeStats, afterStats, fileBuffer } = await (async () => {
+    try {
+      const beforeStats = await handle.stat();
+      budget?.admit(beforeStats.size, filePath);
+      const buffer = Buffer.alloc(beforeStats.size);
+      let offset = 0;
+      while (offset < buffer.length) {
+        const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset);
+        if (bytesRead === 0) break;
+        offset += bytesRead;
+      }
+      return { beforeStats, afterStats: await handle.stat(), fileBuffer: buffer.subarray(0, offset) };
+    } finally { await handle.close(); }
+  })();
   const fileIdentityStable = fileIdentityFromStats(beforeStats, afterStats, fileBuffer.byteLength);
   const checksum = sha1(fileBuffer);
   const content_max_timestamp = isIncrementalJsonlPlatform(source.platform)
@@ -782,8 +795,10 @@ export async function captureBlobStreaming(
   hostId: string,
   filePath: string,
   captureRunId: string,
+  budget?: SourceReadBudget,
 ): Promise<StreamingCapturedBlobInput> {
   const beforeStats = await fs.stat(filePath);
+  budget?.admit(beforeStats.size, filePath);
   const fileIdentityStableBefore = {
     size: beforeStats.size,
     mtimeMs: beforeStats.mtimeMs,
@@ -795,9 +810,9 @@ export async function captureBlobStreaming(
   let tail = Buffer.alloc(0);
   const hasher = createHash("sha1");
   try {
-    while (true) {
+    while (totalBytes < beforeStats.size) {
       const block = Buffer.alloc(STREAMING_BACKING_BLOCK_BYTES);
-      const { bytesRead } = await handle.read(block, 0, STREAMING_BACKING_BLOCK_BYTES, null);
+      const { bytesRead } = await handle.read(block, 0, Math.min(block.length, beforeStats.size - totalBytes), null);
       if (bytesRead === 0) {
         break;
       }
@@ -838,12 +853,14 @@ export async function captureBlobStreaming(
     streamingLineReader: async function* streamChunks(): AsyncGenerator<Buffer> {
       const fh = await fs.open(filePath, "r");
       try {
-        while (true) {
+        let remaining = totalBytes;
+        while (remaining > 0) {
           const block = Buffer.alloc(STREAMING_BACKING_BLOCK_BYTES);
-          const { bytesRead } = await fh.read(block, 0, STREAMING_BACKING_BLOCK_BYTES, null);
+          const { bytesRead } = await fh.read(block, 0, Math.min(block.length, remaining), null);
           if (bytesRead === 0) {
             break;
           }
+          remaining -= bytesRead;
           yield bytesRead === STREAMING_BACKING_BLOCK_BYTES ? block : block.subarray(0, bytesRead);
         }
       } finally {

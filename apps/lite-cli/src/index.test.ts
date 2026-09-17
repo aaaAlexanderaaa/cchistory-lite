@@ -1215,6 +1215,8 @@ test("Lite CLI help documents latest, limits, and directory scope", async () => 
     "db",
   ]);
   const documentedFlags = new Set([...help.matchAll(/--([a-z][a-z-]*)/gu)].map((match) => match[1]!));
+  assert.match(help, /NODE_OPTIONS='--max-old-space-size=8192'/);
+  documentedFlags.delete("max-old-space-size"); // Node option, not a Lite argument.
   for (const flag of documentedFlags) {
     assert.ok(knownFlags.has(flag), `help documents unknown option --${flag}`);
   }
@@ -1638,84 +1640,19 @@ test("Lite shell JSON-lines keeps the snapshot when refresh fails and uses struc
   assert.equal(startupError.error.code, "scan_failed");
 });
 
-test("Lite CLI scan guard refuses a scan whose estimate risks the machine, teaches the bounds, and bends to the kill-switch", async () => {
-  const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-guard-cli-"));
-  const fixtureRoot = path.join(tempHome, "codex-sessions");
-  try {
-    await cp(codexRoot, fixtureRoot, { recursive: true });
-    // Exercise guard-to-surface behavior with a controlled risk estimate. Runtime
-    // tests cover adapter selection; unrelated files must not inflate the estimate.
-    const guardedIo = () => captureIo(tempHome, undefined, {
-      scan: (options) => scanLiteHistory({
-        ...options,
-        scanGuardDeps: {
-          walkRootBytes: async () => options.directoryScope ? 0 : 256 * 1024 ** 3,
-          readAvailableBytes: () => 1024 ** 3,
-        },
-      }),
-    });
-    const sourceArgs = ["--source-root", `codex=${fixtureRoot}`, "--source", "codex", "--safe"];
-
-    const refused = guardedIo();
-    assert.equal(await runLiteCli(["sources", "--complete", ...sourceArgs], refused.io), 1);
-    assert.equal(refused.stdout.join(""), "");
-    const message = refused.stderr.join("");
-    assert.match(message, /Refusing to scan/);
-    assert.match(message, /Selected source roots/);
-    assert.match(message, /codex/);
-    assert.match(message, /this scan has no --dir filter/);
-    assert.match(message, /keep the requested scope/);
-    assert.match(message, /File count and sample size are not memory bounds/);
-    assert.match(message, /sample/);
-    assert.match(message, /sources --json/);
-    assert.match(message, /shell/);
-    assert.match(message, /No complete result/);
-    assert.doesNotMatch(message, /CCHISTORY_SCAN_GUARD=0/);
-    assert.doesNotMatch(message, /--dir is already on/);
-    assert.doesNotMatch(message, /does not shrink source bytes/);
-
-    const scopedLatest = guardedIo();
-    assert.equal(
-      await runLiteCli(["latest", "--dir", "/workspace/codex-delegated", ...sourceArgs], scopedLatest.io),
-      0,
-      scopedLatest.stderr.join(""),
-    );
-    const defaultDir = guardedIo();
-    assert.equal(await runLiteCli(["latest", ...sourceArgs], defaultDir.io), 0, defaultDir.stderr.join(""));
-
-    const refusedJson = guardedIo();
-    assert.equal(await runLiteCli(["sources", "--complete", "--json", ...sourceArgs], refusedJson.io), 1);
-    assert.equal(refusedJson.stdout.join(""), "");
-    const errorPayload = JSON.parse(refusedJson.stderr.join("")) as {
-      schema: string;
-      error: { code: string; message: string };
-    };
-    assert.equal(errorPayload.schema, "cchistory-lite-error/v1");
-    assert.equal(errorPayload.error.code, "scan_guard_refused");
-    assert.match(errorPayload.error.message, /Refusing to scan/);
-
-    // Sample/exact probes bypass only the lock; an excessive estimate still refuses.
-    const sampled = guardedIo();
-    assert.equal(await runLiteCli(["sample", "1", ...sourceArgs, "--no-dir"], sampled.io), 1, sampled.stderr.join(""));
-    const shown = guardedIo();
-    assert.equal(
-      await runLiteCli(
-        ["show", "session", "sess:codex:019ce4fd-8290-7501-afc4-0e9486733614", ...sourceArgs],
-        shown.io,
-      ),
-      1,
-      shown.stderr.join(""),
-    );
-
-    process.env.CCHISTORY_SCAN_GUARD = "0";
-    try {
-      const allowed = guardedIo();
-      assert.equal(await runLiteCli(["sources", "--complete", ...sourceArgs], allowed.io), 0, allowed.stderr.join(""));
-    } finally {
-      delete process.env.CCHISTORY_SCAN_GUARD;
-    }
-  } finally {
-    await rm(tempHome, { recursive: true, force: true });
+test("Lite CLI warns on large aggregate estimates while returning readable history", async () => {
+  const ioForScan = () => captureIo(repoRoot, undefined, {
+    scan: options => scanLiteHistory({ ...options, scanGuardDeps: {
+      walkRootBytes: async () => 256 * 1024 ** 3, readAvailableBytes: () => 1024 ** 3,
+    } }),
+  });
+  const sourceArgs = ["--source-root", `codex=${codexRoot}`, "--source", "codex", "--safe"];
+  for (const args of [["sources", "--complete"], ["sources", "--complete", "--json"], ["sample", "1", "--no-dir"]]) {
+    const captured = ioForScan();
+    assert.equal(await runLiteCli([...args, ...sourceArgs], captured.io), 0, captured.stderr.join(""));
+    assert.ok(captured.stdout.join("").length > 0);
+    assert.match(captured.stderr.join(""), /Scan guard warning:.*proceeding/);
+    assert.doesNotMatch(captured.stderr.join(""), /Refusing to scan/);
   }
 });
 
@@ -1879,8 +1816,8 @@ test("Lite CLI agent prints the machine-readable contract without scanning", asy
   assert.equal(guard.watchdog_floor.initial_available_fraction, SCAN_WATCHDOG_AVAILABLE_RESERVE_FRACTION);
   assert.deepEqual(guard.kill_switch, { env: "CCHISTORY_SCAN_GUARD", value: "0" });
   assert.deepEqual([...guard.error_codes].sort(), ["read_budget_exceeded", "scan_guard_aborted", "scan_guard_refused"]);
-  assert.equal(contract.cost_model.heap_ceiling.policy, "node_default_or_explicit");
-  assert.equal(contract.cost_model.heap_ceiling.automatic_reexec, false);
+  assert.equal(contract.cost_model.heap_ceiling.policy, "adaptive_default_or_explicit");
+  assert.equal(contract.cost_model.heap_ceiling.automatic_reexec, true);
 
   assert.equal(contract.trust_model.content_trust, "untrusted_history");
   const schemaIds = contract.output_schemas.map((entry) => entry.id);

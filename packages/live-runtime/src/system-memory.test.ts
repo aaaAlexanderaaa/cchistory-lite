@@ -45,7 +45,7 @@ test("Linux uses host MemAvailable and preserves the remaining known cgroup quot
   }
 });
 
-test("guard uses macOS reclaimable-memory estimate but still refuses work exceeding remaining V8 heap", async () => {
+test("guard uses macOS reclaimable-memory estimate and warns when the estimate exceeds remaining V8 heap", async () => {
   const deps = { readMemory: () => readAvailableMemory(macDeps), readHeapBytes: () => 4 * GIB };
   const input = { roots: ["/synthetic"], profile: "light" as const };
   // Would have failed against 64 MiB of unused pages despite ample inactive pages.
@@ -56,7 +56,7 @@ test("guard uses macOS reclaimable-memory estimate but still refuses work exceed
   assert.equal(allowed.memorySignal, "darwin_vm_stat");
   assert.equal(allowed.limitingResource, "heap");
   const refused = await assessScanRisk(input, { ...deps, walkRootBytes: async () => 3 * GIB });
-  assert.equal(refused.status, "refuse");
+  assert.equal(refused.status, "warn");
   assert.equal(refused.availableBytes, 4 * GIB);
   const error = new ScanGuardRefusedError({ reason: "estimated_memory", assessment: refused });
   assert.match(error.message, /System available-memory estimate: 12\.1 GiB \(darwin_vm_stat\)/);
@@ -64,7 +64,7 @@ test("guard uses macOS reclaimable-memory estimate but still refuses work exceed
   assert.doesNotMatch(error.message, /CCHISTORY_SCAN_GUARD=0/);
   const systemLimited = await assessScanRisk(input, { ...deps, walkRootBytes: async () => 64 * MIB,
     readMemory: () => ({ bytes: 128 * MIB, source: "darwin_vm_stat" }) });
-  assert.equal(systemLimited.status, "refuse");
+  assert.equal(systemLimited.status, "warn");
   assert.equal(systemLimited.limitingResource, "system");
   const unknown = await assessScanRisk(input, { ...deps, walkRootBytes: async () => 64 * MIB,
     readMemory: () => ({ source: "unknown" }) });

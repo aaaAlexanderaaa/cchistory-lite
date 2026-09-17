@@ -7,6 +7,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Concurrent native writers are treated as normal. JSONL appends and SQLite
+  WAL/SHM updates no longer abort a scan. Version-dependent query
+  optimizations fall back to an ordinary read when selection evidence
+  changes; the snapshot may lag the writer.
+- Preflight memory estimates warn and proceed instead of refusing the whole
+  scan. Each payload read is priced against live headroom (temporary input
+  bytes are not charged for the rest of the scan). An input that exceeds
+  that budget leaves diagnostics; other readable history is retained. The
+  watchdog reserve is capped at 512 MiB.
+- CLI and TUI launchers grow Node's default heap to half the
+  available-memory estimate when that materially exceeds the current
+  default. Explicit Node heap flags and `NODE_OPTIONS` are preserved;
+  library callers keep the caller heap.
+
+### Fixed
+
+- Reading Cursor / ZCode SQLite while the host app is writing no longer
+  fails the scan with `source_read_plan_changed`.
+- A large aggregate estimate (for example a 1 GiB file ×4) no longer
+  prevents startup. Oversized individual inputs are skipped with
+  diagnostics instead of blocking the rest of the read.
+
 ## [0.5.0] - 2026-09-08
 
 ### Added

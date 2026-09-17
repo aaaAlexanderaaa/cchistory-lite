@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFileSync } from "node:fs";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -13,6 +14,33 @@ import {
   firstNonEmptyTrimmedLineFromBuffer,
   isIncrementalJsonlPlatform,
 } from "./jsonl-records.js";
+
+test("buffered and streaming captures stop at their admitted length while writers append", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "lite-capture-append-"));
+  try {
+    const fixture = new URL("../../../../mock_data/fixtures/source-shapes/codex/ordinary-fork.jsonl", import.meta.url);
+    const original = await readFile(fixture);
+    const source: SourceDefinition = { id: "source-append", slot_id: "codex", family: "local_coding_agent",
+      platform: "codex", display_name: "Codex", base_dir: root };
+    for (const streaming of [false, true]) {
+      const file = path.join(root, `${streaming}.jsonl`);
+      await cp(fixture, file);
+      const budget = { admit: (bytes: number) => {
+        assert.equal(bytes, original.length);
+        appendFileSync(file, original);
+      } };
+      const captured = streaming
+        ? await captureBlobStreaming(source, "host", file, "run", budget)
+        : await captureBlob(source, "host", file, "run", budget);
+      appendFileSync(file, original);
+      const content = "fileBuffer" in captured ? captured.fileBuffer
+        : Buffer.concat(await collectAllChunks(captured.streamingLineReader()));
+      assert.deepEqual(content, original);
+      assert.equal(captured.blob.size_bytes, original.length);
+      assert.equal(captured.blob.file_identity_stable, false);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 async function* chunksFromBuffers(buffers: readonly Buffer[]): AsyncGenerator<Buffer> {
   for (const buffer of buffers) {

@@ -26,8 +26,8 @@ export type ScanGuardStatus = "ok" | "warn" | "refuse";
 export const LIGHT_SCAN_MEMORY_MULTIPLIER = 4;
 export const FULL_SCAN_MEMORY_MULTIPLIER = 8;
 
-// Use fractions of the smaller of estimated system availability and remaining
-// V8 heap. Leave room for allocation overhead and concurrent changes in load.
+// Preflight only warns. Per-read admission uses the smaller of system
+// availability and remaining V8 heap, reserving room for allocation overhead.
 export const SCAN_GUARD_REFUSE_AVAILABLE_FRACTION = 0.75;
 export const SCAN_GUARD_WARN_AVAILABLE_FRACTION = 0.5;
 
@@ -39,9 +39,10 @@ export const SCAN_LOCK_POLL_MS = 250;
 export const SCAN_LOCK_MAX_HOLDER_AGE_MS = 30 * 60_000;
 const SCAN_LOCK_MAX_STEALS = 3;
 
-// Reserve a quarter of the availability observed when this scan starts. This
-// shares the preflight consumption fraction and never uses host total in a container.
+// Reserve a quarter of starting availability, capped on large machines so a
+// normal shift in host load cannot stop a scan with gigabytes still available.
 export const SCAN_WATCHDOG_AVAILABLE_RESERVE_FRACTION = 1 - SCAN_GUARD_REFUSE_AVAILABLE_FRACTION;
+export const SCAN_WATCHDOG_MAX_RESERVE_BYTES = 512 * 1024 ** 2;
 export function readRemainingHeapBytes(): number {
   const heap = getHeapStatistics();
   return Math.max(0, heap.heap_size_limit - heap.used_heap_size);
@@ -157,13 +158,6 @@ export async function assessScanRisk(
       ...shared,
       status: "ok" as const,
       detail: "scan guard could not walk every selected root; proceeding without a complete estimate",
-    };
-  }
-  if (estimatedBytes > availableBytes * SCAN_GUARD_REFUSE_AVAILABLE_FRACTION) {
-    return {
-      ...shared,
-      status: "refuse" as const,
-      detail: "estimated peak exceeds 75% of admission headroom",
     };
   }
   if (estimatedBytes > availableBytes * SCAN_GUARD_WARN_AVAILABLE_FRACTION) {
@@ -438,7 +432,8 @@ export function createScanWatchdog(deps: ScanWatchdogDeps = {}): ScanWatchdog {
   if (initialAvailableBytes === undefined && deps.floorBytes === undefined) {
     try { initialAvailableBytes = readAvailable(); } catch { /* unknown */ }
   }
-  const floorBytes = deps.floorBytes ?? Math.floor((initialAvailableBytes ?? 0) * SCAN_WATCHDOG_AVAILABLE_RESERVE_FRACTION);
+  const floorBytes = deps.floorBytes ?? Math.min(SCAN_WATCHDOG_MAX_RESERVE_BYTES,
+    Math.floor((initialAvailableBytes ?? 0) * SCAN_WATCHDOG_AVAILABLE_RESERVE_FRACTION));
   const checkEveryFiles = deps.checkEveryFiles ?? SCAN_WATCHDOG_CHECK_EVERY_FILES;
   const checkIntervalMs = deps.checkIntervalMs ?? SCAN_WATCHDOG_CHECK_INTERVAL_MS;
   let filesSinceCheck = 0;
@@ -596,7 +591,7 @@ function formatMemorySignals(assessment: ScanRiskAssessment | undefined): string
   const heap = assessment?.heapAvailableBytes === undefined ? "unknown" : formatScanGuardBytes(assessment.heapAvailableBytes);
   return `System available-memory estimate: ${system} (${assessment?.memorySignal ?? "unknown"}); ` +
     `remaining V8 heap: ${heap}; limiting resource: ${assessment?.limitingResource ?? "unknown"}. ` +
-    "Lite does not set the Node heap limit.";
+    "Launchers grow the default heap when system capacity allows; explicit Node heap settings are preserved.";
 }
 
 function formatSelectedSourceRoots(assessment: ScanRiskAssessment | undefined): string {

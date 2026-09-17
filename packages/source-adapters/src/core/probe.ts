@@ -1,9 +1,8 @@
-import { SourceReadBudgetExceededError, type SourceReadBudget } from "./read-budget.js";
+import type { SourceReadBudget } from "./read-budget.js";
 import type { InterpretParsedSession } from "@cchistory/domain";
 import os from "node:os";
 import path from "node:path";
 import { readFile, stat } from "node:fs/promises";
-import { assertSourceFileReadCurrent, assertSourceFileReadPlanCurrent, SourceFileReadPlanChangedError } from "./file-read-plan.js";
 import type {
   Host,
   SourceDefinition,
@@ -593,10 +592,9 @@ async function* streamSingleFileInputs(
     file_count: fileCount,
   });
 
-  // Keep invalidated-budget failures outside the per-file parse-error recovery path.
+  // Plans select an inventory. Native writers may keep appending or updating
+  // SQLite WAL/SHM; only optimization evidence requires version validation.
   const readPlan = options.source_file_plans?.[source.id] ?? options.source_file_plans?.[source.slot_id];
-  if (readPlan) await assertSourceFileReadCurrent(readPlan, filePath);
-  if (!isPathBackedSqliteSourceFile(source.platform, filePath)) options.read_budget?.admit(await getFileSize(filePath), filePath);
 
   const fileLossAudits: LossAuditRecord[] = [];
   const fileOrphanBlobs: CapturedBlob[] = [];
@@ -673,11 +671,11 @@ async function* streamSingleFileInputs(
         earlyYield = true;
       } else {
         const captureStartedAt = Date.now();
-        capturedBlob = canProcessOversizedWithoutMaterializing
-          ? isPathBackedSqliteSourceFile(source.platform, filePath)
-            ? await capturePathBackedBlob(source, host.id, filePath, captureRunId)
-            : await captureBlobStreaming(source, host.id, filePath, captureRunId)
-          : await captureBlob(source, host.id, filePath, captureRunId);
+        capturedBlob = isPathBackedSqliteSourceFile(source.platform, filePath)
+          ? await capturePathBackedBlob(source, host.id, filePath, captureRunId)
+          : canProcessOversizedWithoutMaterializing
+            ? await captureBlobStreaming(source, host.id, filePath, captureRunId, options.read_budget)
+            : await captureBlob(source, host.id, filePath, captureRunId, options.read_budget);
         emitProbeProgress(options, source, {
           stage: "file_capture_done",
           message: `Captured ${filePath}`,
@@ -790,8 +788,6 @@ async function* streamSingleFileInputs(
     return;
   }
 
-  // Streaming and SQLite parsing may reopen the path after capture.
-  if (readPlan) await assertSourceFileReadCurrent(readPlan, filePath);
   try {
     const parseStartedAt = Date.now();
     const previousEntry = previousIndex?.byOriginPath.get(path.normalize(filePath));
@@ -847,17 +843,15 @@ async function* streamSingleFileInputs(
     if (adapter?.getCompanionEvidencePaths && !options.safe_mode) {
       const companionPaths = readPlan?.companions[filePath]
         ?? await adapter.getCompanionEvidencePaths(source.base_dir, filePath);
-      if (readPlan) await assertSourceFileReadCurrent(readPlan, filePath);
       for (const companionPath of companionPaths) {
         const normalizedCompanionPath = path.normalize(companionPath);
         if (capturedCompanionPaths.has(normalizedCompanionPath) || !(await pathExists(normalizedCompanionPath))) {
           continue;
         }
 
-        if (readPlan) await assertSourceFileReadPlanCurrent(readPlan, [normalizedCompanionPath]);
         capturedCompanionPaths.add(normalizedCompanionPath);
         try {
-          const companionCaptured = await captureBlob(source, host.id, normalizedCompanionPath, captureRunId);
+          const companionCaptured = await captureBlob(source, host.id, normalizedCompanionPath, captureRunId, options.read_budget);
           fileOrphanBlobs.push(companionCaptured.blob);
           fileTrustedBytesByBlobId.set(companionCaptured.blob.id, companionCaptured.fileBuffer);
         } catch (error) {
@@ -897,7 +891,6 @@ async function* streamSingleFileInputs(
       trustedBytesByBlobId: fileTrustedBytesByBlobId,
     };
   } catch (error) {
-    if (error instanceof SourceFileReadPlanChangedError || error instanceof SourceReadBudgetExceededError) throw error;
     const orphanBlob = capturedBlob?.blob;
     if (orphanBlob) {
       fileOrphanBlobs.push(orphanBlob);
@@ -2034,10 +2027,6 @@ function emitProbeProgress(
     display_name: source.display_name,
     ...event,
   });
-}
-
-async function getFileSize(filePath: string): Promise<number> {
-  return (await stat(filePath)).size;
 }
 
 async function processPathBackedSqliteBlob(

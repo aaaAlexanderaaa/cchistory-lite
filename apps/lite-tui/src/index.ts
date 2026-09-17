@@ -580,6 +580,10 @@ Keys:
 
 Refs accept a full id, a slug or display name, a workspace path, or a unique
 id prefix. Piping the TUI renders one non-interactive snapshot frame and exits.
+
+Memory adjusts to available system capacity; protection stays enabled.
+Optional heap ceiling: NODE_OPTIONS='--max-old-space-size=8192' cchistory-lite-tui
+Other agents may keep running. Unreadable inputs appear in source diagnostics.
 `;
 }
 
