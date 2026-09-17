@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-17
+
 ### Changed
 
 - Concurrent native writers are treated as normal. JSONL appends and SQLite
