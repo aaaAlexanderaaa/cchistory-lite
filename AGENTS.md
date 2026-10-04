@@ -79,6 +79,10 @@ or a CLI/TUI view must preserve the canonical projection contract. The contract 
 `auditProjectionConsistency` and includes:
 
 - every source, project, session, turn, and context reference resolves within the snapshot;
+- retained conversation evidence resolves to its own session and, when present, its own
+  turn, with no duplicate message identity. An assistant message without a canonical user
+  turn has explicit `turn_id: null`; do not invent a turn for it. Pagination binds the complete
+  ordered evidence and target, and never transfers child evidence onto a parent turn;
 - declared session/project counts equal the rows projected into those buckets;
 - snapshot sessions retain canonical last-real-message recency order, while turns retain canonical
   submission recency order;

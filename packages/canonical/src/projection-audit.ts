@@ -1,4 +1,5 @@
 import type {
+  ConversationEvidence,
   ProjectIdentity,
   SessionProjection,
   SourceStatus,
@@ -14,6 +15,7 @@ export interface ProjectionAuditInput {
   sessions: readonly SessionProjection[];
   turns: readonly UserTurnProjection[];
   contexts?: readonly TurnContextProjection[];
+  conversation_evidence?: readonly ConversationEvidence[];
 }
 
 export interface ProjectionAuditIssue {
@@ -23,6 +25,7 @@ export interface ProjectionAuditIssue {
   | "missing-session"
   | "missing-project"
   | "missing-context-turn"
+  | "evidence-turn-mismatch"
   | "session-turn-count"
   | "session-primary-project"
   | "project-turn-count"
@@ -32,7 +35,7 @@ export interface ProjectionAuditIssue {
   | "projected-unlinked-turn"
   | "turn-usage-total-mismatch"
   | "project-last-activity";
-  entity: "source" | "project" | "session" | "turn" | "context" | "snapshot";
+  entity: "source" | "project" | "session" | "turn" | "context" | "evidence" | "snapshot";
   id: string;
   detail: string;
 }
@@ -226,6 +229,17 @@ export function auditProjectionConsistency(input: ProjectionAuditInput): Project
     }
   }
 
+  const evidenceIds = new Set<string>();
+  const turnsById = new Map(input.turns.map(turn => [turn.id, turn]));
+  for (const message of input.conversation_evidence ?? []) {
+    const key = JSON.stringify([message.session_id, message.turn_id, message.role, message.message_id]);
+    if (evidenceIds.has(key)) issues.push({ code: "duplicate-id", entity: "evidence", id: message.message_id, detail: "conversation evidence appears more than once" });
+    evidenceIds.add(key);
+    if (!sessionIds.has(message.session_id)) issues.push({ code: "missing-session", entity: "evidence", id: message.message_id, detail: "conversation evidence points at a missing session" });
+    const turn = message.turn_id === null ? undefined : turnsById.get(message.turn_id);
+    if (message.turn_id === null ? message.role !== "assistant" : !turn || turn.session_id !== message.session_id) issues.push({ code: "evidence-turn-mismatch", entity: "evidence", id: message.message_id,
+      detail: "conversation evidence must resolve to its own turn and session" });
+  }
   return issues;
 }
 

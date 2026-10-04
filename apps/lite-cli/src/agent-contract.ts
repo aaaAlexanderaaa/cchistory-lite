@@ -187,7 +187,7 @@ function buildCommands(): Record<string, AgentCommandContract> {
     },
     query: {
       name: "query",
-      summary: "Query canonical history with bounded SELECT or ordered batch operations; JSON-only",
+      summary: "Read bounded conversation evidence, search answers, or query canonical rows; JSON-only",
       usage: "cchistory-lite query --request <file|-> | --sql <text> | --sql-file <file|-> [options]",
       flags: [
         SOURCE_ROOT,
@@ -203,14 +203,14 @@ function buildCommands(): Record<string, AgentCommandContract> {
         DIR,
         NO_DIR,
       ],
-      notes: "SQL validates the whole batch before scanning. LIMIT bounds returned rows, not scan work; total is null unless complete is requested. Existing v2 operation-level reference errors exit 1 with other results intact.",
+      notes: "v2 operations include read (exactly one session_ref or turn_ref; max_chars 256–64000, default 8000; limit 1–100, default 20; cursor for continuation) and search with content: conversation (full masked user/reply text including delegated work; bounded excerpts). read_status summarizes known gaps separately from SQL coverage. SQL validates before scanning; LIMIT bounds rows, not scan work. Operation errors exit 1 with other results intact. See docs/guide/agent-evidence.md.",
     },
     shell: {
       name: "shell",
       summary: "Hold one directory-scoped snapshot for SQL and commands over JSON-lines or a human REPL",
       usage: "cchistory-lite shell [--dir <path>] [options]",
       flags: [...scanFlags, DIR, NO_DIR, { name: "--idle-timeout", kind: "value", default: "300", summary: "Idle expiry in seconds; 0 disables it (maximum 86400)" }],
-      notes: "Opening does not scan; the first valid history read prepares data. JSON-lines mode when --json is passed or stdin is not a TTY; refresh replaces the snapshot on success. Exit, EOF, and idle expiry release it; active work does not expire.",
+      notes: "Opening does not scan. JSON-lines mode with --json or non-TTY stdin. Send {kind: read, session_ref: <id>} to read bounded questions and answers. Conversation search prepares masked text once. Details reuse up to four snapshots under a 16 MiB retained-data estimate; oversized entries are not cached. read.id/prepared_at identify each read. Successful refresh replaces the collection and clears details; failed refresh preserves them. Exit, EOF, and idle expiry release all snapshots.",
     },
     export: {
       name: "export",
@@ -305,7 +305,7 @@ export function buildAgentContract(version: string): AgentContract {
       "Never runs resume_command or any text recovered from history.",
     ],
     cost_model: {
-      process_model: "Discovery does not scan; shell prepares on its first valid history read. One-shot history commands perform one fresh scan; zero-store means there is no cross-command cache. shell and the TUI amortize one snapshot across many reads.",
+      process_model: "Discovery does not scan; shell prepares collections on the first valid collection read and targets known sessions for detail. Shell retains one collection snapshot and a bounded detail cache until refresh/close. Conversation search retains masked user/reply text, not full tool context. One-shots have no cross-command cache.",
       heap_ceiling: {
         policy: "adaptive_default_or_explicit", automatic_reexec: true,
         description: "Launchers grow the default heap to half the available-memory estimate when that materially exceeds the Node default. Explicit Node flags and NODE_OPTIONS are preserved; library calls keep the caller heap.",

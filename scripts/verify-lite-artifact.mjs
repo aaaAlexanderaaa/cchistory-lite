@@ -106,6 +106,7 @@ async function main() {
       throw new Error(`Installed SQL parser/executor closure failed: ${sql.stdout}`);
     }
     await assertSelectiveLatest(cli, installedRoot, tempRoot);
+    await assertAgentEvidence(cli, tempRoot);
     const requestPath = path.join(tempRoot, 'query.json');
     await writeFile(requestPath, `${JSON.stringify({
       schema: 'cchistory-lite-query/v2',
@@ -208,6 +209,7 @@ async function assertPublishableNpmPackage(installedRoot, tempRoot, expectedVers
     'package/docs/guide/for-agents.md',
     'package/docs/guide/lite.md',
     'package/docs/guide/query.md',
+    'package/docs/guide/agent-evidence.md',
     'package/docs/guide/queries/latest-sessions.sql',
     'package/skills/using-cchistory-lite/SKILL.md',
   ];
@@ -244,6 +246,7 @@ async function assertPublishableNpmPackage(installedRoot, tempRoot, expectedVers
   const sql = await execFile(npmCli, ['query', '--sql', 'SELECT id FROM sessions LIMIT 1', '--source-root', `codex=${fixtureRoot}`, '--source', 'codex', '--no-dir'], { cwd: npmPrefix, maxBuffer: 8 * 1024 * 1024 });
   if (JSON.parse(sql.stdout).operations?.[0]?.result?.shown !== 1) throw new Error('Prefix-installed SQL execution failed.');
   await assertSelectiveLatest(npmCli, path.join(npmPrefix, 'node_modules', '@cchistory', 'lite'), tempRoot);
+  await assertAgentEvidence(npmCli, tempRoot);
 
   const launchedTui = await execFile(
     npmCli,
@@ -315,6 +318,35 @@ async function assertShippedAgentSkill(cli, installedRoot) {
       || inventory.sources.length !== 1 || inventory.sources[0].history_read !== false
       || inventory.sources[0].total_sessions !== null) throw new Error('Installed source discovery violated its metadata-only contract.');
   await readFile(path.join(installedRoot, 'schemas', 'cchistory-lite-source-inventory-v1.schema.json'), 'utf8');
+}
+
+async function assertAgentEvidence(cli, tempRoot) {
+  const requestPath = path.join(tempRoot, 'agent-evidence-query.json');
+  const fixtureRoot = path.join(repoRoot, 'mock_data', 'fixtures', 'agent-evidence');
+  const run = async operations => {
+    await writeFile(requestPath, JSON.stringify({ schema: 'cchistory-lite-query/v2', operations }));
+    const output = await execFile(cli, ['query', '--request', requestPath, '--source', 'codex',
+      '--source-root', `codex=${fixtureRoot}`, '--dir', '/fixture/agent-project', '--safe'], { cwd: tempRoot, maxBuffer: 1024 * 1024 });
+    const result = JSON.parse(output.stdout);
+    if (!result.read?.id || !result.read_status || result.projection_issues?.length || result.operations.some(op => op.status !== 'ok')) {
+      throw new Error('Installed evidence query lost read identity, diagnostics or operation results.');
+    }
+    return result;
+  };
+  const first = await run([{ id: 'find', kind: 'search', query: 'checksum', content: 'conversation', limit: 5 },
+    { id: 'read', kind: 'read', session_ref: 'sess:codex:evidence-parent', limit: 1, max_chars: 256 }]);
+  const hit = first.operations[0].result.results[0];
+  if (hit?.session_id !== 'sess:codex:evidence-parent' || hit.matched_session_id !== 'sess:codex:evidence-child' || hit.turn_id !== null) {
+    throw new Error('Installed conversation search lost delegated evidence identity.');
+  }
+  const cursor = first.operations[1].result.next_cursor;
+  if (!cursor) throw new Error('Installed evidence read did not offer continuation.');
+  const second = await run([{ id: 'continue', kind: 'read', session_ref: 'sess:codex:evidence-parent', cursor, limit: 1, max_chars: 256 },
+    { id: 'child', kind: 'read', session_ref: hit.matched_session_id, max_chars: 256 }]);
+  if (!second.operations[0].result.messages.some(m => m.role === 'assistant' && m.text.includes('exponential backoff'))
+    || !second.operations[1].result.messages.some(m => m.turn_id === null && m.text.includes('checksum'))) {
+    throw new Error('Installed evidence continuation or child message read failed.');
+  }
 }
 
 async function assertSelectiveLatest(cli, installedRoot, tempRoot) {

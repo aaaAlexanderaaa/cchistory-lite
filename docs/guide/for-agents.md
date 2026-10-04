@@ -4,6 +4,9 @@ Start directly with `cchistory-lite latest sessions 10 --dir /path/to/project --
 or open `shell --dir /path/to/project --json` for repeated questions. No preparatory
 scan is required. `sources --json` is optional metadata-only discovery. `agent` is
 the optional machine contract; `agent skill` and `agent guide` print documentation.
+For past answers and decisions, use `search` with `content: "conversation"` and then
+bounded `read` operations. The [evidence guide](agent-evidence.md) covers citations,
+continuation, delegated messages and `read_status`.
 
 ## Pipeline
 
@@ -16,10 +19,11 @@ derivation → one in-memory snapshot → projections → the surface you called
   `show`, `stats`, `export`, `query`) each perform one fresh scan and drop the
   snapshot on exit. There is no cross-command cache; zero-store is the design,
   not a missing feature.
-- `shell` and the TUI hold one snapshot for the process lifetime and rescan on
-  demand.
+- The TUI holds one snapshot. Shell holds one collection plus a bounded detail
+  cache; each response identifies its actual read. Refresh replaces these on success.
 - Context-light scans (the default for collection, search, and stats reads)
-  release full assistant/tool context after projecting turns and sessions.
+  release full assistant/tool context after projecting turns and sessions. Conversation
+  search additionally retains masked user/reply evidence without full tool/system bodies.
   Full-context paths — JSON/JSONL `export`, `show session <exact id>`, and
   context-matching `show` / `query` replies — retain more and therefore cost
   more. Markdown `export` is context-light: it drops turn context after
@@ -69,6 +73,8 @@ For empty scoped results, inspect `diagnostics.directory_scope`: unknown directo
 counts describe observed sessions excluded from the scope, not absent project history.
 Sources and loss audits describe other observed gaps. These diagnostics do not
 silently change the directory predicate or claim all native records were readable.
+The top-level `read_status` summarizes these gaps. `partial` and `unverified` need
+qualification; `no_known_gaps` is not a guarantee of atomic native completeness.
 
 ## Concurrency discipline
 
@@ -100,14 +106,18 @@ Structured-output commands (`--json`, `query`, `shell --json`, `agent`) write a
 `cchistory-lite-error/v1` document to stderr on failure and leave stdout empty.
 Error codes: `invalid_usage`, `reference_not_found`, `ambiguous_reference`,
 `invalid_query_request`, `scan_failed`, `scan_guard_refused`,
-`scan_guard_aborted`, `read_budget_exceeded`. Shell per-line failures are returned as
+`scan_guard_aborted`, `read_budget_exceeded`. A read operation can return
+`invalid_evidence_cursor` with `recovery: restart_without_cursor` after evidence changes.
+Shell per-line failures are returned as
 error lines on stdout and leave the shell available for subsequent commands.
 
 ## Composition recipes
 
-- **Find, then read**: `search "<q>" --json` → take a session id →
-  `show session <id> --json`. Search rows are top-level sessions; delegated
-  children appear under the parent's related work.
+- **Find an answer, then read**: in shell, send
+  `{"kind":"search","query":"<q>","content":"conversation"}` and then
+  `{"kind":"read","turn_ref":"<turn_id>"}`. If the hit has a null turn ID,
+  read `matched_session_id` with `session_ref`. Legacy `show session --json`
+  omits reply bodies; bounded reads return both questions and answers.
 - **Optional preview**: `sample --json` selects file/groups and caps rendered sessions;
   containers can still require substantial parsing. It is not a first-use prerequisite.
 - **Many reads, one scan**: batch operations into `query --request -`
@@ -135,7 +145,8 @@ into SQL. Unsupported queries fail before scanning; a whole v3 batch is validate
 `--complete` requests an exact total and exhaustive diagnostics. Existing v2 operations remain
 available, with their original totals and output.
 
-A shell reuses one snapshot and SQL read ID until a successful refresh. Idle expiry defaults to
+A shell reuses its collection read ID until a successful refresh or preparation of conversation
+search evidence. Idle expiry defaults to
 300 seconds; use `--idle-timeout 0` for a client that deliberately remains idle longer. Exit and
-EOF close the shell, while active requests suspend expiry. Detail reads retain their existing
-fresh-scan behavior; the SQL read ID is not a detail cache handle.
+EOF close the shell, while active requests suspend expiry. Details use bounded process-local
+reuse and identify their own snapshot; a SQL read ID is not a native transaction or persistent handle.

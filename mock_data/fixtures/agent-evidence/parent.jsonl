@@ -1,0 +1,5 @@
+{"timestamp":"2026-04-12T10:00:00Z","type":"session_meta","payload":{"id":"evidence-parent","cwd":"/fixture/agent-project","source":"cli"}}
+{"timestamp":"2026-04-12T10:01:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Review the fixture decision."}]}}
+{"timestamp":"2026-04-12T10:02:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"We chose exponential backoff with jitter. The rejected fixed delay retried every client at once."}]}}
+{"timestamp":"2026-04-12T10:05:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Record the follow-up. 中文和 emoji 🧭 must remain intact."}]}}
+{"timestamp":"2026-04-12T10:06:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Next action: add the deterministic retry regression fixture."}]}}

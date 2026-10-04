@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { createInterface } from "node:readline";
-import { SQL_REQUEST_SCHEMA, QueryValidationError, MAX_QUERY_REQUEST_BYTES, type ScanLiteHistoryOptions, type LiveHistorySnapshot } from "@cchistory/live-runtime";
+import { SQL_REQUEST_SCHEMA, QueryValidationError, MAX_QUERY_REQUEST_BYTES, LiveHistoryReader, type ScanLiteHistoryOptions, type LiveHistorySnapshot } from "@cchistory/live-runtime";
 import { resourceError } from "./resource-errors.js";
 import { compactPayload, CONTENT_TRUST } from "./json-v2.js";
 import {
@@ -8,7 +8,7 @@ import {
   QUERY_REQUEST_SCHEMA,
   executePreparedQuery,
   prepareQueryRequest,
-  queryContextTargets,
+  prepareQuerySnapshot,
 } from "./query.js";
 
 export interface LiteShellIo {
@@ -38,18 +38,22 @@ export async function runLiteShell(input: ShellLifetime & {
 }): Promise<number> {
   const idle = input.idleTimeoutSeconds ?? 300;
   if (!Number.isSafeInteger(idle) || idle < 0 || idle > 86400) throw new QueryValidationError("idle-timeout must be an integer from 0 to 86400 seconds.", "budget");
-  let snapshot: LiveHistorySnapshot | undefined;
+  const reader = new LiveHistoryReader(input.scan);
   const publish = (next: LiveHistorySnapshot) => {
-    snapshot = next;
     if (!input.jsonLines) reportShellDiagnostics(next, input.io, input.directoryScope);
     return next;
   };
-  const getSnapshot = async () => snapshot ?? publish(await input.scan({ contextMode: "none" }));
-  const refresh = async () => { publish(await input.scan({ contextMode: "none" })); };
+  let reported: LiveHistorySnapshot | undefined;
+  const getSnapshot = async () => {
+    const next = await reader.collection();
+    if (reported !== next) { publish(next); reported = next; }
+    return next;
+  };
+  const refresh = async () => { const next = await reader.refresh(); publish(next); reported = next; };
   try {
-    if (input.jsonLines) return await runJsonLinesShell(input, getSnapshot, refresh);
-    return await runHumanShell(input, getSnapshot, refresh);
-  } finally { snapshot = undefined; }
+    if (input.jsonLines) return await runJsonLinesShell(input, reader, refresh);
+    return await runHumanShell(input, getSnapshot, refresh, reader);
+  } finally { reader.close(); }
 }
 
 function reportShellDiagnostics(snapshot: LiveHistorySnapshot, io: LiteShellIo, directoryScope?: string): void {
@@ -65,7 +69,7 @@ async function runJsonLinesShell(
     directoryScope?: string;
     scan: (overrides?: Partial<ScanLiteHistoryOptions>) => Promise<LiveHistorySnapshot>;
   },
-  getSnapshot: () => Promise<LiveHistorySnapshot>,
+  reader: LiveHistoryReader,
   refresh: () => Promise<void>,
 ): Promise<number> {
   let exitCode = 0;
@@ -99,10 +103,7 @@ async function runJsonLinesShell(
     }
     try {
       const request = await normalizeShellQuery(parsed);
-      const contextTargets = request.schema === SQL_REQUEST_SCHEMA ? [] : queryContextTargets(request);
-      const snapshot = contextTargets.length > 0
-        ? await input.scan({ contextMode: "matching", contextTargets })
-        : await getSnapshot();
+      const snapshot = await prepareQuerySnapshot(request, reader);
       const result = executePreparedQuery(request, snapshot, input.directoryScope);
       input.io.stdout(`${JSON.stringify(result.payload)}\n`);
       if (result.hasOperationErrors) exitCode = 1;
@@ -121,6 +122,7 @@ async function runHumanShell(
   input: ShellLifetime & { io: LiteShellIo; directoryScope?: string; scan: (overrides?: Partial<ScanLiteHistoryOptions>) => Promise<LiveHistorySnapshot> },
   getSnapshot: () => Promise<LiveHistorySnapshot>,
   refresh: () => Promise<void>,
+  reader: LiveHistoryReader,
 ): Promise<number> {
   input.io.stderr(`Lite shell · directory ${input.directoryScope ?? "(all)"} · type help, refresh, or exit\n`);
   for await (const line of readShellLines(input.io, true, input)) {
@@ -197,7 +199,7 @@ async function runHumanShell(
             input.io.stdout(`  ${turn.id}  ${singleLine(turn.canonical_text, 120)}\n`);
           }
         } else {
-          const detail = await input.scan({ contextMode: "matching", contextTarget: { kind: "turn", ref } });
+          const detail = await reader.detail([{ kind: "turn", ref }]);
           reportShellDiagnostics(detail, input.io, input.directoryScope);
           const turn = detail.getTurn(ref);
           if (!turn) throw new Error(`UserTurn not found: ${ref}.`);

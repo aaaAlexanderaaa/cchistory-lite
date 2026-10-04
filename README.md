@@ -43,6 +43,19 @@ on `PATH`.
 Agents: [`skills/using-cchistory-lite/SKILL.md`](skills/using-cchistory-lite/SKILL.md).
 Copy-paste recipes: [`docs/guide/lite.md`](docs/guide/lite.md).
 
+For questions about past decisions, open `cchistory-lite shell --dir /path/to/project --json`:
+
+```json
+{"kind":"search","query":"retry backoff","content":"conversation"}
+{"kind":"read","turn_ref":"<turn_id from a result>","max_chars":8000}
+{"kind":"exit"}
+```
+
+Conversation search includes masked user text and assistant answers. Reads return bounded
+evidence with stable citations and continuation cursors. Inspect `read_status` for known gaps;
+query success alone does not mean every native record was readable. See the
+[agent evidence guide](docs/guide/agent-evidence.md) for paging and snapshot lifetime.
+
 ## Supported sources
 
 Lite scans every registered adapter whose default root exists on the machine.

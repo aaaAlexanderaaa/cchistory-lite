@@ -1,4 +1,4 @@
-import type { CanonicalQueryResult, LogicalQuery, LossAuditRecord, SourceStatus } from "@cchistory/domain";
+import type { CanonicalQueryResult, LogicalQuery, LossAuditRecord, ReadStatus, SourceStatus } from "@cchistory/domain";
 import { collectionQueryTemplate, type ProjectionAuditIssue } from "@cchistory/canonical";
 
 export interface QueryReadWork {
@@ -20,6 +20,7 @@ export interface QueryReadWork {
   fallbackReason?: string;
 }
 export interface LiveQueryRead {
+  readStatus: ReadStatus;
   identity: { id: string; prepared_at: string };
   sourceIds: string[];
   directoryScope?: string;

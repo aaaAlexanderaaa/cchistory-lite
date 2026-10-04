@@ -254,6 +254,14 @@ format with schema `cchistory-lite-export/v1`.
 
 Batch requests are strict JSON documents:
 
+For bounded question/answer text, use `read` with a `session_ref` or `turn_ref`,
+`max_chars` and a continuation `cursor`. Search assistant answers with
+`content: "conversation"`. [Evidence operations](agent-evidence.md) document these
+additive v2 forms. History responses also expose `read` and `read_status`; query
+success and SQL coverage do not by themselves establish native completeness.
+
+Existing unbounded projections remain available:
+
 ```json
 {
   "schema": "cchistory-lite-query/v2",

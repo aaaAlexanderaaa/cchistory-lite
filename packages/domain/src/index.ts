@@ -1377,3 +1377,4 @@ export * from "./evidence-atoms.js";
 export * from "./masks.js";
 
 export type { QueryCollection, QueryValue, QueryValueType, QueryColumn, QueryPredicate, LogicalQuery, CanonicalQueryResult } from "./query.js";
+export type { ConversationEvidence, EvidenceReadOptions, ReadStatus } from "./conversation-evidence.js";

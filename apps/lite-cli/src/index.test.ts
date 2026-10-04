@@ -1525,7 +1525,7 @@ test("Lite shell JSON-lines searches sessions against one snapshot and refreshes
   assert.ok((search?.total ?? 0) >= (search?.shown ?? 0));
 });
 
-test("Lite shell JSON-lines replies from a line before stdin closes and loads matching context", async () => {
+test("Lite shell JSON-lines replies before stdin closes and targets the resolved session", async () => {
   const snapshot = await getCodexSnapshot();
   const turn = snapshot.listResolvedTurns().find((entry) => snapshot.getTurnContext(entry.id)?.assistant_replies.length);
   assert.ok(turn);
@@ -1538,7 +1538,7 @@ test("Lite shell JSON-lines replies from a line before stdin closes and loads ma
     stdinIsTTY: false,
     scan: async (options) => {
       scans.push(options);
-      return options.contextMode === "matching" ? snapshot : light;
+      return options.contextMode === "full" ? snapshot : light;
     },
   });
   const running = runLiteCli(["shell", "--no-dir"], captured.io);
@@ -1556,8 +1556,7 @@ test("Lite shell JSON-lines replies from a line before stdin closes and loads ma
   assert.equal(await running, 0);
   assert.ok(scans.some((options) => options.contextMode === "none"));
   assert.ok(scans.some((options) =>
-    options.contextMode === "matching"
-    && options.contextTargets?.some((target) => target.kind === "turn" && target.ref === turn.id),
+    options.contextMode === "full" && options.sessionRefs?.includes(turn.session_id),
   ));
   const payloads = captured.stdout.join("").trim().split("\n").map((line) => JSON.parse(line) as {
     kind?: string;

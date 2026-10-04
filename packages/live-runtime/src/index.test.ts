@@ -1,4 +1,4 @@
-import { interpretSessionEvidence } from "@cchistory/canonical";
+import { buildConversationEvidence, interpretSessionEvidence } from "@cchistory/canonical";
 import assert from "node:assert/strict";
 import { access, appendFile, copyFile, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
@@ -1111,6 +1111,12 @@ test("context retention preserves query semantics for every registered adapter w
       assertContextIndependentParity(compact, full);
       assert.deepEqual(compact.data.contexts, []);
       for (const turn of compact.listResolvedTurns()) assert.equal(compact.getTurnContext(turn.id), undefined);
+      const searchable = await scanLiteHistory({ ...options, contextMode: "none", retainConversationEvidence: true });
+      assertContextIndependentParity(searchable, full);
+      assert.deepEqual(searchable.projectionIssues, []);
+      assert.deepEqual(searchable.data.contexts, []);
+      assert.deepEqual(searchable.data.conversation_evidence!.filter(m => m.turn_id !== null).sort((a, b) => a.message_id.localeCompare(b.message_id)),
+        buildConversationEvidence(full.data.turns, full.data.contexts).sort((a, b) => a.message_id.localeCompare(b.message_id)));
 
       const target = full.listResolvedTurns()[0]!;
       const matching = await scanLiteHistory({

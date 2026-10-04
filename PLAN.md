@@ -1,4 +1,42 @@
-# Query architecture work plan
+# Agent evidence improvement and historical query work
+
+Current work: 2026-10-03–2026-10-04. The user approved the agent usability assessment and implementation.
+Baseline HEAD is the committed 0.6.0 release; the uncommitted/unreleased statements in the
+2026-09-08 record below describe that historical checkpoint, not current release status.
+
+This iteration delivers bounded conversation evidence, full user/reply text search with
+delegated identity, process-local detail reuse, explicit read status, concise agent guidance
+and fixture-based task journeys. It preserves existing command output fields and canonical
+projection semantics. General source pushdown, a daemon/MCP transport, semantic search and
+optional context construction remain separate future increments.
+
+- [x] Canonical evidence pages, cursor identity and delegated search projection.
+- [x] Runtime masked evidence retention and bounded process-owned detail snapshots.
+- [x] Query/shell operations and read identity/status on history JSON.
+- [x] Fixture journeys, complete repository gates and extracted artifact verification.
+- [x] Documentation and shipped-skill validation.
+
+Validation on 2026-10-04: `build:lite`, all 659 package tests, dependency boundaries,
+13 governance tests and architecture rules passed. Extracted standalone and local npm
+installations passed the artifact gate, including delegated answer search and one-shot
+cursor continuation. The shipped skill passed `quick_validate.py`; all 11 JSON schemas
+passed schema validation, with new request/evidence/continuation, SQL, compact and
+canonical fixture outputs validated against their contracts.
+
+The fixture journeys demonstrate two scans for latest → read → repeated replies → latest,
+and one scan for conversation search → reading the matched turn. They also cover detail
+eviction, failed/successful refresh, ambiguous aliases after caching, mixed legacy/evidence
+reads, Unicode paging, long-text tail matches, directory scope and read-loss diagnostics.
+Review follow-up adds missing-reference regressions for one-shot batches and cold/warm
+shells. Exact-target misses fall back to matching reads so valid operations survive;
+genuine scan failures still propagate without retry.
+`mock-data:validate` still reports the same eight pre-existing missing Gemini scenario
+paths; the new agent-evidence files pass layout and sanitization checks.
+
+The independent U1 quality judgment remains user-owned; deterministic fixture checks do not
+mark that manual acceptance complete.
+
+## Historical query architecture work plan (2026-09-08)
 
 Updated: 2026-09-08. Owner: Codex in the current task.
 

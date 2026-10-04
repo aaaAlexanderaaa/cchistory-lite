@@ -10,7 +10,8 @@
     "read",
     "operations",
     "projection_issues",
-    "diagnostics"
+    "diagnostics",
+    "read_status"
   ],
   "properties": {
     "schema": {
@@ -212,6 +213,49 @@
             "object",
             "null"
           ]
+        }
+      }
+    },
+    "read_status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reasons",
+        "source_error_count",
+        "loss_warning_count",
+        "unknown_directory_sessions",
+        "projection_issue_count"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "no_known_gaps",
+            "partial",
+            "unverified"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_error_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "loss_warning_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unknown_directory_sessions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "projection_issue_count": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     }

@@ -7,6 +7,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Agent `read` operations return bounded user/assistant evidence with stable session,
+  turn and message references, Unicode-safe continuation and content-bound cursors.
+- Query/shell `search` accepts `content: "conversation"` to search full masked user
+  and assistant text. Delegated hits appear under the parent while citing the child.
+- History JSON responses expose `read` identity and `read_status`, separating known
+  source losses, unknown directory attribution and scan limits from SQL coverage.
+
+### Changed
+
+- Shell reuses bounded detail snapshots and directly targets sessions resolved from
+  the collection. Successful refresh clears detail reuse; failed refresh preserves it.
+- Agent guidance leads with bounded evidence retrieval and loads advanced details on demand.
+
+### Fixed
+
+- A missing session reference in a query/shell detail batch returns an operation-level
+  error while preserving valid results; genuine scan failures still propagate.
+
 ## [0.6.0] - 2026-09-17
 
 ### Changed

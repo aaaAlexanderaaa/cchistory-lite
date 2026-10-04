@@ -33,6 +33,7 @@ ALLOWED_FILE_PATTERNS = [
     re.compile(r"fixtures/read-budget/(?:sqlite|cursor-store|cursor-state)\.sql"),
     re.compile(r"fixtures/system-memory/(?:darwin-vm-stat\.txt|launcher-trace\.cjs)"),
     re.compile(r"fixtures/selective-latest/(?:README\.md|variants\.json|(?:newest|tie-a|tie-b|oldest|empty)\.jsonl)"),
+    re.compile(r"fixtures/agent-evidence/(?:README\.md|(?:parent|child|duplicate-title|other-project|empty)\.jsonl)"),
     re.compile(r"fixtures/context-boundary/README\.md"),
     re.compile(r"fixtures/context-boundary/canonical-evidence\.json"),
     re.compile(r"fixtures/context-boundary/antigravity/11111111-1111-4111-8111-111111111111/(?:Conversation_semantic_History|task|walkthrough)\.md(?:\.metadata\.json)?"),

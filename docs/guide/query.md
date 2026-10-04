@@ -1,5 +1,9 @@
 # Querying history with SQL
 
+For bounded question/answer evidence and full conversation text search, use the
+[v2 agent operations](agent-evidence.md). SQL remains the interface for selecting
+fields and combining conditions over canonical collections.
+
 Use a finite PostgreSQL-style SELECT to combine conditions over canonical history. `sessions`
 contains every addressable session, including empty sessions and delegated children. `turns`
 contains every resolved turn, including a child's work on its own session. The source and directory
@@ -144,7 +148,9 @@ All operations are validated before one shared scan. Existing v2 operation reque
 A shell opens without scanning; it prepares on its first valid collection read or explicit
 refresh. Help, invalid requests and cold exit do not scan. A warm shell reuses its SQL `read.id`; successful refresh replaces it, failed refresh reports an
 error and preserves the old snapshot. The ID is process-local, not a native transaction or a
-handle for existing detail rescans. Native changes require explicit refresh.
+handle for detail evidence. Conversation search can prepare a new collection with masked
+text; details have bounded process-local reuse and expose their own read IDs. Native changes
+require explicit refresh. See the [evidence lifetime](agent-evidence.md#snapshot-ownership).
 
 Idle expiry defaults to 300 seconds; `--idle-timeout 0` disables it, with positive values up to
 86400. The timer runs only while waiting for input; partial input resets it and active work suspends

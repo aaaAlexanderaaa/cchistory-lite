@@ -13,6 +13,88 @@
       ]
     },
     "content_trust": { "const": "untrusted_history" },
+    "read": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "prepared_at",
+        "scope"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "prepared_at": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "directory",
+            "source_ids"
+          ],
+          "properties": {
+            "directory": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "read_status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reasons",
+        "source_error_count",
+        "loss_warning_count",
+        "unknown_directory_sessions",
+        "projection_issue_count"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "no_known_gaps",
+            "partial",
+            "unverified"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_error_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "loss_warning_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unknown_directory_sessions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "projection_issue_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
     "projection_issues": { "type": "array", "items": { "$ref": "#/$defs/projectionIssue" } },
     "sources": { "type": "array", "items": { "$ref": "#/$defs/source" } },
     "projects": { "type": "array", "items": { "$ref": "#/$defs/project" } },

@@ -5,6 +5,9 @@ import {
   type LiteContextTarget,
   type LiveHistorySnapshot,
   type LiveQueryRead,
+  type LiveHistoryReader,
+  EvidenceCursorError,
+  validateEvidenceBudget,
 } from "@cchistory/live-runtime";
 import {
   CONTENT_TRUST,
@@ -22,6 +25,7 @@ export const QUERY_RESULT_SCHEMA = "cchistory-lite-query-result/v2";
 
 export type QueryOperation =
   | SearchOperation
+  | ReadOperation
   | SessionOperation
   | RepliesOperation
   | LatestOperation
@@ -43,6 +47,18 @@ interface SearchOperation extends QueryOperationBase {
   project_ref?: string;
   limit?: number;
   offset?: number;
+  content?: "authored" | "conversation";
+  max_chars?: number;
+}
+
+interface ReadOperation {
+  id: string;
+  kind: "read";
+  session_ref?: string;
+  turn_ref?: string;
+  max_chars?: number;
+  limit?: number;
+  cursor?: string;
 }
 
 interface SessionOperation extends QueryOperationBase {
@@ -106,9 +122,22 @@ export function parseQueryRequest(raw: string): QueryRequest {
 }
 
 export function queryContextTargets(request: QueryRequest): LiteContextTarget[] {
-  return request.operations.flatMap((operation) => operation.kind === "replies"
-    ? operation.turn_refs.map((ref) => ({ kind: "turn" as const, ref }))
-    : []);
+  return request.operations.flatMap((operation): LiteContextTarget[] => operation.kind === "replies"
+    ? operation.turn_refs.map((ref) => ({ kind: "turn", ref }))
+    : operation.kind === "read" ? [readTarget(operation)] : []);
+}
+
+function readTarget(operation: ReadOperation): LiteContextTarget {
+  return operation.session_ref ? { kind: "session", ref: operation.session_ref } : { kind: "turn", ref: operation.turn_ref! };
+}
+
+export async function prepareQuerySnapshot(request: QueryRequest | CompiledSqlRequest, reader: LiveHistoryReader): Promise<LiveHistorySnapshot> {
+  if (request.schema === SQL_REQUEST_SCHEMA) return reader.collection();
+  const conversation = request.operations.some(op => op.kind === "read" || op.kind === "search" && op.content === "conversation");
+  const targets = queryContextTargets(request);
+  return targets.length ? reader.detail(targets, { conversation,
+    complete: request.operations.some(op => op.kind !== "read" && op.kind !== "replies"),
+    evidenceOnly: request.operations.every(op => op.kind !== "replies") }) : reader.collection(conversation);
 }
 
 export function executeQuery(
@@ -140,6 +169,8 @@ export function executeQuery(
       schema: QUERY_RESULT_SCHEMA,
       kind: "query_result",
       content_trust: CONTENT_TRUST,
+      read: { ...snapshot.readIdentity, scope: { directory: directoryScope ?? null, source_ids: snapshot.data.sources.map(s => s.id) } },
+      read_status: snapshot.getReadStatus(directoryScope),
       operations,
       projection_issues: snapshot.projectionIssues,
       diagnostics: { directory_scope: snapshot.getDirectoryScopeDiagnostics(directoryScope), sources: snapshot.data.sources, loss_audits: snapshot.data.loss_audits },
@@ -157,7 +188,7 @@ export async function prepareQueryRequest(raw: string): Promise<QueryRequest | C
 
 export function executePreparedQuery(request: QueryRequest | CompiledSqlRequest, snapshot: LiveHistorySnapshot, directoryScope?: string): QueryExecutionResult {
   if (request.schema === QUERY_REQUEST_SCHEMA) return executeQuery(request, snapshot, directoryScope);
-  return sqlQueryResult({ identity: snapshot.readIdentity, directoryScope, sourceIds: snapshot.data.sources.map(s => s.id),
+  return sqlQueryResult({ identity: snapshot.readIdentity, readStatus: snapshot.getReadStatus(directoryScope), directoryScope, sourceIds: snapshot.data.sources.map(s => s.id),
     directoryScopeDiagnostics: snapshot.getDirectoryScopeDiagnostics(directoryScope), projectionIssues: snapshot.projectionIssues, sources: snapshot.data.sources, lossAudits: snapshot.data.loss_audits },
   request.operations.map(op => ({ id: op.id, result: snapshot.executeCollectionQuery(op.query, { directoryScope }) })));
 }
@@ -166,13 +197,14 @@ export function executeReadQuery(id: string, read: LiveQueryRead): QueryExecutio
   return sqlQueryResult(read, [{ id, result: read.result }]);
 }
 
-function sqlQueryResult(read: Pick<LiveQueryRead, "identity" | "directoryScope" | "sourceIds" | "projectionIssues" | "sources" | "lossAudits" | "directoryScopeDiagnostics">,
+function sqlQueryResult(read: Pick<LiveQueryRead, "identity" | "readStatus" | "directoryScope" | "sourceIds" | "projectionIssues" | "sources" | "lossAudits" | "directoryScopeDiagnostics">,
   operations: { id: string; result: LiveQueryRead["result"] }[]): QueryExecutionResult {
   return {
     hasOperationErrors: false,
     payload: {
       schema: SQL_RESULT_SCHEMA, kind: "query_result", content_trust: CONTENT_TRUST,
       read: { ...read.identity, scope: { directory: read.directoryScope ?? null, source_ids: read.sourceIds } },
+      read_status: read.readStatus,
       operations: operations.map(op => {
         const { ids: _ids, ...result } = op.result;
         return { id: op.id, kind: "sql", status: "ok", result };
@@ -188,9 +220,17 @@ function executeOperation(
   snapshot: LiveHistorySnapshot,
   directoryScope?: string,
 ): Record<string, unknown> {
+  if (operation.kind === "read") {
+    const result = snapshot.readEvidence(readTarget(operation), operation, directoryScope);
+    if (!result) throw new QueryReferenceError(`Conversation not found in this scope: ${operation.session_ref ?? operation.turn_ref}.`);
+    return result;
+  }
   if (operation.kind === "search") {
     const project = operation.project_ref ? snapshot.getProject(operation.project_ref) : undefined;
     if (operation.project_ref && !project) throw new QueryReferenceError(`Project not found: ${operation.project_ref}.`);
+    if (operation.content === "conversation") return { query: operation.query, unit: "session",
+      ...snapshot.searchConversation({ query: operation.query, projectId: project?.project_id,
+        directoryScope, limit: operation.limit, offset: operation.offset, max_chars: operation.max_chars }) };
     const limit = operation.limit ?? 50;
     const offset = operation.offset ?? 0;
     const result = snapshot.searchSessions({
@@ -302,8 +342,20 @@ function parseOperation(value: unknown, index: number): QueryOperation {
   const operation = requireRecord(value, `operation ${index + 1}`);
   const id = requireNonEmptyString(operation.id, `operation ${index + 1} id`);
   const kind = requireNonEmptyString(operation.kind, `operation ${id} kind`);
+  if (kind === "read") {
+    assertOnlyKeys(operation, new Set(["id", "kind", "session_ref", "turn_ref", "max_chars", "limit", "cursor"]), `operation ${id}`);
+    if ((operation.session_ref !== undefined) === (operation.turn_ref !== undefined)) throw new QueryRequestError("read requires exactly one of session_ref or turn_ref.");
+    const parsed: ReadOperation = { id, kind };
+    if (operation.session_ref !== undefined) parsed.session_ref = requireNonEmptyString(operation.session_ref, "session_ref");
+    if (operation.turn_ref !== undefined) parsed.turn_ref = requireNonEmptyString(operation.turn_ref, "turn_ref");
+    if (operation.max_chars !== undefined) parsed.max_chars = requireInteger(operation.max_chars, "max_chars", 256);
+    if (operation.limit !== undefined) parsed.limit = requireInteger(operation.limit, "limit", 1);
+    if (operation.cursor !== undefined) parsed.cursor = requireNonEmptyString(operation.cursor, "cursor");
+    try { validateEvidenceBudget(parsed); } catch (error) { throw new QueryRequestError((error as Error).message); }
+    return parsed;
+  }
   if (kind === "search") {
-    assertOnlyKeys(operation, new Set(["id", "kind", "query", "project_ref", "limit", "offset"]), `operation ${id}`);
+    assertOnlyKeys(operation, new Set(["id", "kind", "query", "project_ref", "limit", "offset", "content", "max_chars"]), `operation ${id}`);
     const parsed: SearchOperation = {
       id,
       kind,
@@ -312,6 +364,17 @@ function parseOperation(value: unknown, index: number): QueryOperation {
     if (operation.project_ref !== undefined) parsed.project_ref = requireNonEmptyString(operation.project_ref, `operation ${id} project_ref`);
     if (operation.limit !== undefined) parsed.limit = requireInteger(operation.limit, `operation ${id} limit`, 1);
     if (operation.offset !== undefined) parsed.offset = requireInteger(operation.offset, `operation ${id} offset`, 0);
+    if (operation.content !== undefined) {
+      if (operation.content !== "authored" && operation.content !== "conversation") throw new QueryRequestError("search content must be authored or conversation.");
+      parsed.content = operation.content;
+    }
+    if (operation.max_chars !== undefined) {
+      if (parsed.content !== "conversation") throw new QueryRequestError("search max_chars requires content: conversation.");
+      parsed.max_chars = requireInteger(operation.max_chars, "max_chars", 256);
+    }
+    if (parsed.content === "conversation") {
+      try { validateEvidenceBudget(parsed); } catch (error) { throw new QueryRequestError((error as Error).message); }
+    }
     return parsed;
   }
   if (kind === "session") {
@@ -350,6 +413,7 @@ function parseOperation(value: unknown, index: number): QueryOperation {
 }
 
 function queryErrorPayload(error: unknown): Record<string, unknown> {
+  if (error instanceof EvidenceCursorError) return { code: error.code, message: error.message, recovery: "restart_without_cursor", candidates: [] };
   if (error instanceof AmbiguousReferenceError) {
     return {
       code: "ambiguous_reference",

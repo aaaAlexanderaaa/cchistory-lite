@@ -31,6 +31,7 @@ import {
   SourceReadBudgetExceededError,
   ScanGuardAbortedError,
   ScanGuardRefusedError,
+  LiveHistoryReader,
   type LiteSourceRoot,
   type LiveHistorySnapshot,
   type ScanGuardRequest,
@@ -47,7 +48,7 @@ import {
   executePreparedQuery,
   executeReadQuery,
   prepareQueryRequest,
-  queryContextTargets,
+  prepareQuerySnapshot,
 } from "./query.js";
 import { resourceError } from "./resource-errors.js";
 import { runLiteShell } from "./shell.js";
@@ -292,17 +293,13 @@ async function runQueryCommand(parsed: ParsedArgs, io: LiteCliIo): Promise<numbe
     io.stdout(`${JSON.stringify(result.payload, null, 2)}\n`);
     return 0;
   }
-  const contextTargets = request.schema === SQL_REQUEST_SCHEMA ? [] : queryContextTargets(request);
-  const snapshot = await scan(
-    parsed,
-    io,
-    contextTargets.length > 0 ? "matching" : "none",
-    true,
-    contextTargets.length > 0 ? { contextTargets } : {},
-  );
-  const result = executePreparedQuery(request, snapshot, resolveDirectoryScope(parsed, io));
-  io.stdout(`${JSON.stringify(result.payload, null, 2)}\n`);
-  return result.hasOperationErrors ? 1 : 0;
+  const reader = new LiveHistoryReader(overrides => scan(parsed, io, overrides?.contextMode ?? "none", true, overrides));
+  try {
+    const snapshot = await prepareQuerySnapshot(request, reader);
+    const result = executePreparedQuery(request, snapshot, resolveDirectoryScope(parsed, io));
+    io.stdout(`${JSON.stringify(result.payload, null, 2)}\n`);
+    return result.hasOperationErrors ? 1 : 0;
+  } finally { reader.close(); }
 }
 
 async function readBoundedQueryFile(file: string): Promise<string> {
@@ -1496,7 +1493,10 @@ function output(
     return;
   }
   const selectedPayload = jsonMode === "compact" ? compactPayload(payload, snapshot) : payload;
-  io.stdout(`${JSON.stringify({ ...selectedPayload, projection_issues: snapshot.projectionIssues, diagnostics: { directory_scope: scope, sources: snapshot.data.sources, loss_audits: snapshot.data.loss_audits } }, null, 2)}\n`);
+  io.stdout(`${JSON.stringify({ ...selectedPayload, read: { ...snapshot.readIdentity,
+    scope: { directory: directoryScope ?? null, source_ids: snapshot.data.sources.map(s => s.id) } },
+    read_status: snapshot.getReadStatus(directoryScope), projection_issues: snapshot.projectionIssues,
+    diagnostics: { directory_scope: scope, sources: snapshot.data.sources, loss_audits: snapshot.data.loss_audits } }, null, 2)}\n`);
 }
 
 function reportProjectionIssues(snapshot: LiveHistorySnapshot, io: LiteCliIo): void {
@@ -1954,13 +1954,17 @@ Start directly with the target directory (no preparation command required):
   cchistory-lite latest sessions 10 --dir /path/to/project --json
   cchistory-lite shell --dir /path/to/project --json
   # shell input: {"kind":"latest","limit":10}, then {"kind":"exit"}
+  # read questions and answers: {"kind":"read","session_ref":"<session id>","max_chars":8000}
+  # find answers: {"kind":"search","query":"retry decision","content":"conversation"}
 
 Optional discovery: cchistory-lite sources --json (root metadata only, no history scan).
 Use sources --complete for counted status. Agent contract: cchistory-lite agent.
 The shell prepares history on its first valid read and reuses it until refresh or exit.
 Directory scope defaults to the current directory. Unknown directory attribution is
 reported in diagnostics; an empty scoped result is not proof that no history exists.
-LIMIT bounds output rows. Memory admission also applies to sample and exact-id reads.
+read bounds body text and returns next_cursor; legacy LIMIT only bounds rows.
+read_status describes known data gaps separately from query success and SQL coverage.
+Memory admission also applies to sample and exact-id reads.
 Keep stderr: a resource refusal preserves scope and produces no complete result.
 
 Usage:

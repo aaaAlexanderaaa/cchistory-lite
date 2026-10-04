@@ -82,30 +82,46 @@ The finite SQL frontend parses in an isolated worker and positively validates in
 the same probe, canonical interpreter and query executor. Selective execution checks every admitted
 file's activity bound, then can skip older groups before full payload interpretation. It does not
 avoid inventory I/O and never exposes a partial materialization as a reusable full snapshot.
-Uncertain evidence uses the complete read policy; changed admitted evidence aborts the attempt.
+Uncertain or changed selection evidence falls back to an ordinary read.
 
 Additional runtime policies include:
 
-- **Memory admission** (`system-memory.ts`, `scan-guard.ts`): Node owns its heap limit;
-  launchers never resize it or create an adaptive child. macOS estimates available memory
+- **Memory admission** (`system-memory.ts`, `scan-guard.ts`): launchers may grow the default
+  heap to half available memory, preserving explicit Node settings; library calls keep
+  the caller's heap. macOS estimates available memory
   from free + inactive pages; Linux combines MemAvailable with known cgroup headroom.
-  Preflight and native-byte admission consider the smaller of that estimate and remaining
-  V8 heap; refusal diagnostics distinguish both. The watchdog reserves 25% of the initial
-  system estimate. Unavailable macOS telemetry stays unknown; heap admission still applies.
+  Preflight estimates warn and proceed. Per-input admission considers the smaller of that
+  estimate and remaining V8 heap; oversized inputs leave diagnostics while other history
+  remains readable. The watchdog reserves 25% of the initial system estimate, capped at
+  512 MiB. Unavailable macOS telemetry stays unknown; heap admission still applies.
 - **Source-root guarding** (`assertLiteSourceRoot`): refuses any path containing a `.cchistory`
   segment, any `cchistory.sqlite`, any path overlapping `~/.cchistory`, and any Full bundle root
   (a directory holding both `manifest.json` and `payloads`).
 
 ### `@cchistory/lite-cli` and `@cchistory/lite-tui`
 
-Two thin surfaces over the same runtime. The CLI is one-shot: read, render, exit. The TUI and `shell`
-each own one current snapshot and page over it; shell prepares on its first valid read; successful refresh replaces it. The shell closes
+Two thin surfaces over the same runtime. The CLI is one-shot: read, render, exit. The TUI owns
+one current snapshot. Shell uses runtime's `LiveHistoryReader`: one collection snapshot plus
+up to four detail snapshots under a 16 MiB retained-data estimate. Known detail targets use
+exact session reads. Conversation search retains masked user/reply evidence separately from
+tool/system contexts; a later bounded `read` can reuse it directly. Successful refresh replaces
+the collection and clears details; failed refresh preserves both. Each response exposes the
+actual snapshot's read identity, so collection and detail reads are not presented as one native
+transaction. The shell closes
 on exit/EOF or configurable idle expiry (300 seconds by default). CLI/shell latest/list selections,
 v2 operations and SQL use shared canonical templates/execution; compatibility is input/output
 adaptation, with the replaced selection branches removed. Neither surface contains history
 semantics of its own — anything they compute would be a bug in
 layering. CLI `search` projects matching turns into one row per top-level session; the TUI
 search pane still lists turns.
+
+Canonical `conversation-evidence.ts` owns evidence ordering, content-bound cursors, bounded
+Unicode text pages and conversation search with delegated hits grouped under their parent.
+Messages retain the child session and turn IDs. Visible assistant messages without
+a canonical user turn retain a message ID and explicit null turn ID; no turn is invented. `read-status.ts` summarizes observed losses,
+unknown directory attribution, projection issues and intentionally limited reads. SQL coverage
+still describes execution on a snapshot; it does not certify native-source completeness.
+These are additive agent operations; the legacy authored search and detail output remain.
 
 ## Context discipline
 
@@ -152,7 +168,7 @@ Both run in CI. `pnpm run verify:governance` runs the first; `pnpm test` runs th
 | `--store` / `--db` are impossible | Rejected at argument-parse time in both binaries |
 | Sources are never written | SQLite sources opened `readOnly: true`; adapters have no write path |
 | Export cannot masquerade as a backup | Schema `cchistory-lite-export/v1`, no import command, destination validated against source roots and store paths |
-| No mutation commands exist | `sync`, `import`, `backup`, `restore`, `merge`, `gc`, `migration`, `agent` are explicitly blocked |
+| No mutation commands exist | `sync`, `import`, `backup`, `restore`, `merge`, `gc`, `migration` are explicitly blocked; `agent` only prints contracts/docs |
 
 ## Fixtures
 
