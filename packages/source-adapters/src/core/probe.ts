@@ -1011,6 +1011,7 @@ function isMultiSessionContainer(platform: SourcePlatform, filePath: string): bo
     (platform === "openclaw" && isOpenClawCronRunFile(filePath)) ||
     platform === "zcode" ||
     platform === "lobechat" ||
+    (platform === "grok_bot" && basename === "store.db") ||
     ((platform === "cursor" || platform === "antigravity") &&
       (basename === "state.vscdb" || basename === "store.db"))
   );
@@ -1020,6 +1021,9 @@ function isPathBackedSqliteSourceFile(platform: SourcePlatform, filePath: string
   const basename = path.basename(filePath);
   if (platform === "zcode") {
     return basename === "db.sqlite";
+  }
+  if (platform === "grok_bot") {
+    return basename === "store.db";
   }
   return (
     (platform === "cursor" || platform === "antigravity") &&
@@ -1169,6 +1173,7 @@ function mergeSessionBuildInput(
     current.draft.created_at = minIso(current.draft.created_at, sessionInput.draft.created_at);
     current.draft.updated_at = maxIso(current.draft.updated_at, sessionInput.draft.updated_at);
     suppressOverlappingCursorConversation(current);
+    suppressOverlappingGrokBotConversation(current);
     return;
   }
 
@@ -1234,6 +1239,34 @@ function suppressOverlappingCursorConversation(session: SessionBuildInput): void
       dropCursorConversationRecords(session, nonStoreBlobIds, { keepMeta: true });
     }
   }
+}
+
+
+function suppressOverlappingGrokBotConversation(session: SessionBuildInput): void {
+  if (session.draft.source_platform !== "grok_bot") {
+    return;
+  }
+  const storeBlobIds = new Set(
+    session.blobs
+      .filter((blob) => {
+        const normalized = blob.origin_path.replace(/\\/g, "/");
+        return path.basename(blob.origin_path) === "store.db" && normalized.includes("/agents/");
+      })
+      .map((blob) => blob.id),
+  );
+  const transcriptBlobIds = new Set(
+    session.blobs
+      .filter((blob) => {
+        const normalized = blob.origin_path.replace(/\\/g, "/");
+        return normalized.includes("/agent-transcripts/") && normalized.endsWith(".jsonl");
+      })
+      .map((blob) => blob.id),
+  );
+  if (storeBlobIds.size === 0 || transcriptBlobIds.size === 0) {
+    return;
+  }
+  // Prefer store.db when both shapes are present for the same agent session.
+  dropCursorConversationRecords(session, transcriptBlobIds, { keepMeta: false });
 }
 
 function collapseOverlappingCursorComposerConversations(session: SessionBuildInput): void {

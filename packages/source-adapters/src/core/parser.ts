@@ -43,6 +43,7 @@ import { extractGeminiProjectKey, resolveGeminiRoot } from "../platforms/gemini.
 import { resolveKimiSessionDir } from "../platforms/kimi.js";
 import { parseKimiRecord as parseKimiRuntimeRecord } from "../platforms/kimi/runtime.js";
 import { iterateZcodeSqliteSeeds } from "../platforms/zcode/runtime.js";
+import { extractGrokBotStoreSeeds } from "../platforms/grok-bot/runtime.js";
 import { collectJsonlRecords, extractContentMaxTimestamp, isIncrementalJsonlPlatform } from "./jsonl-records.js";
 import {
   collectConversationSeedsFromValue as collectConversationSeedsFromValueRuntime,
@@ -213,6 +214,7 @@ export async function extractRecords(
   const fallbackObservedAt =
     context.source.platform === "factory_droid" ||
     context.source.platform === "grok" ||
+    context.source.platform === "grok_bot" ||
     context.source.platform === "cursor" ||
     context.source.platform === "cursor_agent"
     ? await fs.stat(context.filePath).then((stats) => stats.mtime.toISOString()).catch(() => nowIso())
@@ -299,7 +301,11 @@ export async function extractRecords(
     );
     return interleaveGrokTurnCompletedRecords(ordered);
   }
-  if (context.source.platform === "cursor" || context.source.platform === "cursor_agent") {
+  if (
+    context.source.platform === "cursor" ||
+    context.source.platform === "cursor_agent" ||
+    context.source.platform === "grok_bot"
+  ) {
     return applyJsonlOrdinalObservedTimes(collected, fallbackObservedAt);
   }
   return collected;
@@ -485,7 +491,8 @@ export function parseRecord(
     context.source.platform === "gemini" ||
     context.source.platform === "opencode" ||
     context.source.platform === "lobechat" ||
-    context.source.platform === "zcode"
+    context.source.platform === "zcode" ||
+    context.source.platform === "grok_bot"
   ) {
     if ((context.source.platform === "cursor" || context.source.platform === "cursor_agent") && asString(parsed.type) === "turn_ended") {
       return { fragments: [], lossAudits: [] };
@@ -591,6 +598,17 @@ export async function extractMultiSessionSeeds(
   if (source.platform === "zcode" && path.basename(filePath) === "db.sqlite") {
     const seeds = [...iterateZcodeSeeds(source, filePath, targetSessionRefs, budget)];
     return seeds.length ? seeds : undefined;
+  }
+  if (source.platform === "grok_bot" && path.basename(filePath) === "store.db") {
+    return extractGrokBotStoreSeeds(source.platform, filePath, {
+      asString,
+      asNumber,
+      isObject,
+      safeJsonParse,
+      epochMillisToIso,
+      nowIso,
+      truncate,
+    }, targetSessionRefs, budget);
   }
   if (source.platform === "opencode" || source.platform === "gemini") {
     const exportSeeds = await extractConversationExportSeeds(source, filePath, fileBuffer, blobId);

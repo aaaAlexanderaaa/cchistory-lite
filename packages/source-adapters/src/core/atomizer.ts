@@ -250,6 +250,17 @@ export function deriveSourceNativeProjectRef(source: SourceDefinition, filePath:
     }
   }
 
+  if (source.platform === "grok_bot") {
+    const agentsIndex = parts.indexOf("agents");
+    if (agentsIndex >= 0 && parts[agentsIndex + 1]) {
+      return parts[agentsIndex + 1];
+    }
+    const transcriptsIndex = parts.indexOf("agent-transcripts");
+    if (transcriptsIndex >= 0 && parts[transcriptsIndex + 1]) {
+      return parts[transcriptsIndex + 1];
+    }
+  }
+
   if (source.platform === "antigravity" && parts[0] === "brain" && parts.length >= 3) {
     return parts[1];
   }

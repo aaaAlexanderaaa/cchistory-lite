@@ -96,7 +96,7 @@ export function splitUserText(
   }
 
   const cursorEnvelope =
-    options.platform === "cursor" || options.platform === "cursor_agent" || options.platform === "grok"
+    options.platform === "cursor" || options.platform === "cursor_agent" || options.platform === "grok" || options.platform === "grok_bot"
       ? splitCursorPromptEnvelope(normalized)
       : undefined;
   if (cursorEnvelope) {

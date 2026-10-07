@@ -11,6 +11,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Experimental `grok_bot` source for Grok Bot sidebar agents (`~/agent-data` / `~/sand-data`): prefers `agents/<id>/store.db`, falls back to `agent-transcripts` jsonl, retains `conversation-blobs.db` as companion evidence.
 - Agent `read` operations return bounded user/assistant evidence with stable session,
   turn and message references, Unicode-safe continuation and content-bound cursors.
 - Query/shell `search` accepts `content: "conversation"` to search full masked user
