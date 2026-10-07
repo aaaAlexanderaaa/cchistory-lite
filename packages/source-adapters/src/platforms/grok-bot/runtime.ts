@@ -1,10 +1,15 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { maxIso, minIso, type SourcePlatform } from "@cchistory/domain";
 import { readBudgetedSqliteRows, type SourceReadBudget } from "../../core/read-budget.js";
 import type { ExtractedSessionSeed } from "../../core/conversation-seeds.js";
 import { parseGrokBotAgentIdFromPath } from "../grok-bot.js";
+import {
+  extractGrokBotProfileUpdateName,
+  isGrokBotHiddenPromptText,
+  resolveGrokBotSessionTitle,
+} from "./title.js";
 
 interface GrokBotRuntimeHelpers {
   asString(value: unknown): string | undefined;
@@ -67,11 +72,7 @@ export function extractGrokBotStoreSeeds(
       `${filePath}:transcript_entries`,
     ) as unknown as TranscriptEntryRow[];
 
-    const profile = readSiblingProfile(path.dirname(filePath), helpers);
-    const title =
-      profile?.name?.trim() ||
-      profile?.title?.trim() ||
-      `Grok Bot ${helpers.truncate(agentId, 12)}`;
+    const profile = readGrokBotProfile(path.dirname(filePath), helpers);
 
     const records: ExtractedSessionSeed["records"] = [
       {
@@ -79,7 +80,6 @@ export function extractGrokBotStoreSeeds(
         observedAt: helpers.nowIso(),
         rawJson: JSON.stringify({
           id: sessionId,
-          title,
           source_session_id: agentId,
           grok_bot: {
             agent_id: agentId,
@@ -93,6 +93,8 @@ export function extractGrokBotStoreSeeds(
     let createdAt: string | undefined;
     let updatedAt: string | undefined;
     let messageCount = 0;
+    let firstUserText: string | undefined;
+    let profileUpdateName: string | undefined;
 
     for (const row of rows) {
       const entryId = helpers.asString(row.id) ?? `seq:${helpers.asNumber(row.seq) ?? records.length}`;
@@ -124,6 +126,13 @@ export function extractGrokBotStoreSeeds(
         if (content.length === 0) {
           continue;
         }
+        const plainText = contentText(content, helpers);
+        if (!profileUpdateName) {
+          profileUpdateName = extractGrokBotProfileUpdateName(plainText);
+        }
+        if (role === "user" && !firstUserText && plainText && !isGrokBotHiddenPromptText(plainText)) {
+          firstUserText = plainText;
+        }
         messageCount += 1;
         records.push({
           pointer: `message:${entryId}`,
@@ -145,6 +154,10 @@ export function extractGrokBotStoreSeeds(
       }
 
       // Preserve non-message kinds as evidence without inventing user turns.
+      const opaqueText = summarizeOpaqueEntry(kind, parsed, helpers);
+      if (!profileUpdateName) {
+        profileUpdateName = extractGrokBotProfileUpdateName(opaqueText);
+      }
       records.push({
         pointer: `entry:${entryId}`,
         observedAt,
@@ -155,7 +168,7 @@ export function extractGrokBotStoreSeeds(
           content: [
             {
               type: "text",
-              text: summarizeOpaqueEntry(kind, parsed, helpers),
+              text: opaqueText,
               synthetic: true,
             },
           ],
@@ -172,11 +185,29 @@ export function extractGrokBotStoreSeeds(
       return [];
     }
 
+    const title = resolveGrokBotSessionTitle({
+      agentId,
+      profileName: profile?.name,
+      profileTitle: profile?.title,
+      profileUpdateName,
+      firstUserText,
+      truncate: helpers.truncate,
+    });
+
     if (records[0]) {
-      records[0] = {
-        ...records[0],
-        observedAt: createdAt ?? records[0].observedAt,
-      };
+      const meta = helpers.safeJsonParse(records[0].rawJson);
+      if (helpers.isObject(meta)) {
+        records[0] = {
+          ...records[0],
+          observedAt: createdAt ?? records[0].observedAt,
+          rawJson: JSON.stringify({ ...meta, title }),
+        };
+      } else {
+        records[0] = {
+          ...records[0],
+          observedAt: createdAt ?? records[0].observedAt,
+        };
+      }
     }
 
     return [
@@ -191,6 +222,47 @@ export function extractGrokBotStoreSeeds(
   } finally {
     db.close();
   }
+}
+
+export function readGrokBotProfileFromAgentDir(
+  agentDir: string,
+  helpers: Pick<GrokBotRuntimeHelpers, "asString" | "isObject" | "safeJsonParse">,
+): { name?: string; title?: string; description?: string } | undefined {
+  return readGrokBotProfile(agentDir, helpers);
+}
+
+export function resolveGrokBotProfilePathFromSourceFile(filePath: string): string | undefined {
+  const normalized = filePath.replace(/\\/gu, "/");
+  const storeMatch = normalized.match(/^(.*)\/agents\/([^/]+)\/store\.db$/u);
+  if (storeMatch?.[1] && storeMatch[2]) {
+    return path.join(storeMatch[1], "agents", storeMatch[2], "profile.json");
+  }
+  const transcriptMatch = normalized.match(/^(.*)\/agent-transcripts\/([^/]+)\/[^/]+\.jsonl$/u);
+  if (transcriptMatch?.[1] && transcriptMatch[2]) {
+    return path.join(transcriptMatch[1], "agents", transcriptMatch[2], "profile.json");
+  }
+  return undefined;
+}
+
+export function loadGrokBotProfileTitleForSourceFile(
+  filePath: string,
+  helpers: Pick<GrokBotRuntimeHelpers, "asString" | "isObject" | "safeJsonParse" | "truncate">,
+  agentId: string,
+): string | undefined {
+  const profilePath = resolveGrokBotProfilePathFromSourceFile(filePath);
+  if (!profilePath || !existsSync(profilePath)) {
+    return undefined;
+  }
+  const profile = readGrokBotProfile(path.dirname(profilePath), helpers);
+  if (!profile?.name?.trim() && !profile?.title?.trim()) {
+    return undefined;
+  }
+  return resolveGrokBotSessionTitle({
+    agentId,
+    profileName: profile?.name,
+    profileTitle: profile?.title,
+    truncate: helpers.truncate,
+  });
 }
 
 function normalizeMessageContent(
@@ -211,6 +283,17 @@ function normalizeMessageContent(
     return [content];
   }
   return [];
+}
+
+function contentText(
+  content: Record<string, unknown>[],
+  helpers: GrokBotRuntimeHelpers,
+): string {
+  return content
+    .map((entry) => helpers.asString(entry.text) ?? helpers.asString(entry.content) ?? "")
+    .filter(Boolean)
+    .join("\n")
+    .trim();
 }
 
 function summarizeOpaqueEntry(
@@ -235,9 +318,9 @@ function summarizeOpaqueEntry(
   return `[${kind}]`;
 }
 
-function readSiblingProfile(
+function readGrokBotProfile(
   agentDir: string,
-  helpers: GrokBotRuntimeHelpers,
+  helpers: Pick<GrokBotRuntimeHelpers, "asString" | "isObject" | "safeJsonParse">,
 ): { name?: string; title?: string; description?: string } | undefined {
   try {
     const raw = readFileSync(path.join(agentDir, "profile.json"), "utf8");

@@ -143,12 +143,17 @@ function resolveGrokBotDataRootFromTranscript(filePath: string): string | undefi
   return normalized.slice(0, index);
 }
 
+/**
+ * Companion evidence for identity + SQLite WAL. conversation-blobs.db is an
+ * opaque LLM payload cache (often tens of MB) not referenced by store message
+ * rows; listing it for full-byte capture caused memory pressure and empty
+ * parse diagnostics without improving projection. Keep store.db as truth.
+ */
 export function listGrokBotCompanionEvidencePaths(_baseDir: string, filePath: string): string[] {
   const companions: string[] = [];
   if (isGrokBotStorePath(filePath)) {
     const agentDir = path.dirname(filePath);
     companions.push(
-      path.join(agentDir, BLOBS_BASENAME),
       path.join(agentDir, "profile.json"),
       `${filePath}-wal`,
       `${filePath}-shm`,
@@ -161,7 +166,6 @@ export function listGrokBotCompanionEvidencePaths(_baseDir: string, filePath: st
       const agentDir = path.join(dataRoot, AGENTS_DIR, agentId);
       companions.push(
         path.join(agentDir, STORE_BASENAME),
-        path.join(agentDir, BLOBS_BASENAME),
         path.join(agentDir, "profile.json"),
       );
     }

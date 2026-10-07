@@ -9,18 +9,30 @@ import {
   getDefaultSourcesForHost,
   listSourceFiles,
 } from "../index.js";
+import { splitUserText } from "../core/user-text.js";
 import { createSourceDefinition, getRepoMockDataRoot } from "../test-helpers.js";
 import {
   grokBotAdapter,
   isGrokBotStorePath,
   isGrokBotTranscriptPath,
+  listGrokBotCompanionEvidencePaths,
   parseGrokBotAgentIdFromPath,
   shouldMatchGrokBotTranscript,
 } from "./grok-bot.js";
+import {
+  cleanGrokBotUserTitleText,
+  extractGrokBotProfileUpdateName,
+  isGrokBotHiddenPromptText,
+  resolveGrokBotSessionTitle,
+  shortGrokBotAgentLabel,
+} from "./grok-bot/title.js";
 
 const STORE_AGENT = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee01";
 const EMPTY_AGENT = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
 const JSONL_ONLY = "cccccccc-dddd-4eee-8fff-111111111111";
+const EMPTY_STORE_JSONL = "dddddddd-eeee-4fff-8111-222222222222";
+const DELETED_AGENT = "eeeeeeee-ffff-4111-8222-333333333333";
+const MISSING_PROFILE = "ffffffff-1111-4222-8333-444444444444";
 const fixtureRoot = path.join(getRepoMockDataRoot(), "fixtures/grok-bot");
 
 function seedStore(dbPath: string, messages: Array<Record<string, unknown>>): void {
@@ -61,24 +73,79 @@ test("[grok_bot] path helpers recognize store and transcript layouts", () => {
   assert.equal(parseGrokBotAgentIdFromPath(transcriptPath), STORE_AGENT);
 });
 
-test("[grok_bot] fixture corpus: store preferred, jsonl-only retained, empty store skipped", async () => {
+test("[grok_bot] companions omit opaque conversation-blobs.db", () => {
+  const storePath = `/data/agents/${STORE_AGENT}/store.db`;
+  const companions = listGrokBotCompanionEvidencePaths("/data", storePath);
+  assert.ok(companions.some((entry) => entry.endsWith("profile.json")));
+  assert.equal(companions.some((entry) => entry.endsWith("conversation-blobs.db")), false);
+});
+
+test("[grok_bot] title helpers strip hidden prompts and prefer profile update names", () => {
+  assert.equal(isGrokBotHiddenPromptText("[SAND_HIDDEN_PROMPT][first run] hi"), true);
+  assert.equal(isGrokBotHiddenPromptText("normal user text"), false);
+  assert.equal(cleanGrokBotUserTitleText("[t0u]\nMap the workspace"), "Map the workspace");
+  assert.equal(cleanGrokBotUserTitleText("[SAND_HIDDEN_PROMPT]nope"), undefined);
+
+  const token = Buffer.from(JSON.stringify({ name: "Recovered Name" }), "utf8").toString("base64url");
+  assert.equal(
+    extractGrokBotProfileUpdateName(`[SAND_HIDDEN_PROMPT]<<SAND_AGENT_PROFILE_UPDATE:v1:${token}>>`),
+    "Recovered Name",
+  );
+
+  const title = resolveGrokBotSessionTitle({
+    agentId: DELETED_AGENT,
+    profileUpdateName: "Recovered Name",
+    firstUserText: "[t0u]\nShould not win",
+    truncate: (value, length) => value.slice(0, length),
+  });
+  assert.equal(title, "Recovered Name");
+  assert.equal(shortGrokBotAgentLabel(DELETED_AGENT), "eeeeeeee");
+});
+
+test("[grok_bot] SAND_HIDDEN_PROMPT user_query chunks are injected, not authored", () => {
+  const text = [
+    "<timestamp>Wednesday, Oct 7, 2026, 1:00 PM (UTC+8)</timestamp>",
+    "<user_query>",
+    "[SAND_HIDDEN_PROMPT][first run] This is your very first turn.",
+    "</user_query>",
+  ].join("\n");
+  const chunks = splitUserText(text, { platform: "grok_bot" });
+  assert.equal(chunks.some((chunk) => chunk.originKind === "user_authored"), false);
+  assert.equal(
+    chunks.some((chunk) => chunk.originKind === "injected_user_shaped" && chunk.text.includes("SAND_HIDDEN_PROMPT")),
+    true,
+  );
+});
+
+test("[grok_bot] fixture corpus: store preferred, titles cleaned, empty store skipped", async () => {
   const source = createSourceDefinition("src-grok-bot-fixture", "grok_bot", fixtureRoot);
   const files = await listSourceFiles("grok_bot", fixtureRoot);
   assert.ok(files.some((file) => file.endsWith(`${STORE_AGENT}/store.db`)));
   assert.ok(files.some((file) => file.endsWith(`${JSONL_ONLY}.jsonl`)));
+  assert.ok(files.some((file) => file.endsWith(`${EMPTY_STORE_JSONL}.jsonl`)));
+  assert.ok(files.some((file) => file.endsWith(`${DELETED_AGENT}.jsonl`)));
+  assert.ok(files.some((file) => file.endsWith(`${MISSING_PROFILE}.jsonl`)));
   // Overlapping transcript for the store agent must not be matched when store has rows.
   assert.equal(
     files.some((file) => file.includes(STORE_AGENT) && file.endsWith(".jsonl")),
     false,
   );
   assert.equal(shouldMatchGrokBotTranscript(path.join(fixtureRoot, "agent-transcripts", STORE_AGENT, `${STORE_AGENT}.jsonl`)), false);
+  // Empty store allows jsonl match.
+  assert.equal(
+    shouldMatchGrokBotTranscript(path.join(fixtureRoot, "agent-transcripts", EMPTY_STORE_JSONL, `${EMPTY_STORE_JSONL}.jsonl`)),
+    true,
+  );
 
   const [payload] = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources;
   assert.ok(payload);
   assert.equal(payload.source.sync_status, "healthy");
 
   const sessionIds = payload.sessions.map((session) => session.source_session_id).sort();
-  assert.deepEqual(sessionIds, [JSONL_ONLY, STORE_AGENT].sort());
+  assert.deepEqual(
+    sessionIds,
+    [DELETED_AGENT, EMPTY_STORE_JSONL, JSONL_ONLY, MISSING_PROFILE, STORE_AGENT].sort(),
+  );
   assert.equal(payload.sessions.some((session) => session.source_session_id === EMPTY_AGENT), false);
 
   const storeSession = payload.sessions.find((session) => session.source_session_id === STORE_AGENT);
@@ -97,6 +164,26 @@ test("[grok_bot] fixture corpus: store preferred, jsonl-only retained, empty sto
   const jsonlTurn = payload.turns.find((turn) => turn.session_id === jsonlSession.id);
   assert.ok(jsonlTurn);
   assert.match(jsonlTurn.canonical_text, /Jsonl-only session/u);
+
+  const emptyStoreSession = payload.sessions.find((session) => session.source_session_id === EMPTY_STORE_JSONL);
+  assert.ok(emptyStoreSession);
+  assert.equal(emptyStoreSession.title, "Empty Store With Jsonl");
+  assert.ok(payload.turns.some((turn) => turn.canonical_text.includes("Fallback jsonl after empty store")));
+
+  const deletedSession = payload.sessions.find((session) => session.source_session_id === DELETED_AGENT);
+  assert.ok(deletedSession);
+  assert.equal(deletedSession.title, "Deleted Bot From Update");
+  assert.doesNotMatch(deletedSession.title ?? "", /SAND_HIDDEN_PROMPT|first run/u);
+  assert.ok(payload.turns.some((turn) => turn.session_id === deletedSession.id && /workspace roots/u.test(turn.canonical_text)));
+  assert.equal(
+    payload.turns.some((turn) => turn.session_id === deletedSession.id && turn.canonical_text.includes("SAND_HIDDEN_PROMPT")),
+    false,
+  );
+
+  const missingSession = payload.sessions.find((session) => session.source_session_id === MISSING_PROFILE);
+  assert.ok(missingSession);
+  assert.match(missingSession.title ?? "", /Summarize the feeds layout/u);
+  assert.doesNotMatch(missingSession.title ?? "", /SAND_HIDDEN_PROMPT|\[t0u\]/u);
 });
 
 test("[grok_bot] missing root degrades safely", async () => {
@@ -125,7 +212,7 @@ test("[grok_bot] empty root degrades safely", async () => {
 test("[grok_bot] malformed store.db degrades without inventing sessions", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-grok-bot-malformed-"));
   try {
-    const agentId = "dddddddd-eeee-4fff-8111-222222222222";
+    const agentId = "12121212-eeee-4fff-8111-222222222222";
     const agentDir = path.join(tempRoot, "agents", agentId);
     await mkdir(agentDir, { recursive: true });
     await writeFile(path.join(agentDir, "store.db"), "not-a-sqlite-database", "utf8");
@@ -183,6 +270,8 @@ test("[grok_bot] store-only and jsonl-only temp trees both project", async () =>
     assert.equal(payload.sessions.length, 2);
     assert.ok(payload.turns.some((turn) => turn.canonical_text === "Store-only prompt"));
     assert.ok(payload.turns.some((turn) => turn.canonical_text === "Jsonl-only prompt"));
+    const storeSession = payload.sessions.find((session) => session.source_session_id === storeId);
+    assert.equal(storeSession?.title, "Store Only");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

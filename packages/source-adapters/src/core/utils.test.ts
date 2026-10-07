@@ -236,6 +236,21 @@ Let me chronologically analyze the conversation...`;
     assert.doesNotMatch(authored[0]?.text ?? "", /user_info|darwin/u);
   });
 
+  test("Grok Bot SAND_HIDDEN_PROMPT inside user_query is injected", () => {
+    const text = [
+      "<timestamp>Wednesday, Oct 7, 2026, 1:00 PM (UTC+8)</timestamp>",
+      "<user_query>",
+      "[SAND_HIDDEN_PROMPT][first run] This is your very first turn.",
+      "</user_query>",
+    ].join("\n");
+    const chunks = splitUserText(text, { platform: "grok_bot" });
+    assert.equal(chunks.some((chunk) => chunk.originKind === "user_authored"), false);
+    assert.equal(
+      chunks.some((chunk) => chunk.originKind === "injected_user_shaped" && chunk.text.includes("SAND_HIDDEN_PROMPT")),
+      true,
+    );
+  });
+
   test("Grok user_info and skill_information envelopes keep only the inner query as authored", () => {
     const text = [
       "<user_info>OS Version: linux Shell: /bin/fish Workspace Path: /workspace</user_info>",

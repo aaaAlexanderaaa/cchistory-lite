@@ -43,7 +43,17 @@ import { extractGeminiProjectKey, resolveGeminiRoot } from "../platforms/gemini.
 import { resolveKimiSessionDir } from "../platforms/kimi.js";
 import { parseKimiRecord as parseKimiRuntimeRecord } from "../platforms/kimi/runtime.js";
 import { iterateZcodeSqliteSeeds } from "../platforms/zcode/runtime.js";
-import { extractGrokBotStoreSeeds } from "../platforms/grok-bot/runtime.js";
+import { extractZcodeSqliteSeeds } from "../platforms/zcode/runtime.js";
+import {
+  extractGrokBotStoreSeeds,
+  loadGrokBotProfileTitleForSourceFile,
+} from "../platforms/grok-bot/runtime.js";
+import {
+  extractGrokBotProfileUpdateName,
+  isGrokBotHiddenPromptText,
+  resolveGrokBotSessionTitle,
+} from "../platforms/grok-bot/title.js";
+import { parseGrokBotAgentIdFromPath } from "../platforms/grok-bot.js";
 import { collectJsonlRecords, extractContentMaxTimestamp, isIncrementalJsonlPlatform } from "./jsonl-records.js";
 import {
   collectConversationSeedsFromValue as collectConversationSeedsFromValueRuntime,
@@ -634,6 +644,60 @@ function adapterRecordValue(value: Record<string, unknown>, retainRawRecords: bo
   } : {}) };
 }
 
+function polishGrokBotSessionDraft(
+  draft: SessionDraft,
+  atoms: ConversationAtom[],
+  filePath: string,
+): void {
+  const agentId =
+    parseGrokBotAgentIdFromPath(filePath) ??
+    draft.source_session_id ??
+    draft.id.replace(/^sess:grok_bot:/u, "");
+  const profileTitle = loadGrokBotProfileTitleForSourceFile(
+    filePath,
+    {
+      asString,
+      isObject,
+      safeJsonParse,
+      truncate,
+    },
+    agentId,
+  );
+
+  let profileUpdateName: string | undefined;
+  let firstUserText: string | undefined;
+  for (const atom of atoms) {
+    if (atom.content_kind !== "text") {
+      continue;
+    }
+    const text = asString(atom.payload.text);
+    if (!text) {
+      continue;
+    }
+    if (!profileUpdateName) {
+      profileUpdateName = extractGrokBotProfileUpdateName(text);
+    }
+    if (
+      !firstUserText &&
+      atom.actor_kind === "user" &&
+      atom.origin_kind === "user_authored" &&
+      !isGrokBotHiddenPromptText(text)
+    ) {
+      firstUserText = text;
+    }
+  }
+
+  const title = resolveGrokBotSessionTitle({
+    agentId,
+    profileName: profileTitle,
+    profileUpdateName,
+    firstUserText: firstUserText ?? draft.title,
+    truncate,
+  });
+  draft.title = title;
+  draft.canonical_title = title;
+}
+
 export function buildAdapterBlobResult(
   source: SourceDefinition,
   sourceFormatProfile: SourceFormatProfile,
@@ -720,6 +784,9 @@ export function createAdapterBlobBuilder(
     atoms.push(...atomized.atoms);
     edges.push(...atomized.edges);
     hydrateDraftFromAtoms(draft, atoms, blob.file_modified_at);
+    if (source.platform === "grok_bot") {
+      polishGrokBotSessionDraft(draft, atoms, filePath);
+    }
     // Note: the resume command is built from the *post-hydration* working_directory.
     // R40 deliberately reuses the latest cwd as the resume cwd signal, so the
     // synthesized `cd <cwd> && resume <uuid>` may diverge from the original

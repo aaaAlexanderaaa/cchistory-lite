@@ -83,7 +83,7 @@ Each adapter is referenced by its slot id.
 
 `cursor` still merges Agent CLI transcripts with composer/chat-store evidence
 when they share a native agent id.
-`grok_bot` reads sidebar-agent `store.db` first and falls back to `agent-transcripts` jsonl only when the store is empty, so the two shapes are not double-counted.
+`grok_bot` reads sidebar-agent `store.db` first and falls back to `agent-transcripts` jsonl only when the store is empty, so the two shapes are not double-counted. Titles prefer `profile.json`, then `SAND_AGENT_PROFILE_UPDATE`, then the first real user message.
 
 `cursor_agent` is opt-in (`--source cursor_agent`) so a default scan does not
 emit those transcripts twice.

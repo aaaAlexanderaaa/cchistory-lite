@@ -22,6 +22,7 @@ const SYNTHETIC_USER_SHAPED_PREFIXES = [
   "<local-command-stdout>",
   "<bash-input>",
   "<bash-stdout>",
+  "[SAND_HIDDEN_PROMPT]",
   "The following is the Codex agent history added since",
   "The following is the Codex agent history whose request action you are assessing",
 ] as const;
@@ -100,7 +101,7 @@ export function splitUserText(
       ? splitCursorPromptEnvelope(normalized)
       : undefined;
   if (cursorEnvelope) {
-    return cursorEnvelope;
+    return reclassifySandHiddenAuthoredChunks(cursorEnvelope);
   }
 
   const requestMarker = "[User Request]";
@@ -388,6 +389,29 @@ function stripLeadingSlash(value: string | undefined): string | undefined {
  * Codex (review actions, turn_aborted) and Claude Code (sub-agent
  * callbacks, compact-continuation summaries, local-command wrappers).
  */
+/**
+ * Grok Bot injects first-run / profile-update cues inside <user_query> that still
+ * start with [SAND_HIDDEN_PROMPT]. Keep them out of authored turns and titles.
+ */
+export function reclassifySandHiddenAuthoredChunks(chunks: UserTextChunk[]): UserTextChunk[] {
+  return chunks.flatMap((chunk) => {
+    if (chunk.originKind !== "user_authored") {
+      return [chunk];
+    }
+    const trimmed = chunk.text.replace(/\r\n/g, "\n").trim();
+    if (!trimmed.startsWith("[SAND_HIDDEN_PROMPT]")) {
+      return [chunk];
+    }
+    return [
+      {
+        originKind: "injected_user_shaped" as const,
+        text: chunk.text,
+        displayPolicy: "collapse" as const,
+      },
+    ];
+  });
+}
+
 export function isSyntheticUserShapedText(text: string): boolean {
   for (const prefix of SYNTHETIC_USER_SHAPED_PREFIXES) {
     if (text.startsWith(prefix)) return true;
