@@ -2,19 +2,28 @@
 
 ## Current work — 2026-10-14
 
-Status: the capacity/recall delivery and subsequently approved speed follow-up are implemented
-and verified as one integrated working-tree result. The owner has now authorized commit, push,
-a new tag and npm publication. Release target: 0.7.0, following the existing CI Release workflow;
-implementation commit and push precede CI validation/publication and its release commit/tag.
-Implementation commit `4838268` is pushed to `main`; its Linux/macOS, architecture and artifact
+Status: complete and published as **0.7.0**. The owner authorized commit, push, a new tag and
+npm publication, then manually started the existing Release workflow. Implementation commit
+`4838268` is on `main`; its Linux/macOS, architecture and artifact
 [CI run](https://github.com/aaaAlexanderaaa/cchistory-lite/actions/runs/38500987563) passed.
-Publication is blocked: the current GitHub CLI token's Release dispatch returned HTTP 403
-(`Resource not accessible by personal access token`), and browser access to Brave was not approved.
-No new Release run started; npm still reports 0.6.0. The owner must start the existing
-[Release workflow](https://github.com/aaaAlexanderaaa/cchistory-lite/actions/workflows/release.yml)
-with `version: 0.7.0`, `dry_run: false`, or supply equivalent existing-account Actions permission.
-CI owns the release commit and `v0.7.0` tag; creating that tag early would fail its preparation
-check. The records below retain their pre-release evidence and do not claim an npm result yet.
+The [0.7.0 Release run](https://github.com/aaaAlexanderaaa/cchistory-lite/actions/runs/38545609407)
+passed every release gate, published to npm, and created release commit
+`14b901f040310a2eeeed285c6cc70831e9421070` and tag `v0.7.0` at that commit.
+[npm](https://www.npmjs.com/package/@cchistory/lite/v/0.7.0) reports version/latest 0.7.0 and a
+SLSA provenance attestation. The [GitHub Release](https://github.com/aaaAlexanderaaa/cchistory-lite/releases/tag/v0.7.0)
+is public, final, and carries `cchistory-lite-0.7.0.tgz`.
+
+Post-publication verification installed the exact npm version and separately downloaded the
+GitHub tarball, matched its SHA-256 against release metadata, and exercised both actual packages:
+CLI version, delegated identity, evidence cursor continuation, older-message citation, stage
+diagnostics and shipped-skill equality passed. The local checkout fast-forwarded to the release
+commit and fetched the tag; a local build passed and both CLI/TUI report 0.7.0. Temporary install,
+archive and metadata-cache state is removed after verification.
+
+The earlier automated dispatch returned HTTP 403 for the CLI token, and browser access was not
+approved. The owner's manual dispatch resolved the blocker without changing credentials or
+bypassing CI. The records below retain their pre-release measurement scope; publication does not
+turn fixture capacity observations into native-history acceptance or universal performance claims.
 
 Speed acceptance: compare the frozen pre-speed working-tree build and candidate on identical
 fixture evidence and requests, including large SQLite, a large logical JSONL session, many small
