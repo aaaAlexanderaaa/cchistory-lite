@@ -1,6 +1,7 @@
 import type { SourceReadBudget } from "./read-budget.js";
 import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
+import { encodeRecordValue } from "./decoded-record.js";
 import path from "node:path";
 import type {
   ActorKind,
@@ -41,7 +42,7 @@ import { parseOpenClawCronRunRecord as parseOpenClawCronRunRuntimeRecord } from 
 import { extractGeminiProjectKey, resolveGeminiRoot } from "../platforms/gemini.js";
 import { resolveKimiSessionDir } from "../platforms/kimi.js";
 import { parseKimiRecord as parseKimiRuntimeRecord } from "../platforms/kimi/runtime.js";
-import { extractZcodeSqliteSeeds } from "../platforms/zcode/runtime.js";
+import { iterateZcodeSqliteSeeds } from "../platforms/zcode/runtime.js";
 import { collectJsonlRecords, extractContentMaxTimestamp, isIncrementalJsonlPlatform } from "./jsonl-records.js";
 import {
   collectConversationSeedsFromValue as collectConversationSeedsFromValueRuntime,
@@ -123,8 +124,10 @@ export async function extractRecords(
   context: FragmentBuildContext,
   blobId: string,
   fileBuffer: Buffer,
-): Promise<RawRecord[]> {
-  const text = fileBuffer.toString("utf8");
+  retainRawRecords = true,
+  decodedRoot?: { value: unknown },
+): Promise<AdapterRecordInput[]> {
+  const text = context.source.platform === "amp" && decodedRoot && isObject(decodedRoot.value) ? "" : fileBuffer.toString("utf8");
   const records: RawRecord[] = [];
   const baseRecordId = (ordinal: number, pointer: string) =>
     stableId("record", context.source.id, context.sessionId, blobId, String(ordinal), pointer);
@@ -132,7 +135,7 @@ export async function extractRecords(
   if (context.source.platform === "amp") {
     let parsedValue: unknown;
     try {
-      parsedValue = JSON.parse(text);
+      parsedValue = decodedRoot ? decodedRoot.value : JSON.parse(text);
     } catch {
       records.push({
         id: baseRecordId(0, "root"),
@@ -172,7 +175,7 @@ export async function extractRecords(
       record_path_or_offset: "root",
       observed_at: rootObserved,
       parseable: true,
-      raw_json: JSON.stringify(parsed),
+      ...adapterRecordValue(parsed, retainRawRecords),
     });
 
     const messages = asArray(parsed.messages);
@@ -201,7 +204,7 @@ export async function extractRecords(
         record_path_or_offset: `messages[${index}]`,
         observed_at: observedAt,
         parseable: true,
-        raw_json: JSON.stringify(message),
+        ...adapterRecordValue(message, retainRawRecords),
       });
     }
     return records;
@@ -361,13 +364,14 @@ export function parseRecord(
   context: FragmentBuildContext,
   record: RawRecord,
   draft: SessionDraft,
+  parsedValue?: Record<string, unknown>,
 ): {
   fragments: SourceFragment[];
   lossAudits: LossAuditRecord[];
 } {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(record.raw_json);
+    parsed = parsedValue ?? JSON.parse(record.raw_json);
   } catch {
     return {
       fragments: [
@@ -585,15 +589,8 @@ export async function extractMultiSessionSeeds(
     return extractConversationExportSeeds(source, filePath, fileBuffer, blobId);
   }
   if (source.platform === "zcode" && path.basename(filePath) === "db.sqlite") {
-    return extractZcodeSqliteSeeds(source.platform, filePath, {
-      asString,
-      asNumber,
-      isObject,
-      safeJsonParse,
-      epochMillisToIso,
-      nowIso,
-      normalizeWorkspacePath,
-    }, targetSessionRefs, budget);
+    const seeds = [...iterateZcodeSeeds(source, filePath, targetSessionRefs, budget)];
+    return seeds.length ? seeds : undefined;
   }
   if (source.platform === "opencode" || source.platform === "gemini") {
     const exportSeeds = await extractConversationExportSeeds(source, filePath, fileBuffer, blobId);
@@ -604,6 +601,21 @@ export async function extractMultiSessionSeeds(
   return undefined;
 }
 
+export function iterateZcodeSeeds(source: SourceDefinition, filePath: string,
+  targetSessionRefs?: readonly string[], budget?: SourceReadBudget, retainRawRecords = true) {
+  return iterateZcodeSqliteSeeds(source.platform, filePath,
+    { asString, asNumber, isObject, safeJsonParse, epochMillisToIso, nowIso, normalizeWorkspacePath }, targetSessionRefs, budget, retainRawRecords);
+}
+
+type AdapterRecordInput = RawRecord & { parsed_value?: Record<string, unknown> };
+
+function adapterRecordValue(value: Record<string, unknown>, retainRawRecords: boolean) {
+  const encoded = encodeRecordValue(value, retainRawRecords);
+  return { raw_json: encoded.rawJson, ...(encoded.parsedValue ? {
+    parsed_value: encoded.parsedValue, raw_size_bytes: encoded.rawSizeBytes, raw_text_retained: false,
+  } : {}) };
+}
+
 export function buildAdapterBlobResult(
   source: SourceDefinition,
   sourceFormatProfile: SourceFormatProfile,
@@ -612,10 +624,22 @@ export function buildAdapterBlobResult(
   captureRunId: string,
   blob: CapturedBlob,
   sessionId: string,
-  records: RawRecord[],
+  records: Iterable<AdapterRecordInput>,
   draftPatch: Partial<SessionDraft> = {},
   initialLossAudits: readonly LossAuditRecord[] = [],
+  retainRawRecords = true,
 ): AdapterBlobResult {
+  const builder = createAdapterBlobBuilder(source, sourceFormatProfile, hostId, filePath,
+    captureRunId, blob, sessionId, draftPatch, initialLossAudits, retainRawRecords);
+  for (const record of records) builder.append(record);
+  return builder.finish();
+}
+
+export function createAdapterBlobBuilder(
+  source: SourceDefinition, sourceFormatProfile: SourceFormatProfile, hostId: string, filePath: string,
+  captureRunId: string, blob: CapturedBlob, sessionId: string, draftPatch: Partial<SessionDraft> = {},
+  initialLossAudits: readonly LossAuditRecord[] = [], retainRawRecords = true,
+) {
   const context: FragmentBuildContext = {
     source,
     hostId,
@@ -629,6 +653,7 @@ export function buildAdapterBlobResult(
   const atoms: ConversationAtom[] = [];
   const edges: AtomEdge[] = [];
   const lossAudits: LossAuditRecord[] = [...initialLossAudits];
+  const records: RawRecord[] = [];
   const draft: SessionDraft = {
     id: sessionId,
     source_session_id: draftPatch.source_session_id ??
@@ -653,50 +678,62 @@ export function buildAdapterBlobResult(
     delegated_agent_key: draftPatch.delegated_agent_key,
   };
 
-  for (const record of records) {
-    const parsed = parseRecord(context, record, draft);
+  const append = (record: AdapterRecordInput): RawRecord => {
+    const parsed = parseRecord(context, record, draft, record.parsed_value);
     fragments.push(...parsed.fragments);
     lossAudits.push(...parsed.lossAudits);
-  }
-
-  if (source.platform === "claude_code") {
-    dedupeClaudeCodeTokenUsageFragments(fragments);
-  }
-
-  const atomized = atomizeFragments(source.id, sessionId, sourceFormatProfile.id, fragments);
-  atoms.push(...atomized.atoms);
-  edges.push(...atomized.edges);
-  hydrateDraftFromAtoms(draft, atoms, blob.file_modified_at);
-  // Note: the resume command is built from the *post-hydration* working_directory.
-  // R40 deliberately reuses the latest cwd as the resume cwd signal, so the
-  // synthesized `cd <cwd> && resume <uuid>` may diverge from the original
-  // session's first cwd if a mid-session `cd` is reflected in workspace_signal
-  // atoms. Validate that native `codex resume` / `claude --resume` reattach
-  // correctly using the latest cwd on each supported upstream version before
-  // assuming the projected command is interchangeable with the session's first
-  // cwd.
-  const resume = isOrdinaryResumeEligibleSourceFile(source.platform, filePath, draft)
-    ? buildSourceResumeCommand({
-        platform: draft.source_platform,
-        sourceSessionId: draft.source_session_id,
-        workingDirectory: draft.working_directory,
-      })
-    : undefined;
-  if (resume) {
-    draft.resume_command = draft.resume_command ?? resume.command;
-    draft.resume_working_directory = draft.resume_working_directory ?? resume.working_directory;
-    draft.resume_command_confidence = draft.resume_command_confidence ?? resume.confidence;
-  }
-
-  return {
-    draft,
-    blobs: [blob],
-    records,
-    fragments,
-    atoms,
-    edges,
-    loss_audits: lossAudits,
+    let rawRecord: RawRecord = record;
+    if (record.parsed_value) {
+      const { parsed_value: _decoded, ...metadata } = record;
+      rawRecord = metadata;
+    }
+    const retained = retainRawRecords ? rawRecord : { ...rawRecord, raw_size_bytes: record.raw_size_bytes ?? Buffer.byteLength(record.raw_json, "utf8"),
+      raw_json: "", raw_text_retained: false };
+    records.push(retained);
+    return retained;
   };
+
+  const finish = (): AdapterBlobResult => {
+    if (source.platform === "claude_code") {
+      dedupeClaudeCodeTokenUsageFragments(fragments);
+    }
+
+    const atomized = atomizeFragments(source.id, sessionId, sourceFormatProfile.id, fragments);
+    atoms.push(...atomized.atoms);
+    edges.push(...atomized.edges);
+    hydrateDraftFromAtoms(draft, atoms, blob.file_modified_at);
+    // Note: the resume command is built from the *post-hydration* working_directory.
+    // R40 deliberately reuses the latest cwd as the resume cwd signal, so the
+    // synthesized `cd <cwd> && resume <uuid>` may diverge from the original
+    // session's first cwd if a mid-session `cd` is reflected in workspace_signal
+    // atoms. Validate that native `codex resume` / `claude --resume` reattach
+    // correctly using the latest cwd on each supported upstream version before
+    // assuming the projected command is interchangeable with the session's first
+    // cwd.
+    const resume = isOrdinaryResumeEligibleSourceFile(source.platform, filePath, draft)
+      ? buildSourceResumeCommand({
+          platform: draft.source_platform,
+          sourceSessionId: draft.source_session_id,
+          workingDirectory: draft.working_directory,
+        })
+      : undefined;
+    if (resume) {
+      draft.resume_command = draft.resume_command ?? resume.command;
+      draft.resume_working_directory = draft.resume_working_directory ?? resume.working_directory;
+      draft.resume_command_confidence = draft.resume_command_confidence ?? resume.confidence;
+    }
+
+    return {
+      draft,
+      blobs: [blob],
+      records,
+      fragments,
+      atoms,
+      edges,
+      loss_audits: lossAudits,
+    };
+  };
+  return { append, finish };
 }
 
 export function isOrdinaryResumeEligibleSourceFile(
@@ -772,17 +809,17 @@ export async function captureBlob(
   };
 }
 
-// Stage 3: backing block size for streaming reads. 4 MiB balances syscall
+// Maximum backing block size for streaming reads. 4 MiB balances syscall
 // overhead against heap pressure — at this size a 100 MiB file costs ~25
 // read syscalls and the in-flight chunk is bounded.
 const STREAMING_BACKING_BLOCK_BYTES = 4 * 1024 * 1024;
 
-// Stage 3: tail window retained during streaming capture so we can compute
+// Tail window retained during streaming capture so we can compute
 // content_max_timestamp without re-reading the file. Matches the tailBytes
 // default in extractContentMaxTimestamp.
 const STREAMING_TAIL_RETENTION_BYTES = 64 * 1024;
 
-// Stage 3: streaming variant of captureBlob for oversized JSONL files.
+// Streaming variant of captureBlob for large JSONL files.
 // Reads the file in STREAMING_BACKING_BLOCK_BYTES chunks, hashes incrementally,
 // and retains only the last STREAMING_TAIL_RETENTION_BYTES for the watermark
 // extraction. Returns a CapturedBlobInput without fileBuffer — downstream
@@ -796,9 +833,13 @@ export async function captureBlobStreaming(
   filePath: string,
   captureRunId: string,
   budget?: SourceReadBudget,
+  incrementalAdmission = false,
 ): Promise<StreamingCapturedBlobInput> {
   const beforeStats = await fs.stat(filePath);
-  budget?.admit(beforeStats.size, filePath);
+  const blockBytes = incrementalAdmission
+    ? Math.max(1, Math.min(STREAMING_BACKING_BLOCK_BYTES, budget?.maximumUnitBytes?.() ?? STREAMING_BACKING_BLOCK_BYTES))
+    : STREAMING_BACKING_BLOCK_BYTES;
+  budget?.admit(incrementalAdmission ? Math.min(beforeStats.size, blockBytes) : beforeStats.size, filePath);
   const fileIdentityStableBefore = {
     size: beforeStats.size,
     mtimeMs: beforeStats.mtimeMs,
@@ -807,22 +848,36 @@ export async function captureBlobStreaming(
 
   const handle = await fs.open(filePath, "r");
   let totalBytes = 0;
+  let lineBytes = 0;
   let tail = Buffer.alloc(0);
   const hasher = createHash("sha1");
   try {
+    const block = Buffer.alloc(blockBytes);
     while (totalBytes < beforeStats.size) {
-      const block = Buffer.alloc(STREAMING_BACKING_BLOCK_BYTES);
       const { bytesRead } = await handle.read(block, 0, Math.min(block.length, beforeStats.size - totalBytes), null);
       if (bytesRead === 0) {
         break;
       }
-      const slice = bytesRead === STREAMING_BACKING_BLOCK_BYTES ? block : block.subarray(0, bytesRead);
+      const slice = bytesRead === blockBytes ? block : block.subarray(0, bytesRead);
+      if (incrementalAdmission && budget) {
+        let start = 0;
+        let nextLf = slice.indexOf(10), nextCr = slice.indexOf(13);
+        while (nextLf !== -1 || nextCr !== -1) {
+          const index = nextCr === -1 ? nextLf : nextLf === -1 ? nextCr : Math.min(nextLf, nextCr);
+          budget.admit(lineBytes + index - start, `${filePath}:JSONL record capture`);
+          lineBytes = 0;
+          start = index + 1;
+          if (index === nextLf) nextLf = slice.indexOf(10, start);
+          if (index === nextCr) nextCr = slice.indexOf(13, start);
+        }
+        lineBytes += slice.length - start;
+        budget.admit(lineBytes, `${filePath}:JSONL record capture`);
+      }
       hasher.update(slice);
       totalBytes += bytesRead;
-      const retained = Buffer.concat([tail, slice]);
-      tail = retained.length > STREAMING_TAIL_RETENTION_BYTES
-        ? retained.subarray(retained.length - STREAMING_TAIL_RETENTION_BYTES)
-        : retained;
+      const suffix = slice.subarray(Math.max(0, slice.length - STREAMING_TAIL_RETENTION_BYTES));
+      tail = suffix.length === STREAMING_TAIL_RETENTION_BYTES ? Buffer.from(suffix)
+        : Buffer.concat([tail.subarray(Math.max(0, tail.length + suffix.length - STREAMING_TAIL_RETENTION_BYTES)), suffix]);
     }
   } finally {
     await handle.close();
@@ -855,13 +910,13 @@ export async function captureBlobStreaming(
       try {
         let remaining = totalBytes;
         while (remaining > 0) {
-          const block = Buffer.alloc(STREAMING_BACKING_BLOCK_BYTES);
+          const block = Buffer.alloc(blockBytes);
           const { bytesRead } = await fh.read(block, 0, Math.min(block.length, remaining), null);
           if (bytesRead === 0) {
             break;
           }
           remaining -= bytesRead;
-          yield bytesRead === STREAMING_BACKING_BLOCK_BYTES ? block : block.subarray(0, bytesRead);
+          yield bytesRead === blockBytes ? block : block.subarray(0, bytesRead);
         }
       } finally {
         await fh.close();

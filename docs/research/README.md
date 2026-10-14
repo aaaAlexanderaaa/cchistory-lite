@@ -9,6 +9,10 @@ recommendations describe the stage when they were written, not an ever-growing i
 
 | Report | Evidence and code stage |
 | --- | --- |
+| [Useful history read speed](2026-10-14-read-speed.md) | Speed follow-up against the successful pre-speed delivery: 13 equal-input pairs on an actual 16 GiB host, JSON/native-query work, answer/projection parity, contrary RSS and limits |
+| [Useful history capacity and recall](2026-10-13-useful-history-capacity.md) | Integrated delivery: actual 16 GiB host, equal-input old/current fixture comparisons including a 1.4 GB database and 100 MB+ sessions, diagnostic/recall/cache contracts and release checks; no universal capacity claim |
+| [Project improvement assessment](2026-10-13-project-improvement-assessment.md) | Goal-grounded current-code review, bounded sanitized observations, priority/cost alternatives and native/ROI limits; proposals, not an implementation queue |
+| [Working discipline learning and validation](2026-10-13-working-discipline.md) | Template comparison, preserved constraints, fresh-context assessment and warm ordinary-task countercase; behavioral verification remains partial |
 | [2000 turns under a 3.6 GiB Linux limit](2026-09-08-2000-turn-memory-capacity.md) | Synthetic cgroup measurements, successful light reads, full-read refusal and actual CLI SQL pagination; no universal turn-count guarantee |
 | [macOS memory ownership correction](2026-09-08-macos-memory-ownership.md) | Failed independent trial, local OS telemetry, removal of adaptive heap policy and platform-signal correction |
 | [First use and memory admission](2026-09-07-first-use-and-memory-admission.md) | Approved follow-up, code diagnosis and synthetic regressions; no native performance or independent agent acceptance claim |

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { appendFileSync } from "node:fs";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, writeFile, truncate } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import type { RawRecord, SourceDefinition } from "@cchistory/domain";
+import { SourceReadBudgetExceededError } from "./read-budget.js";
 import { captureBlob, captureBlobStreaming, fileIdentityFromStats } from "./parser.js";
 import {
   collectJsonlRecordsStreaming,
@@ -47,6 +48,47 @@ async function* chunksFromBuffers(buffers: readonly Buffer[]): AsyncGenerator<Bu
     yield buffer;
   }
 }
+
+test("incremental capture checks a huge record before completing the checksum pass", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "lite-capture-unit-"));
+  try {
+    const file = path.join(root, "fixture.jsonl");
+    await cp(new URL("../../../../mock_data/fixtures/agent-evidence/parent.jsonl", import.meta.url), file);
+    await truncate(file, 16 * 1024 * 1024);
+    const source: SourceDefinition = { id: "source-capture-unit", slot_id: "codex", family: "local_coding_agent",
+      platform: "codex", display_name: "Codex", base_dir: root };
+    const limit = 128 * 1024;
+    await assert.rejects(captureBlobStreaming(source, "host", file, "run", {
+      maximumUnitBytes: () => limit,
+      admit(bytes, unit) { if (bytes > limit) throw new SourceReadBudgetExceededError(unit, bytes, limit); },
+    }, true), error => error instanceof SourceReadBudgetExceededError && error.unit.endsWith("JSONL record capture")
+      && error.requestedBytes <= 256 * 1024);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("streaming line admission rejects the growing unit before decoding and preserves cross-chunk Unicode", async () => {
+  const content = await readFile(new URL("../../../../mock_data/fixtures/agent-evidence/parent.jsonl", import.meta.url));
+  const lines: string[] = [];
+  const chunks = Array.from({ length: Math.ceil(content.length / 7) }, (_, index) => content.subarray(index * 7, index * 7 + 7));
+  await forEachNonEmptyTrimmedLineStreaming(chunksFromBuffers(chunks), line => lines.push(line), bytes => {
+    if (bytes > 1024) throw new SourceReadBudgetExceededError("fixture line", bytes, 1024);
+  });
+  assert.deepEqual(lines, content.toString("utf8").trim().split("\n"));
+  let visited = 0;
+  await assert.rejects(forEachNonEmptyTrimmedLineStreaming(chunksFromBuffers(chunks), () => { visited++; }, bytes => {
+    if (bytes > 32) throw new SourceReadBudgetExceededError("fixture line", bytes, 32);
+  }), SourceReadBudgetExceededError);
+  assert.equal(visited, 0);
+});
+
+test("streaming separator search preserves CRLF, CR and LF across empty and one-byte chunks", async () => {
+  const fixture = (await readFile(new URL("../../../../mock_data/fixtures/agent-evidence/parent.jsonl", import.meta.url), "utf8")).trim().split("\n");
+  const content = Buffer.from(fixture.map((line, index) => line + ["\r\n", "\r", "\n"][index % 3]).join(""));
+  const chunks = Array.from(content).flatMap(byte => [Buffer.from([byte]), Buffer.alloc(0)]);
+  const lines: string[] = [];
+  await forEachNonEmptyTrimmedLineStreaming(chunksFromBuffers(chunks), line => lines.push(line));
+  assert.deepEqual(lines, fixture);
+});
 
 function recordRawLines(records: readonly RawRecord[]): string[] {
   return records.map((record) => record.raw_json);

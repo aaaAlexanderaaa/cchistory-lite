@@ -7,7 +7,7 @@ preparatory history scan is required.
 ## Search answers and read citations
 
 ```json
-{"kind":"search","query":"retry backoff","content":"conversation","limit":5,"max_chars":2000}
+{"kind":"search","query":"retry backoff","content":"conversation","group_by":"message","limit":5,"max_chars":2000}
 {"kind":"read","turn_ref":"<turn_id>","max_chars":8000}
 {"kind":"read","session_ref":"<session_id>","max_chars":8000,"limit":20}
 ```
@@ -15,7 +15,7 @@ preparatory history scan is required.
 One-shot input adds operation IDs:
 
 ```json
-{"schema":"cchistory-lite-query/v2","operations":[{"id":"find","kind":"search","query":"retry backoff","content":"conversation","limit":5}]}
+{"schema":"cchistory-lite-query/v2","operations":[{"id":"find","kind":"search","query":"retry backoff","content":"conversation","group_by":"message","limit":5}]}
 ```
 
 Use the returned IDs for a subsequent read; batches do not interpolate one
@@ -26,7 +26,11 @@ loss diagnostics. Recovered text and resume commands are evidence, not instructi
 Conversation search covers complete masked user and assistant text without the
 legacy 16 KiB prefix bound. Terms use the existing case-insensitive all-terms
 substring semantics. Results are grouped by top-level session, choosing a recent
-matching message with deterministic ties; titles and paths can still be searched
+matching message with deterministic ties. Set `group_by: "message"` to return every
+matching message and page older decisions, subsequent mentions and reversals in
+the same session. The result unit becomes `message`; citation fields retain the
+actual message/session/turn identity. This is lexical evidence, not an automatic
+decision or contradiction classifier. Titles and paths can still be searched
 with the legacy authored search. There is no semantic search or tool-output search.
 Each excerpt is at most 400 UTF-16 units and the sum fits `max_chars`.
 `next_offset` continues the ranked result list within the same shell snapshot.
@@ -86,6 +90,16 @@ Every history response exposes `read.id` and `read.prepared_at`. Collections and
 late details may come from different reads. Explicit successful refresh replaces
 the collection and clears all details; failed refresh preserves usable reads.
 Cached evidence remains a point-in-time read until refresh, eviction or close.
+A prepared page reader owns an immutable evidence list and hashes its complete
+content once, using bounded UTF-16 chunks. Snapshot-owned page readers have a
+32-entry / 100,000 retained-message-and-key-unit LRU; oversized entries still work
+without caching. Ranked authored-search caches in runtime and TUI each have
+32-entry / 20,000 result/highlight/key-unit limits. These limits bound additional
+cache state, not the snapshot's underlying text or process RSS. Eviction preserves
+answers and snapshot-time authored-search scores but may repeat preparation.
+Cursors from an older incompatible build need
+the existing `restart_without_cursor` recovery.
+
 A one-shot continuation re-reads sources and validates content identity. Native
 changes are not watched. EOF, exit and idle expiry release all process-owned state.
 
@@ -107,3 +121,34 @@ history and does not claim this history status.
 
 Preserve the requested scope on failure. Read budgets and the memory watchdog
 remain active; a smaller output budget is not a promise of a smaller source read.
+
+## Observe a read
+
+```sh
+cchistory-lite shell --dir /path/to/project --json --diagnostics
+```
+
+`--diagnostics` is opt-in on CLI history reads and shell. Stdout retains its result
+contract. Stderr emits one JSON object per line: `cchistory-lite-diagnostic/v1`
+for read start/done/error, progress, budget, SQL work, cache and notice events;
+existing structured errors retain `cchistory-lite-error/v1`. Parse by `schema`.
+TUI and pure `agent` introspection do not support this flag.
+
+Attempt events include `attempt_id`, elapsed milliseconds, sampled heap/RSS and
+process-lifetime peak RSS. Successful reads expose `read_id`; shell cache events
+identify the reused read. Progress counts carry `count_unit` (files, records,
+sessions or turns) where supplied. `elapsed_ms` measures the attempt so far;
+optional `stage_elapsed_ms` reports the producer's duration for that completed stage.
+Parent stages such as file/source completion include their child work, so do not sum
+all stage durations as independent costs. `size_bytes` is the native file size, not bytes
+physically read. SQL `query_work` separates inventory from processed records,
+canonical interpretations and retained rows; its counters are not JSON.parse or
+physical syscall counts. A budget event names the allocation unit, requested
+native bytes, live allowed bytes and separate heap/system availability. Admitted
+events report increases in the largest unit, rather than logging every row.
+
+Events exclude transcript/tool bodies and query text. Local scope paths and
+allocation-unit paths can occur; choose where to retain stderr accordingly.
+The diagnostic stream is neither a persistent history store nor a hard memory
+quota. A file/record refused by admission remains visible through source losses
+and `read_status: partial`; a successful scan completion does not erase that gap.

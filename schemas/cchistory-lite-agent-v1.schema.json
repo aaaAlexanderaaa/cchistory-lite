@@ -100,15 +100,15 @@
           "type": "object",
           "required": ["policy", "automatic_reexec", "description"],
           "properties": {
-            "policy": { "const": "node_default_or_explicit" },
-            "automatic_reexec": { "const": false },
+            "policy": { "const": "adaptive_default_or_explicit" },
+            "automatic_reexec": { "const": true },
             "description": { "type": "string", "minLength": 1 }
           },
           "additionalProperties": false
         },
         "scan_guard": {
           "type": "object",
-          "required": ["kill_switch", "light_scan_memory_multiplier", "full_scan_memory_multiplier", "warn_available_fraction", "refuse_available_fraction", "lock_wait_ms", "watchdog_floor", "lock", "bypass", "error_codes"],
+          "required": ["kill_switch", "light_scan_memory_multiplier", "full_scan_memory_multiplier", "warn_available_fraction", "refuse_available_fraction", "estimate_policy", "read_budget_policy", "lock_wait_ms", "watchdog_floor", "lock", "bypass", "error_codes"],
           "properties": {
             "kill_switch": {
               "type": "object",
@@ -123,13 +123,16 @@
             "full_scan_memory_multiplier": { "type": "integer", "minimum": 1 },
             "warn_available_fraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
             "refuse_available_fraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+            "estimate_policy": { "const": "warning_only" },
+            "read_budget_policy": { "const": "live_headroom_per_read" },
             "lock_wait_ms": { "type": "integer", "minimum": 1 },
             "watchdog_floor": {
               "type": "object",
-              "required": ["formula", "initial_available_fraction"],
+              "required": ["formula", "initial_available_fraction", "max_reserve_bytes"],
               "properties": {
                 "formula": { "type": "string", "minLength": 1 },
-                "initial_available_fraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+                "initial_available_fraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+                "max_reserve_bytes": { "type": "integer", "minimum": 0 }
               },
               "additionalProperties": false
             },

@@ -1194,6 +1194,7 @@ test("Lite CLI help documents latest, limits, and directory scope", async () => 
   assert.match(help, /cchistory-lite help \[command\]/);
   // store/db appear only in the closing line that documents their absence.
   const knownFlags = new Set([
+    "diagnostics",
     "source-root",
     "source",
     "limit-files",
@@ -1821,6 +1822,7 @@ test("Lite CLI agent prints the machine-readable contract without scanning", asy
   assert.equal(contract.trust_model.content_trust, "untrusted_history");
   const schemaIds = contract.output_schemas.map((entry) => entry.id);
   for (const id of [
+    "cchistory-lite-diagnostic/v1",
     "cchistory-lite/v2",
     "cchistory-lite-canonical/v1",
     "cchistory-lite-query/v2",
@@ -1856,6 +1858,16 @@ test("Lite CLI agent contract satisfies its shipped JSON schema structurally", a
   }
   assert.equal(contract.schema, schema.properties.schema.const);
   assert.equal(contract.kind, schema.properties.kind.const);
+  const heap = (contract.cost_model as { heap_ceiling: { policy: string; automatic_reexec: boolean } }).heap_ceiling;
+  const heapSchema = schema.properties.cost_model.properties.heap_ceiling.properties;
+  assert.equal(heap.policy, heapSchema.policy.const);
+  assert.equal(heap.automatic_reexec, heapSchema.automatic_reexec.const);
+  const guard = (contract.cost_model as { scan_guard: Record<string, unknown> }).scan_guard;
+  const guardSchema = schema.properties.cost_model.properties.scan_guard.properties;
+  assert.deepEqual(Object.keys(guard).sort(), Object.keys(guardSchema).sort());
+  assert.equal(guard.estimate_policy, guardSchema.estimate_policy.const);
+  assert.equal(guard.read_budget_policy, guardSchema.read_budget_policy.const);
+  assert.deepEqual(Object.keys(guard.watchdog_floor as object).sort(), Object.keys(guardSchema.watchdog_floor.properties).sort());
   const commands = contract.commands as Record<string, Record<string, unknown> & { flags: Array<{ kind: string }> }>;
   assert.deepEqual(
     Object.keys(commands).sort(),
@@ -1901,7 +1913,7 @@ test("Lite CLI agent contract flags match the parser in both directions", async 
   const parserFlags = [
     "--source-root", "--source", "--limit-files", "--limit", "--offset", "--project", "--by",
     "--format", "--out", "--dir", "--request", "--safe", "--json", "--all", "--no-dir",
-    "--help", "--version", "--sql", "--sql-file", "--params", "--complete", "--idle-timeout",
+    "--help", "--version", "--sql", "--sql-file", "--params", "--complete", "--idle-timeout", "--diagnostics",
   ];
   assert.deepEqual([...universe].sort(), [...parserFlags].sort());
 

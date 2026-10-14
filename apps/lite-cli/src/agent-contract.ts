@@ -87,6 +87,10 @@ const SAFE: AgentFlagContract = {
   kind: "boolean",
   summary: "Adapter safe mode",
 };
+const DIAGNOSTICS: AgentFlagContract = {
+  name: "--diagnostics", kind: "boolean",
+  summary: "Optional structured read progress, resource decisions and cache reuse on stderr; stdout is unchanged",
+};
 const JSON_FLAG: AgentFlagContract = {
   name: "--json",
   kind: "boolean",
@@ -110,7 +114,7 @@ const NO_DIR: AgentFlagContract = {
 };
 
 function buildCommands(): Record<string, AgentCommandContract> {
-  const scanFlags = [SOURCE_ROOT, SOURCE, LIMIT_FILES, SAFE, JSON_FLAG];
+  const scanFlags = [SOURCE_ROOT, SOURCE, LIMIT_FILES, SAFE, DIAGNOSTICS, JSON_FLAG];
   return {
     sources: {
       name: "sources",
@@ -194,6 +198,7 @@ function buildCommands(): Record<string, AgentCommandContract> {
         SOURCE,
         LIMIT_FILES,
         SAFE,
+        DIAGNOSTICS,
         { ...JSON_NO_CANONICAL, summary: "Accepted; query output is always JSON. =canonical is rejected." },
         { name: "--request", kind: "value", summary: "JSON batch query request (v2 operations or v3 SQL); - reads stdin" },
         { name: "--sql", kind: "value", summary: "Finite SELECT over sessions or turns; explicit LIMIT required" },
@@ -203,7 +208,7 @@ function buildCommands(): Record<string, AgentCommandContract> {
         DIR,
         NO_DIR,
       ],
-      notes: "v2 operations include read (exactly one session_ref or turn_ref; max_chars 256–64000, default 8000; limit 1–100, default 20; cursor for continuation) and search with content: conversation (full masked user/reply text including delegated work; bounded excerpts). read_status summarizes known gaps separately from SQL coverage. SQL validates before scanning; LIMIT bounds rows, not scan work. Operation errors exit 1 with other results intact. See docs/guide/agent-evidence.md.",
+      notes: "v2 operations include read (exactly one session_ref or turn_ref; max_chars 256–64000, default 8000; limit 1–100, default 20; cursor for continuation) and search with content: conversation (full masked user/reply text including delegated work; bounded excerpts). Use group_by: message to page older matches within a session; default session grouping is unchanged. read_status summarizes known gaps separately from SQL coverage. SQL validates before scanning; LIMIT bounds rows, not scan work. Operation errors exit 1 with other results intact. See docs/guide/agent-evidence.md.",
     },
     shell: {
       name: "shell",
@@ -221,6 +226,7 @@ function buildCommands(): Record<string, AgentCommandContract> {
         SOURCE,
         LIMIT_FILES,
         SAFE,
+        DIAGNOSTICS,
         { ...JSON_NO_CANONICAL, summary: "Accepted; export encoding comes from --format. =canonical is rejected." },
         { name: "--format", kind: "value", values: ["jsonl", "json", "markdown"], default: "jsonl", summary: "Export encoding" },
         { name: "--out", kind: "value", default: "-", summary: "Export destination; - writes stdout" },
@@ -281,6 +287,7 @@ export function buildAgentContract(version: string): AgentContract {
       { name: "CCHISTORY_SCAN_GUARD", effect: "Set to 0 to disable the scan guard (advisory lock, pre-flight estimate, native-byte admission, watchdog)." },
     ],
     output_schemas: [
+      { id: "cchistory-lite-diagnostic/v1", file: "schemas/cchistory-lite-diagnostic-v1.schema.json", description: "Optional metadata-only read progress and resource/cache decisions on stderr (--diagnostics)." },
       { id: "cchistory-lite-source-inventory/v1", file: "schemas/cchistory-lite-source-inventory-v1.schema.json", description: "Metadata-only source discovery; history counts are null until a counted scan is requested." },
       { id: "cchistory-lite/v2", file: "schemas/cchistory-lite-v2.schema.json", description: "Compact agent-facing read output (--json)." },
       { id: "cchistory-lite-canonical/v1", file: "schemas/cchistory-lite-canonical-v1.schema.json", description: "Full canonical evidence output (--json=canonical)." },

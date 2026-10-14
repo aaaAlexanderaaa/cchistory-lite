@@ -1,4 +1,5 @@
 import { readBudgetedSqliteRows, type SourceReadBudget } from "../../core/read-budget.js";
+import { encodeRecordValue as encodeRecord } from "../../core/decoded-record.js";
 import { DatabaseSync } from "node:sqlite";
 import { maxIso } from "@cchistory/domain";
 import type { SourcePlatform } from "@cchistory/domain";
@@ -73,6 +74,16 @@ export function extractZcodeSqliteSeeds(
   targetSessionRefs: readonly string[] = [],
   budget?: SourceReadBudget,
 ): ExtractedSessionSeed[] | undefined {
+  const seeds = [...iterateZcodeSqliteSeeds(platform, filePath, helpers, targetSessionRefs, budget)];
+  return seeds.length ? seeds : undefined;
+}
+
+/** Keep the native transaction open while consuming one logical session at a time. */
+export function* iterateZcodeSqliteSeeds(
+  platform: SourcePlatform, filePath: string, helpers: ZcodeRuntimeHelpers,
+  targetSessionRefs: readonly string[] = [], budget?: SourceReadBudget,
+  retainRawRecords = true,
+): Generator<ExtractedSessionSeed> {
   const db = new DatabaseSync(filePath, { readOnly: true });
   try {
     db.exec("BEGIN");
@@ -88,18 +99,21 @@ export function extractZcodeSqliteSeeds(
       ${targetIds.length > 0 ? `WHERE id IN (${placeholders})` : ""}
       ORDER BY time_created, id
     `, ["id", "parent_id", "directory", "path", "title", "task_type", "time_created", "time_updated", "time_archived", "trace_id"], targetIds, budget, `${filePath}:session`) as unknown as ZcodeSessionRow[];
-    const messageRows = readBudgetedSqliteRows(db, `
-      SELECT id, session_id, time_created, time_updated, data
-      FROM message
-      ${targetIds.length > 0 ? `WHERE session_id IN (${placeholders})` : ""}
-      ORDER BY session_id, time_created, id
-    `, ["id", "session_id", "time_created", "time_updated", "data"], targetIds, budget, `${filePath}:message`) as unknown as ZcodeMessageRow[];
-    const partRows = readBudgetedSqliteRows(db, `
-      SELECT id, message_id, session_id, time_created, time_updated, data
-      FROM part
-      ${targetIds.length > 0 ? `WHERE session_id IN (${placeholders})` : ""}
-      ORDER BY session_id, time_created, id
-    `, ["id", "message_id", "session_id", "time_created", "time_updated", "data"], targetIds, budget, `${filePath}:part`) as unknown as ZcodePartRow[];
+    let locator = "rowid";
+    try { db.prepare("SELECT rowid FROM part LIMIT 0"); } catch { locator = "id"; }
+    const partColumns = ["id", "message_id", "session_id", "time_created", "time_updated", "data"];
+    const lengths = partColumns.map(column => `coalesce(length(CAST("${column}" AS BLOB)), 0)`).join(" + ");
+    const partWhere = targetIds.length ? `WHERE session_id IN (${placeholders})` : "";
+    // Price only the retained locator inventory. Its numeric size field needs at
+    // most 24 bytes; estimating it must not evaluate every large body or sort again.
+    const inventoryAdmission = `SELECT coalesce(sum(152 + coalesce(length(CAST(${locator} AS BLOB)), 0)
+      + coalesce(length(CAST(message_id AS BLOB)), 0)), 0) AS bytes FROM part ${partWhere}`;
+    const partInventory = readBudgetedSqliteRows(db, `SELECT ${locator} AS native_locator, message_id, 128 + ${lengths} AS native_bytes
+      FROM part ${partWhere}
+      ORDER BY session_id, time_created, id`, ["native_locator", "message_id", "native_bytes"], targetIds, budget,
+    `${filePath}:part inventory`, inventoryAdmission);
+    const partsByMessageId = groupRows(partInventory, row => helpers.asString(row.message_id));
+    const readPart = db.prepare(`SELECT ${partColumns.join(", ")} FROM part WHERE ${locator} = ?`);
     const taskLinkRows = tableExists(db, "session_task_link")
       ? readBudgetedSqliteRows(db, `
           SELECT parent_session_id, child_session_id, role, label, agent_type, model, status, time_created
@@ -111,8 +125,6 @@ export function extractZcodeSqliteSeeds(
         `, ["parent_session_id", "child_session_id", "role", "label", "agent_type", "model", "status", "time_created"], [...targetIds, ...targetIds], budget, `${filePath}:session_task_link`) as unknown as ZcodeSessionTaskLinkRow[]
       : [];
 
-    const partsByMessageId = groupRows(partRows, (row) => helpers.asString(row.message_id));
-    const messagesBySessionId = groupRows(messageRows, (row) => helpers.asString(row.session_id));
     const relationByChildSessionId = new Map(
       taskLinkRows
         .map((row) => [helpers.asString(row.child_session_id), row] as const)
@@ -124,21 +136,28 @@ export function extractZcodeSqliteSeeds(
     );
     const targetIdSet = new Set(targetIds);
 
-    const seeds = sessionRows
-      .map((session) =>
-        buildZcodeSessionSeed(
+    for (const session of sessionRows) {
+      const id = helpers.asString(session.id);
+      if (!id) continue;
+      const messages = readBudgetedSqliteRows(db, `SELECT id, session_id, time_created, time_updated, data
+        FROM message WHERE session_id = ? ORDER BY time_created, id`,
+      ["id", "session_id", "time_created", "time_updated", "data"], [id], budget, `${filePath}:message:${id}`) as unknown as ZcodeMessageRow[];
+      const seed = buildZcodeSessionSeed(
           platform,
           session,
-          messagesBySessionId,
-          partsByMessageId,
+          messages,
+          messageId => (partsByMessageId.get(messageId) ?? []).map(entry => {
+            budget?.admit(Number(entry.native_bytes), `${filePath}:part:${messageId}`);
+            return readPart.get(entry.native_locator!) as unknown as ZcodePartRow;
+          }),
           relationByChildSessionId,
           relationsByParentSessionId,
           targetIdSet,
           helpers,
-        ),
-      )
-      .filter((seed): seed is ExtractedSessionSeed => seed !== undefined);
-    return seeds.length > 0 ? seeds : undefined;
+          retainRawRecords,
+        );
+      if (seed) yield seed;
+    }
   } finally {
     db.close();
   }
@@ -147,12 +166,13 @@ export function extractZcodeSqliteSeeds(
 function buildZcodeSessionSeed(
   platform: SourcePlatform,
   session: ZcodeSessionRow,
-  messagesBySessionId: Map<string, ZcodeMessageRow[]>,
-  partsByMessageId: Map<string, ZcodePartRow[]>,
+  messages: readonly ZcodeMessageRow[],
+  readParts: (messageId: string) => ZcodePartRow[],
   relationByChildSessionId: Map<string, ZcodeSessionTaskLinkRow>,
   relationsByParentSessionId: Map<string, ZcodeSessionTaskLinkRow[]>,
   targetIds: ReadonlySet<string>,
   helpers: ZcodeRuntimeHelpers,
+  retainRawRecords: boolean,
 ): ExtractedSessionSeed | undefined {
   const sourceSessionId = helpers.asString(session.id);
   if (!sourceSessionId) {
@@ -174,7 +194,7 @@ function buildZcodeSessionSeed(
     {
       pointer: "meta",
       observedAt: createdAt ?? helpers.nowIso(),
-      rawJson: JSON.stringify({
+      ...encodeRecord({
         id: sessionId,
         title,
         cwd: workingDirectory,
@@ -190,7 +210,7 @@ function buildZcodeSessionSeed(
           relation_status: helpers.asString(relation?.status),
           archived_at: epochMillisToIso(session.time_archived, helpers),
         },
-      }),
+      }, retainRawRecords),
     },
   ];
 
@@ -202,21 +222,20 @@ function buildZcodeSessionSeed(
       records.push({
         pointer: `relation:outbound:${childSessionId}:${index}`,
         observedAt,
-        rawJson: JSON.stringify({
+        ...encodeRecord({
           parentId: sessionId,
           childSessionId: `sess:${platform}:${childSessionId}`,
           isSidechain: true,
           agentId: helpers.asString(outboundRelation.agent_type) ?? helpers.asString(outboundRelation.role),
-        }),
+        }, retainRawRecords),
       });
     }
   }
 
-  const messages = messagesBySessionId.get(sourceSessionId) ?? [];
   let latestActivityAt = updatedAt;
   for (const message of messages) {
-    const messageParts = partsByMessageId.get(helpers.asString(message.id) ?? "") ?? [];
-    const messageRecord = buildZcodeMessageRecord(message, messageParts, workingDirectory, helpers);
+    const messageParts = readParts(helpers.asString(message.id) ?? "");
+    const messageRecord = buildZcodeMessageRecord(message, messageParts, workingDirectory, helpers, retainRawRecords);
     if (!messageRecord) {
       continue;
     }
@@ -248,6 +267,7 @@ function buildZcodeMessageRecord(
   parts: ZcodePartRow[],
   defaultWorkingDirectory: string | undefined,
   helpers: ZcodeRuntimeHelpers,
+  retainRawRecords: boolean,
 ): ExtractedSessionSeed["records"][number] | undefined {
   const messageId = helpers.asString(message.id);
   const parsedMessage = parseJsonObject(helpers.asString(message.data), helpers);
@@ -310,7 +330,7 @@ function buildZcodeMessageRecord(
   return {
     pointer: `message:${messageId ?? observedAt}`,
     observedAt,
-    rawJson: JSON.stringify({
+    ...encodeRecord({
       id: messageId,
       role: role ?? "assistant",
       timestamp: observedAt,
@@ -327,7 +347,7 @@ function buildZcodeMessageRecord(
         mode: helpers.asString(parsedMessage.mode),
         agent: helpers.asString(parsedMessage.agent),
       },
-    }),
+    }, retainRawRecords),
   };
 }
 

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cchistory.dev/schemas/cchistory-lite-diagnostic-v1.schema.json",
+  "title": "Optional read diagnostics on stderr",
+  "type": "object",
+  "required": ["schema", "kind"],
+  "properties": {
+    "schema": { "const": "cchistory-lite-diagnostic/v1" },
+    "kind": { "enum": ["read_start", "read_done", "read_error", "progress", "budget", "query_work", "cache", "notice"] },
+    "attempt_id": { "type": "string" },
+    "read_id": { "type": "string" },
+    "stage": { "type": "string" },
+    "count": { "type": "integer", "minimum": 0 },
+    "count_unit": { "enum": ["files", "records", "sessions", "turns"] },
+    "size_bytes": { "type": "integer", "minimum": 0 },
+    "requested_bytes": { "type": "integer", "minimum": 0 },
+    "allowed_native_bytes": { "type": "integer", "minimum": 0 },
+    "heap_available_bytes": { "type": "number", "minimum": 0 },
+    "system_available_bytes": { "type": ["number", "null"], "minimum": 0 },
+    "elapsed_ms": { "type": "number", "minimum": 0 },
+    "stage_elapsed_ms": { "type": "number", "minimum": 0 },
+    "heap_used_bytes": { "type": "number", "minimum": 0 },
+    "rss_bytes": { "type": "number", "minimum": 0 },
+    "process_peak_rss_bytes": { "type": "number", "minimum": 0 }
+  },
+  "additionalProperties": true
+}

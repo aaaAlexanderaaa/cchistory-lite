@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { createInterface } from "node:readline";
-import { SQL_REQUEST_SCHEMA, QueryValidationError, MAX_QUERY_REQUEST_BYTES, LiveHistoryReader, type ScanLiteHistoryOptions, type LiveHistorySnapshot } from "@cchistory/live-runtime";
+import { SQL_REQUEST_SCHEMA, QueryValidationError, MAX_QUERY_REQUEST_BYTES, LiveHistoryReader, type ScanLiteHistoryOptions, type LiveHistorySnapshot, type ReadDiagnosticSink } from "@cchistory/live-runtime";
 import { resourceError } from "./resource-errors.js";
 import { compactPayload, CONTENT_TRUST } from "./json-v2.js";
 import {
@@ -31,6 +31,7 @@ const systemClock: ShellClock = { setTimeout: (fn, ms) => setTimeout(fn, ms), cl
 interface ShellLifetime { idleTimeoutSeconds?: number; clock?: ShellClock }
 
 export async function runLiteShell(input: ShellLifetime & {
+  onDiagnostic?: ReadDiagnosticSink;
   io: LiteShellIo;
   jsonLines: boolean;
   directoryScope?: string;
@@ -38,7 +39,7 @@ export async function runLiteShell(input: ShellLifetime & {
 }): Promise<number> {
   const idle = input.idleTimeoutSeconds ?? 300;
   if (!Number.isSafeInteger(idle) || idle < 0 || idle > 86400) throw new QueryValidationError("idle-timeout must be an integer from 0 to 86400 seconds.", "budget");
-  const reader = new LiveHistoryReader(input.scan);
+  const reader = new LiveHistoryReader(input.scan, 16 * 1024 * 1024, 4, input.onDiagnostic);
   const publish = (next: LiveHistorySnapshot) => {
     if (!input.jsonLines) reportShellDiagnostics(next, input.io, input.directoryScope);
     return next;

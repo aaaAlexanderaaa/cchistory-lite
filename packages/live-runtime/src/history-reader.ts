@@ -1,4 +1,5 @@
 import { AmbiguousReferenceError, SessionReferenceNotFoundError, type LiteContextTarget, type LiveHistorySnapshot, type ScanLiteHistoryOptions } from "./index.js";
+import type { ReadDiagnosticSink } from "./diagnostics.js";
 
 type Scan = (overrides?: Partial<ScanLiteHistoryOptions>) => Promise<LiveHistorySnapshot>;
 interface DetailEntry { snapshot: LiveHistorySnapshot; complete: boolean; bytes: number }
@@ -8,10 +9,16 @@ export class LiveHistoryReader {
   private snapshot?: LiveHistorySnapshot;
   private details: DetailEntry[] = [];
   private conversation = false;
-  constructor(private readonly scan: Scan, private readonly cacheBytes = 16 * 1024 * 1024, private readonly cacheEntries = 4) {}
+  constructor(private readonly scan: Scan, private readonly cacheBytes = 16 * 1024 * 1024, private readonly cacheEntries = 4,
+    private readonly diagnostic?: ReadDiagnosticSink) {}
 
   async collection(conversation = false): Promise<LiveHistorySnapshot> {
-    if (this.snapshot && (!conversation || this.snapshot.data.conversation_evidence !== undefined)) return this.snapshot;
+    if (this.snapshot && (!conversation || this.snapshot.data.conversation_evidence !== undefined)) {
+      this.diagnostic?.({ kind: "cache", cache: "collection", decision: "hit", read_id: this.snapshot.readIdentity.id,
+        derived: this.snapshot.getCacheStats() });
+      return this.snapshot;
+    }
+    this.diagnostic?.({ kind: "cache", cache: "collection", decision: "miss" });
     const next = await this.scan({ contextMode: "none", retainConversationEvidence: conversation || this.conversation });
     this.snapshot = next;
     this.details = [];
@@ -20,6 +27,7 @@ export class LiveHistoryReader {
   }
 
   async refresh(): Promise<LiveHistorySnapshot> {
+    this.diagnostic?.({ kind: "cache", cache: "collection", decision: "refresh" });
     const next = await this.scan({ contextMode: "none", retainConversationEvidence: this.conversation });
     this.snapshot = next;
     this.details = [];
@@ -50,14 +58,20 @@ export class LiveHistoryReader {
       if (options.evidenceOnly) return snapshot.data.conversation_evidence !== undefined;
       return (session ? snapshot.listSessionTurns(session.id) : [turn!]).every(t => snapshot.getTurnContext(t.id) !== undefined);
     });
-    if (this.snapshot && (!options.conversation || this.snapshot.data.conversation_evidence !== undefined) && covers(this.snapshot)) return this.snapshot;
+    if (this.snapshot && (!options.conversation || this.snapshot.data.conversation_evidence !== undefined) && covers(this.snapshot)) {
+      this.diagnostic?.({ kind: "cache", cache: "collection", decision: "hit", read_id: this.snapshot.readIdentity.id,
+        derived: this.snapshot.getCacheStats() });
+      return this.snapshot;
+    }
     const index = this.details.findIndex(entry => (!options.complete || entry.complete)
       && (!options.conversation || entry.snapshot.data.conversation_evidence !== undefined) && covers(entry.snapshot));
     if (index !== -1) {
       const [entry] = this.details.splice(index, 1);
       this.details.push(entry!);
+      this.diagnostic?.({ kind: "cache", cache: "detail", decision: "hit", read_id: entry!.snapshot.readIdentity.id });
       return entry!.snapshot;
     }
+    this.diagnostic?.({ kind: "cache", cache: "detail", decision: "miss" });
     const refs = resolvedTargets.map(target => {
       if (target.kind === "session" && /^sess:[^:]+:.+$/u.test(target.ref)) return target.ref;
       return target.kind === "session" ? this.snapshot?.getSession(target.ref)?.id : this.snapshot?.getTurn(target.ref)?.session_id;
@@ -75,13 +89,22 @@ export class LiveHistoryReader {
     }
     const bytes = retainedSize(next.data, this.cacheBytes);
     if (bytes <= this.cacheBytes && this.cacheEntries > 0) {
-      while (this.details.length && (this.details.length >= this.cacheEntries || this.details.reduce((n, e) => n + e.bytes, bytes) > this.cacheBytes)) this.details.shift();
+      while (this.details.length && (this.details.length >= this.cacheEntries || this.details.reduce((n, e) => n + e.bytes, bytes) > this.cacheBytes)) {
+        const evicted = this.details.shift()!;
+        this.diagnostic?.({ kind: "cache", cache: "detail", decision: "evicted", read_id: evicted.snapshot.readIdentity.id });
+      }
       this.details.push({ snapshot: next, complete: !targeted, bytes });
     }
+    this.diagnostic?.({ kind: "cache", cache: "detail", decision: bytes <= this.cacheBytes && this.cacheEntries > 0 ? "retained" : "oversized",
+      read_id: next.readIdentity.id, estimated_bytes: bytes, budget_bytes: this.cacheBytes });
     return next;
   }
 
-  close(): void { this.snapshot = undefined; this.details = []; this.conversation = false; }
+  close(): void {
+    this.diagnostic?.({ kind: "cache", cache: "collection", decision: "closed", read_id: this.snapshot?.readIdentity.id,
+      derived: this.snapshot?.getCacheStats() });
+    this.snapshot = undefined; this.details = []; this.conversation = false;
+  }
 }
 
 /** Conservative retained-data accounting, not a claim to bound process RSS. Stops before serializing large bodies. */

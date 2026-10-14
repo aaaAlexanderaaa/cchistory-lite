@@ -63,6 +63,8 @@ export type {
 };
 
 export interface ProbeOptions {
+  /** Parse once, then retain record locators/lengths instead of duplicate native JSON bodies. */
+  retain_raw_records?: boolean;
   read_budget?: import("./read-budget.js").SourceReadBudget;
   source_ids?: string[];
   limit_files_per_source?: number;
@@ -126,6 +128,7 @@ export type SourceProbeProgressStage =
   | "file_start"
   | "file_capture_done"
   | "file_parse_done"
+  | "file_parse_progress"
   | "file_done"
   | "file_reuse"
   | "file_append_start"
@@ -134,6 +137,7 @@ export type SourceProbeProgressStage =
   | "file_error"
   | "derive_start"
   | "derive_done"
+  | "derive_progress"
   | "source_done";
 
 export interface SourceProbeProgressEvent {
@@ -148,6 +152,7 @@ export interface SourceProbeProgressEvent {
   file_count?: number;
   size_bytes?: number;
   count?: number;
+  count_unit?: "files" | "records" | "sessions" | "turns";
   elapsed_ms?: number;
 }
 

@@ -31,15 +31,17 @@ cchistory-lite shell --dir /path/to/project --json
 Send JSON lines as needed:
 
 ```json
-{"kind":"search","query":"retry backoff","content":"conversation","limit":5}
+{"kind":"search","query":"retry backoff","content":"conversation","group_by":"message","limit":5}
 {"kind":"read","turn_ref":"<turn_id from a match>","max_chars":8000}
 {"kind":"read","session_ref":"<session_id>","max_chars":8000}
 {"kind":"exit"}
 ```
 
 Conversation search checks complete masked user text and assistant replies,
-including delegated work. It returns bounded excerpts, one hit per top-level
-session. `session_id` is the displayed parent; `matched_session_id`, `turn_id`
+including delegated work. Use `group_by: "message"` when finding decisions or
+changes: it returns each matching message, so later mentions do not hide earlier
+answers. Continue with the returned `next_offset` as `offset` in the same shell.
+The default remains one recent hit per top-level session. `session_id` is the displayed parent; `matched_session_id`, `turn_id`
 and `message_id` identify the actual evidence. Read the matched turn to recover
 its question and answer. If `turn_id` is null (an assistant message without a
 canonical user turn), read `matched_session_id` using `session_ref`. Tool outputs and system messages are not searched.
@@ -60,7 +62,7 @@ A one-shot batch uses the same operations:
 
 ```sh
 cchistory-lite query --dir /path/to/project --request - <<'JSON'
-{"schema":"cchistory-lite-query/v2","operations":[{"id":"find","kind":"search","query":"retry backoff","content":"conversation","limit":5}]}
+{"schema":"cchistory-lite-query/v2","operations":[{"id":"find","kind":"search","query":"retry backoff","content":"conversation","group_by":"message","limit":5}]}
 JSON
 ```
 
@@ -87,7 +89,11 @@ Native changes are not watched. Finish with `exit` or EOF; idle expiry is 300s.
 
 Prefer one shell or batch to repeated one-shot scans; do not fan out parallel
 full scans. LIMIT and output budgets do not bound source work or memory. Retain
-stderr and report resource refusal while preserving the requested scope. Do not
+stderr and report resource refusal while preserving the requested scope. Add
+`--diagnostics` to a CLI read or shell when execution needs observation: stderr
+then carries JSONL stages, memory/admission facts, read IDs and cache decisions;
+stdout keeps its existing result format. Diagnostics contain no transcript bodies
+or query text, but can include local paths. Do not
 disable the guard or cycle through broader/sample reads to evade a failure.
 
 ## Optional details

@@ -15,12 +15,14 @@ import {
 
 const normalizePathSeparators = (value: string): string => value.replace(/\\/g, "/");
 
-/** Interpret reconciled evidence once. This entry currently constructs complete detail. */
-export function interpretSessionEvidence(evidence: ParsedSessionEvidence): SessionInterpretation {
+/** Interpret reconciled evidence once. Semantic context nodes are always constructed;
+ * callers discarding detail may omit tool/system display formatting. */
+export function interpretSessionEvidence(evidence: ParsedSessionEvidence,
+  options: { formatContextBodies?: boolean } = {}): SessionInterpretation {
   const { draft, atoms, fragments, records, blobs } = evidence;
   const projectCandidates = buildProjectObservationCandidates(draft, atoms, evidence.gitProjectEvidence);
   const submission = buildSubmissionGroups(draft, atoms, evidence.edges);
-  const result = buildTurnsAndContext(draft, fragments, records, blobs, atoms, submission.groups, submission.edges);
+  const result = buildTurnsAndContext(draft, fragments, records, blobs, atoms, submission.groups, submission.edges, options.formatContextBodies);
   const suppressed = draft.source_platform === "codebuddy" && result.turns.length === 0 && atoms.length === 0;
   return {
     session: suppressed ? undefined : result.session,
@@ -235,6 +237,7 @@ export function buildTurnsAndContext(
   atoms: readonly ConversationAtom[],
   submissionGroups: readonly DerivedCandidate[],
   edges: readonly AtomEdge[],
+  formatContextBodies = true,
 ): {
   session: SessionProjection;
   turnCandidates: DerivedCandidate[];
@@ -333,6 +336,7 @@ export function buildTurnsAndContext(
         atomById,
         contextAtomIds,
         edgeIndex,
+        formatContextBodies,
       },
     );
 
@@ -467,6 +471,7 @@ interface TurnContextEdgeIndex {
 }
 
 interface TurnContextBuildIndex {
+  formatContextBodies?: boolean;
   atomById: ReadonlyMap<string, ConversationAtom>;
   contextAtomIds: ReadonlySet<string>;
   edgeIndex: TurnContextEdgeIndex;
@@ -507,7 +512,7 @@ export function buildTurnContext(
   const toolCallIdsByReplyId = new Map<string, string[]>();
   let toolSequence = 0;
   let activeModel = draft.model;
-  const contextIndex =
+  const contextIndex: TurnContextBuildIndex =
     buildIndex ??
     {
       atomById: new Map(contextAtoms.map((atom) => [atom.id, atom])),
@@ -556,11 +561,11 @@ export function buildTurnContext(
     }
     if (atom.actor_kind === "system" && atom.content_kind === "text" && atom.display_policy !== "hide") {
       const content = asString(atom.payload.text) ?? "";
-      const masked = applyMaskTemplates(content, "system_message");
+      const masked = contextIndex.formatContextBodies === false ? undefined : applyMaskTemplates(content, "system_message");
       systemMessages.push({
         id: stableId("system-message", draft.source_id, draft.id, atom.id),
         content,
-        display_segments: masked.display_segments,
+        display_segments: masked?.display_segments ?? [],
         position: "interleaved",
         sequence: systemMessages.length,
         created_at: atom.time_key,
@@ -723,14 +728,14 @@ export function buildTurnContext(
     }
     const spawnedFromAtomId = contextIndex.edgeIndex.spawnedFromAtomIdByToolAtomId.get(atom.id);
     const replyId = spawnedFromAtomId ? replyIdByAtomId.get(spawnedFromAtomId) ?? lastAssistantReplyId() : lastAssistantReplyId();
-    const inputJson = JSON.stringify(atom.payload.input ?? {});
-    const maskedInput = applyMaskTemplates(inputJson, "tool_input");
+    const inputJson = contextIndex.formatContextBodies === false ? "" : JSON.stringify(atom.payload.input ?? {});
+    const maskedInput = contextIndex.formatContextBodies === false ? undefined : applyMaskTemplates(inputJson, "tool_input");
     const toolCall: ToolCallProjection = {
       id: stableId("tool-call", draft.source_id, draft.id, atom.id),
       tool_name: asString(atom.payload.tool_name) ?? "tool_call",
       input: isObject(atom.payload.input) ? atom.payload.input : {},
-      input_summary: truncate(maskedInput.canonical_text || inputJson, 140),
-      input_display_segments: maskedInput.display_segments,
+      input_summary: truncate(maskedInput?.canonical_text || inputJson, 140),
+      input_display_segments: maskedInput?.display_segments ?? [],
       status: "success",
       reply_id: replyId,
       sequence: toolSequence++,
@@ -744,10 +749,10 @@ export function buildTurnContext(
         : undefined;
     if (resultAtom) {
       const output = asString(resultAtom.payload.output) ?? "";
-      const maskedOutput = applyMaskTemplates(output, "tool_output");
+      const maskedOutput = contextIndex.formatContextBodies === false ? undefined : applyMaskTemplates(output, "tool_output");
       toolCall.output = output;
-      toolCall.output_preview = truncate(maskedOutput.canonical_text || output, 140);
-      toolCall.output_display_segments = maskedOutput.display_segments;
+      toolCall.output_preview = maskedOutput ? truncate(maskedOutput.canonical_text || output, 140) : undefined;
+      toolCall.output_display_segments = maskedOutput?.display_segments;
     }
     toolCalls.push(toolCall);
     let replyToolCallIds = toolCallIdsByReplyId.get(replyId);

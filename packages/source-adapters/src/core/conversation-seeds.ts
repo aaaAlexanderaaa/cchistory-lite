@@ -12,6 +12,9 @@ export interface ExtractedSessionSeed {
     pointer: string;
     observedAt?: string;
     rawJson: string;
+    /** Collector-private borrowed decoded value; never retained in probe records. */
+    parsedValue?: Record<string, unknown>;
+    rawSizeBytes?: number;
   }>;
 }
 

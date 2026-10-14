@@ -58,13 +58,42 @@ There is no adapter-owned projection implementation or default interpreter, and 
 package imports the other. It never materializes a snapshot or imports the runtime.
 
 The collector still hydrates native draft metadata, performs source-specific cross-file
-reconciliation, and decodes question schemas. The interpretation boundary currently builds full
-contexts eagerly; `contextMode: "none"` drops them later. It is not yet a bounded parsed-unit
-contract or a guarantee that optional detail construction has been implemented.
+reconciliation, and decodes question schemas. The interpretation boundary constructs semantic
+context nodes eagerly. For `contextMode: "none"`, canonical skips tool/system display masking,
+previews and tool-input serialization; runtime drops those context nodes after deriving turns.
+Assistant masking, linking, ordering, tool association and usage remain canonical work. This is
+optional display formatting, not bounded native decoding or fully optional context construction.
 
 Sources are scanned one at a time so each raw payload is released before the next begins.
 Adapters declaring `logicalSessionGrouping: "source_session_id"` (Codex, Claude Code) are
 projected one logical session at a time.
+
+Lite requests metadata-only raw-record retention. The collector releases raw JSON
+after parsing/native reconciliation, retaining identity, provenance and
+`raw_size_bytes` with explicit `raw_text_retained: false`; the public probe default
+continues to retain raw bodies. ZCode and AMP lend already-decoded objects to the parser rather
+than encoding and decoding them again; private decoded references stop at the parse boundary.
+Metadata-only byte accounting uses native JSON skeleton serialization and bounded large-string
+escape counting, retaining the exact normalized UTF-8 size without a whole large JSON encoding.
+AMP shares its decoded root with native session identity extraction. Canonical contribution accounting consumes the
+recorded byte lengths. A metadata-only previous payload cannot support native
+raw-text incremental reconciliation and therefore receives a fresh read.
+
+Large Codex/Claude/Factory JSONL uses bounded block reads and linear line assembly,
+parsing records as they arrive rather than collecting complete raw bodies first. Checksum capture
+and parsing remain separate passes because record identity depends on the complete checksum.
+Delimiter lookup uses buffer searches, capture reuses its block, and bounded tail copies avoid
+retaining full block backing buffers.
+Admission checks growing physical records during checksum capture and parsing.
+Small admitted files (up to 8 MiB) retain the cheaper buffered path. ZCode keeps
+one read-only SQLite transaction, a compact part-locator inventory, message rows
+per session and part-body reads admitted by value length before retrieval. Inventory admission
+uses a conservative locator/message-ID byte aggregate without sorting or evaluating body lengths;
+the ordered inventory then computes each body length once. This is still a metadata prepass and
+inventory traversal. It does not retain a whole-source message/part body result array. Whole-file formats
+still allocate whole files, priced against live headroom; the 64 MiB fallback cap
+applies when no allocation budget is installed, and explicit whole-file caps remain
+binding. File size is not a replacement for allocation admission.
 
 Codex also supplies bounded-line native activity evidence for one selective query plan: session
 identity, timestamp upper bounds and tool names. These are facts for runtime planning, not an
@@ -122,6 +151,12 @@ a canonical user turn retain a message ID and explicit null turn ID; no turn is 
 unknown directory attribution, projection issues and intentionally limited reads. SQL coverage
 still describes execution on a snapshot; it does not certify native-source completeness.
 These are additive agent operations; the legacy authored search and detail output remain.
+Message-grouped conversation search is opt-in (`group_by: "message"`); the default
+session grouping stays compatible. Prepared evidence readers hash immutable content
+once in bounded chunks; snapshot-owned reader/rank caches use entry and retained-unit
+LRU limits. These do not bound full semantic state. Optional runtime diagnostics
+flow through the CLI's reviewed `--diagnostics` stderr JSONL entry; the surfaces
+do not infer progress, ranking or completeness independently.
 
 ## Context discipline
 
@@ -129,7 +164,7 @@ Reading full assistant/tool context for every turn is the expensive path, so it 
 
 | Caller | Context mode |
 | --- | --- |
-| `sources`, `ls`, `latest`, `tree`, `search`, SQL `query`, `show project`, `show source`, `stats`, markdown `export`, `shell` startup, TUI startup | `none` — context dropped after deriving turns |
+| `sources`, `ls`, `latest`, `tree`, `search`, SQL `query`, `show project`, `show source`, `stats`, markdown `export`, `shell` startup, TUI startup | `none` — tool/system display formatting skipped, context dropped after deriving turns |
 | `show session <complete-canonical-id>` | targeted `full` scan of that one logical session |
 | `show session <fuzzy-ref>`, `show turn <ref>` | one `matching` scan; context retained only for possible resolver matches |
 | JSON/JSONL `export` | `full` |

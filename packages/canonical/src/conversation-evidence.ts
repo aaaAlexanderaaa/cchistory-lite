@@ -62,11 +62,32 @@ export function validateEvidenceBudget(options: EvidenceReadOptions): void {
 
 /** Cursor identity binds the complete ordered evidence and resolved target, never a title or row position alone. */
 export function readConversationEvidence(messages: readonly ConversationEvidence[], selector: string, options: EvidenceReadOptions = {}) {
+  return readEvidencePage(messages, evidenceRevision(messages, selector), options);
+}
+
+/** Own immutable evidence for repeated pages; callers cannot invalidate a cached revision by mutation. */
+export function prepareConversationEvidence(messages: readonly ConversationEvidence[], selector: string) {
+  const owned = Object.freeze(messages.map(message => Object.freeze({ ...message })));
+  const revision = evidenceRevision(owned, selector);
+  return { messageCount: owned.length, read: (options: EvidenceReadOptions = {}) => readEvidencePage(owned, revision, options) };
+}
+
+function evidenceRevision(messages: readonly ConversationEvidence[], selector: string): string {
+  const hash = createHash("sha256").update("cchistory-evidence/2").update(JSON.stringify([selector, messages.length]));
+  for (const message of messages) {
+    hash.update(JSON.stringify([message.message_id, message.session_id, message.turn_id, message.role,
+      message.created_at, message.text.length]));
+    // UTF-16 preserves even unpaired surrogates and avoids allocating a serialized copy of a huge body.
+    for (let offset = 0; offset < message.text.length; offset += 16_384) {
+      hash.update(Buffer.from(message.text.slice(offset, offset + 16_384), "utf16le"));
+    }
+  }
+  return hash.digest("hex");
+}
+
+function readEvidencePage(messages: readonly ConversationEvidence[], revision: string, options: EvidenceReadOptions) {
   validateEvidenceBudget(options);
   const maxChars = options.max_chars ?? DEFAULT_EVIDENCE_CHARS, limit = options.limit ?? 20;
-  const hash = createHash("sha256").update(selector);
-  for (const message of messages) hash.update(JSON.stringify(message));
-  const revision = hash.digest("hex");
   let index = 0, offset = 0;
   if (options.cursor) {
     try {
@@ -108,6 +129,7 @@ export function searchConversationEvidence(input: {
   limit?: number;
   offset?: number;
   max_chars?: number;
+  group_by?: "session" | "message";
 }) {
   validateEvidenceBudget(input);
   const plan = buildSearchPlan(input.query);
@@ -127,7 +149,7 @@ export function searchConversationEvidence(input: {
     return id;
   };
   const now = input.sessions.reduce((latest, session) => Math.max(latest, Date.parse(session.updated_at) || 0), 0);
-  const matches = new Map<string, { message: ConversationEvidence; score: number }>();
+  const matches = new Map<string, { message: ConversationEvidence; score: number; parentSessionId: string }>();
   for (const message of input.messages) {
     const parent = root(message.session_id);
     if (!scoped.has(message.session_id) || !scoped.has(parent) || !top.has(parent)) continue;
@@ -135,15 +157,18 @@ export function searchConversationEvidence(input: {
       : !input.projectTurnIds?.has(message.turn_id))) continue;
     if (!matchesSearchPlan(message.text, plan)) continue;
     const score = computeSearchRecencyScore({ submission_started_at: message.created_at }, now);
-    const previous = matches.get(parent);
-    if (!previous || score > previous.score || score === previous.score && message.message_id < previous.message.message_id) matches.set(parent, { message, score });
+    const key = input.group_by === "message" ? message.message_id : parent;
+    const previous = matches.get(key);
+    if (!previous || score > previous.score || score === previous.score && message.message_id < previous.message.message_id) {
+      matches.set(key, { message, score, parentSessionId: parent });
+    }
   }
   const ranked = [...matches].sort((a, b) => b[1].score - a[1].score || a[0].localeCompare(b[0]));
   const offset = input.offset ?? 0, limit = input.limit ?? 20, maxChars = input.max_chars ?? DEFAULT_EVIDENCE_CHARS;
   const results: Array<{ session_id: string; matched_session_id: string; turn_id: string | null; message_id: string; role: "user" | "assistant";
     created_at: string; text: string; start: number; end: number; total_chars: number; truncated: boolean }> = [];
   let remaining = maxChars;
-  for (const [sessionId, { message }] of ranked.slice(offset, offset + limit)) {
+  for (const [, { message, parentSessionId: sessionId }] of ranked.slice(offset, offset + limit)) {
     if (remaining < 2) break;
     const first = message.text.toLowerCase().indexOf(plan.terms[0]?.value ?? "");
     const start = boundary(message.text, Math.max(0, first - 80));
@@ -154,6 +179,7 @@ export function searchConversationEvidence(input: {
     remaining -= end - start;
   }
   return { content: "conversation", searched_roles: ["user", "assistant"], text_coverage: "full", tool_output_searched: false,
+    ...(input.group_by === "message" ? { group_by: "message" as const } : {}),
     total: ranked.length, shown: results.length, offset, limit, results, returned_chars: maxChars - remaining, max_chars: maxChars,
     next_offset: offset + results.length < ranked.length ? offset + results.length : null };
 }

@@ -15,17 +15,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and assistant text. Delegated hits appear under the parent while citing the child.
 - History JSON responses expose `read` identity and `read_status`, separating known
   source losses, unknown directory attribution and scan limits from SQL coverage.
+- Optional `--diagnostics` on CLI history reads and shell emits structured progress,
+  stage/attempt timings, live allocation decisions and cache/read identity on stderr,
+  preserving stdout results and excluding transcript/tool bodies and query text.
+- Conversation search accepts `group_by: "message"` to page older matching answers,
+  decisions and reversals within a session while preserving delegated citation identity.
 
 ### Changed
 
 - Shell reuses bounded detail snapshots and directly targets sessions resolved from
   the collection. Successful refresh clears detail reuse; failed refresh preserves it.
 - Agent guidance leads with bounded evidence retrieval and loads advanced details on demand.
+- Evidence pagination prepares immutable content once; bounded page/rank caches and
+  stable snapshot-time scores reduce repeated work during a recall session.
+- Context-light reads omit discarded tool/system display formatting while preserving
+  assistant masking, canonical identity, linking, ordering, tool association and usage.
+- AMP and ZCode reuse decoded records with exact byte accounting, and large JSONL uses
+  faster delimiter lookup and bounded buffer/tail retention to reduce first-read work.
 
 ### Fixed
 
 - A missing session reference in a query/shell detail batch returns an operation-level
   error while preserving valid results; genuine scan failures still propagate.
+- Large ZCode databases admit a compact inventory and individual native values instead
+  of materializing whole-source message/part bodies. Inventory admission avoids repeated
+  body-length calculation and sorting; native sources remain read-only.
+- Large Codex, Claude and Factory JSONL parses records as they arrive and checks growing
+  record admission during checksum capture and parsing. Small files keep buffered reads.
+- Guarded whole-file reads use live allocation headroom instead of the unguarded 64 MiB
+  fallback cap; explicit limits and memory protection remain binding.
+- The agent schema now agrees with the existing adaptive launcher and live-headroom
+  memory policy, without changing the launcher policy.
 
 ## [0.6.0] - 2026-09-17
 

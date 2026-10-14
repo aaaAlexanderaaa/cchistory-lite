@@ -55,6 +55,11 @@ Resource admission applies to sample and exact-id reads as well as full reads:
    SQLite readers check selected value lengths and row overhead inside a read transaction.
    An input that exceeds its budget leaves loss diagnostics; other readable history
    remains available. Do not interpret a result with read-loss diagnostics as exhaustive.
+   Large Codex/Claude/Factory JSONL is admitted by block and growing record;
+   ZCode reads message groups and individual part values rather than one whole
+   body table. Other formats can still require whole-file or whole-result allocations.
+   Full canonical contexts are still constructed before context-light reads discard
+   them. Streaming does not establish a bound on arbitrary semantic state.
 4. The watchdog reserves 25% of estimated system availability at scan start, capped
    at 512 MiB so normal host load changes with gigabytes still free do not abort a scan. It checks at progress/checkpoints;
    it cannot interrupt a synchronous native allocation.
@@ -68,6 +73,9 @@ Concurrent appends and WAL changes are normal. Version-dependent query optimizat
 fall back to ordinary reads when evidence changes. Snapshots need not contain the
 latest write from every source. Reuse a successful read with
 one shell or a query batch. Do not discard stderr.
+Use `--diagnostics` for optional structured progress, budget facts, SQL work and
+shell reuse on stderr while preserving stdout. See the
+[diagnostic contract](agent-evidence.md#observe-a-read).
 
 For empty scoped results, inspect `diagnostics.directory_scope`: unknown directory
 counts describe observed sessions excluded from the scope, not absent project history.

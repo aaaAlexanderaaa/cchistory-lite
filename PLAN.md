@@ -1,6 +1,89 @@
-# Agent evidence improvement and historical query work
+# Project work
 
-Current work: 2026-10-03–2026-10-04. The user approved the agent usability assessment and implementation.
+## Current work — 2026-10-14
+
+Status: the capacity/recall delivery and subsequently approved speed follow-up are implemented
+and verified as one integrated working-tree result. The owner has now authorized commit, push,
+a new tag and npm publication. Release target: 0.7.0, following the existing CI Release workflow;
+implementation commit and push precede CI validation/publication and its release commit/tag.
+Publication and remote verification are in progress; the records below retain their pre-release
+evidence and do not claim an npm result yet.
+
+Speed acceptance: compare the frozen pre-speed working-tree build and candidate on identical
+fixture evidence and requests, including large SQLite, a large logical JSONL session, many small
+sessions and whole JSON. Measure native-query/normalization/interpretation work and first-read
+elapsed/RSS; preserve correct answers, citation identity, ordering, usage, scope and honest gaps.
+First remove repeated expensive native-query work and JSON roundtrips; evaluate narrower source
+selection and optional context formatting against their actual correctness/benefit. No blind project/cwd
+filter, skipped evidence, relaxed guard, persistent cache, source write or visual redesign is
+authorized by this work. Finish regression/projection matrices, repository/release gates and
+evidence at the existing owners; do not create separate phase handoffs.
+
+The owner requested a deep project assessment, clarified Agent recall of answers, decisions and
+context as the primary outcome, and raised ordinary-machine resource failures, 100 MB+ sessions
+and observability. ZCode was an example rather than the task boundary. The owner then asked for
+learning from template-project, challenged the initial written discipline update, authorized one
+fresh-context assessment, and accepted implementation through completion. The optional structured
+stderr diagnostic direction was explicitly reviewed and approved; stdout remains compatible.
+
+- Complete: template comparison and working discipline, preserving original product invariants,
+  fixture/native-history boundaries, visual approval, projection requirements and release gates.
+- Complete: one authorized independent first-context read-only assessment plus the small ordinary
+  warm-context countercase. Their first verdicts and evidence limits remain at the evidence owner.
+- Complete: goal-grounded project assessment with necessity/importance/ROI distinctions, shared
+  mechanisms, strongest alternatives and limits. It records the preimplementation baseline.
+- Complete: ZCode native allocation/retention repair; large Codex/Claude/Factory JSONL parsing
+  and growing-record admission; guarded whole-file admission without the false fallback size cap.
+- Complete: optional runtime/CLI/shell diagnostic JSONL, preserved result contracts, message-grouped
+  older-answer search, immutable prepared paging, bounded derived caches and stable eviction scores.
+- Complete: fixture decision/mention/reversal/citation journey, delegation/null-turn identity,
+  cache/refresh/failure regressions, projection matrices and source-read-only checks.
+- Complete: actual 16 GiB host baseline/current comparisons on five equal-input synthetic shapes,
+  including a 134 MiB single logical session, 107 MiB whole JSON and ~1.408 GB SQLite database.
+  All current cases recover the expected answer with zero projection issues and read losses;
+  the small-session control and intermediate regressions remain explicit.
+- Complete at the capacity/recall checkpoint: build, **668 package tests** plus dependency boundaries,
+  **13 governance tests**, **5 architecture rules / 118 matches**, standalone/local-npm artifact checks, all **12 schema**
+  checks with actual outputs, shipped-skill validation, link/preservation and whitespace checks.
+- Complete: cheaper ZCode inventory admission, borrowed decoded AMP/ZCode records with exact
+  byte ownership, shared AMP root decoding, canonical omission of discarded tool/system display
+  formatting, and JSONL delimiter/buffer/tail improvements. Native project/cwd pushdown was
+  evaluated and omitted because its proposed predicate did not prove canonical scope/closure.
+- Complete: **13 equal-input pairs** against the frozen successful pre-speed build on an actual
+  16 GiB host. All answers and semantic digests agree. First-answer medians improve by 11–54%
+  in the named fixtures; the one 1.4 GB pair improves 21.84 → 10.43 seconds and 1673.9 → 965.8 MiB
+  peak RSS. The small-session RSS increase, intermediate slowdown, unchanged-build control and
+  declined memory preflight remain explicit in the evidence.
+- Complete after speed changes: `build:lite`, **672 package tests** plus dependency boundaries,
+  **13 governance tests**, **5 architecture rules / 119 matches**, standalone/local-npm artifact
+  execution, all **12 schema definitions**, actual fixture requests/outputs for **10 current CLI
+  contracts**, historical v1 rejection, shipped-skill validation and documentation checks.
+
+Current facts and behavior owners: [Architecture](ARCHITECTURE.md), public schemas and
+[Agent evidence/diagnostics guide](docs/guide/agent-evidence.md). Execution discipline remains at
+[working discipline](docs/contracts/working-discipline.md). Evidence owners:
+[discipline learning/validation](docs/research/2026-10-13-working-discipline.md),
+[initial project assessment](docs/research/2026-10-13-project-improvement-assessment.md),
+[integrated delivery/capacity record](docs/research/2026-10-13-useful-history-capacity.md), and
+[read-speed delivery](docs/research/2026-10-14-read-speed.md).
+
+This proves the implemented behavior and named fixture operating envelope. It does not establish
+causal/repeated rule adoption, acceptance of the owner's unobserved native failure, the separate
+user-owned U1 quality judgment, or arbitrary history capacity on 8/16/64 GiB hosts. Native values,
+inventories and semantic state can still grow; semantic context nodes remain eagerly constructed
+while discarded tool/system display formatting is skipped for `none`. Whole-file formats remain
+expensive, and TUI overlay generations are not certified by bounded rank caches.
+Those limits are visible, not hidden prerequisites or newly authorized work. Zero-store,
+read-only source access and canonical ownership remain binding. No store, new transport, source
+adapter expansion or background job was introduced. The subsequently authorized release changes
+delivery status, not those runtime boundaries.
+
+The records below preserve their dated scope and completion claims. They are historical evidence,
+not current runtime authority, additional implementation queues or new permission.
+
+## Agent evidence improvement and historical query work
+
+Delivery record: 2026-10-03–2026-10-04. The user approved the agent usability assessment and implementation.
 Baseline HEAD is the committed 0.6.0 release; the uncommitted/unreleased statements in the
 2026-09-08 record below describe that historical checkpoint, not current release status.
 

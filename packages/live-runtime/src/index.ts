@@ -35,7 +35,7 @@ import {
 } from "@cchistory/domain";
 import {
   buildConversationEvidence,
-  readConversationEvidence,
+  prepareConversationEvidence,
   searchConversationEvidence,
   summarizeReadStatus,
   executeCanonicalQuery,
@@ -80,6 +80,8 @@ import { SourceReadBudgetExceededError, type SourceReadBudget, applyMaskTemplate
 import { SAMPLE_RANK_CONCURRENCY, mapPool } from "./async-pool.js";
 import { isSelectiveLatestQuery, newQueryReadWork, type LiveQueryRead, type QueryReadWork, type SelectiveGroupPlan } from "./selective-query.js";
 import { PreparationMetadata } from "./preparation-metadata.js";
+import { BoundedCache } from "./bounded-cache.js";
+import type { ReadDiagnosticSink } from "./diagnostics.js";
 import {
   readRemainingHeapBytes,
   LIGHT_SCAN_MEMORY_MULTIPLIER, FULL_SCAN_MEMORY_MULTIPLIER, SCAN_GUARD_REFUSE_AVAILABLE_FRACTION,
@@ -161,6 +163,7 @@ export interface ResolveLiteSourcesOptions {
 }
 
 export interface ScanLiteHistoryOptions extends ResolveLiteSourcesOptions {
+  onDiagnostic?: ReadDiagnosticSink;
   /** Keep masked user/reply text for conversation search, without retaining tool/system context. */
   retainConversationEvidence?: boolean;
   /** Attempt-local native allocation admission, installed by the runtime guard. */
@@ -293,6 +296,7 @@ export class LiveHistorySnapshot {
   }
   readonly data: LiveSnapshotData;
   readonly readIdentity = { id: randomUUID(), prepared_at: new Date().toISOString() };
+  private readonly searchNowMs = Date.parse(this.readIdentity.prepared_at);
   /** Non-fatal projection diagnostics kept visible to read-only surfaces. */
   readonly projectionIssues: readonly ProjectionAuditIssue[];
   private readonly sourcesById: Map<string, SourceStatus>;
@@ -311,8 +315,12 @@ export class LiveHistorySnapshot {
   // memoized for the lifetime of the instance (a refresh builds a new one).
   private turnsBySessionId?: Map<string, UserTurnProjection[]>;
   private turnsByProjectId?: Map<string, UserTurnProjection[]>;
-  private searchRankCache?: Map<string, readonly TurnSearchResult[]>;
-  private sessionSearchRankCache?: Map<string, readonly SessionSearchResult[]>;
+  private readonly searchRankCache = new BoundedCache<string, readonly TurnSearchResult[]>(32, 20_000,
+    (rows, key) => rows.reduce((total, row) => total + 1 + row.highlights.length * 2, Math.ceil(key.length / 128)));
+  private readonly sessionSearchRankCache = new BoundedCache<string, readonly SessionSearchResult[]>(32, 20_000,
+    (rows, key) => rows.reduce((total, row) => total + 1 + row.highlights.length * 2, Math.ceil(key.length / 128)));
+  private readonly evidencePages = new BoundedCache<string, ReturnType<typeof prepareConversationEvidence>>(32, 100_000,
+    (entry, key) => entry.messageCount + Math.ceil(key.length / 128));
 
   constructor(data: LiveSnapshotInputData, searchCandidates: readonly DerivedCandidate[] = [], readonly limitedScan = false) {
     this.data = {
@@ -359,6 +367,12 @@ export class LiveHistorySnapshot {
       limitedScan: this.limitedScan, observedDiagnostics: diagnostics === "observed" });
   }
 
+  getCacheStats() {
+    const state = (cache: { size: number; weight: number }) => ({ entries: cache.size, retained_units: cache.weight });
+    return { search: state(this.searchRankCache), session_search: state(this.sessionSearchRankCache),
+      evidence_pages: state(this.evidencePages) };
+  }
+
   readEvidence(target: LiteContextTarget, options: EvidenceReadOptions = {}, directoryScope?: string) {
     const session = target.kind === "session" ? this.getSession(target.ref) : undefined;
     const turn = target.kind === "turn" ? this.getTurn(target.ref) : undefined;
@@ -369,14 +383,20 @@ export class LiveHistorySnapshot {
     if (!this.data.conversation_evidence && turns.some(t => t.context_summary.assistant_reply_count > 0 && !this.getTurnContext(t.id))) {
       throw new Error("Conversation detail is not loaded for this read.");
     }
-    const ids = new Set(turns.map(t => t.id));
-    const messages = this.data.conversation_evidence?.filter(m => session ? m.session_id === session.id : m.turn_id !== null && ids.has(m.turn_id))
-      ?? buildConversationEvidence(turns, this.data.contexts);
+    const selector = JSON.stringify([target.kind, session?.id ?? turn!.id, directoryScope ?? null]);
+    let pages = this.evidencePages.get(selector);
+    if (!pages) {
+      const ids = new Set(turns.map(t => t.id));
+      const messages = this.data.conversation_evidence?.filter(m => session ? m.session_id === session.id : m.turn_id !== null && ids.has(m.turn_id))
+        ?? buildConversationEvidence(turns, this.data.contexts);
+      pages = prepareConversationEvidence(messages, selector);
+      this.evidencePages.set(selector, pages);
+    }
     return { target: { kind: target.kind, id: session?.id ?? turn!.id },
-      ...readConversationEvidence(messages, JSON.stringify([target.kind, session?.id ?? turn!.id, directoryScope ?? null]), options) };
+      ...pages.read(options) };
   }
 
-  searchConversation(options: { query: string; limit?: number; offset?: number; max_chars?: number; projectId?: string; directoryScope?: string }) {
+  searchConversation(options: { query: string; limit?: number; offset?: number; max_chars?: number; projectId?: string; directoryScope?: string; group_by?: "session" | "message" }) {
     if (!this.data.conversation_evidence) throw new Error("Conversation search evidence is not loaded.");
     return searchConversationEvidence({ ...options, messages: this.data.conversation_evidence,
       sessions: this.data.sessions, related_work: this.data.related_work,
@@ -598,7 +618,6 @@ export class LiveHistorySnapshot {
       options.sourceIds ?? null,
       options.directoryScope ?? null,
     ]);
-    this.searchRankCache ??= new Map();
     let ranked = this.searchRankCache.get(cacheKey);
     if (!ranked) {
       ranked = searchTurnsInMemory({
@@ -606,6 +625,7 @@ export class LiveHistorySnapshot {
         sessions: this.data.sessions,
         projects: this.data.projects,
         candidates: this.searchCandidates,
+        now_ms: this.searchNowMs,
         query: options.query,
         project_id: options.projectId,
         source_ids: options.sourceIds,
@@ -626,7 +646,6 @@ export class LiveHistorySnapshot {
       options.sourceIds ?? null,
       options.directoryScope ?? null,
     ]);
-    this.sessionSearchRankCache ??= new Map();
     let ranked = this.sessionSearchRankCache.get(cacheKey);
     if (!ranked) {
       ranked = searchSessionsInMemory({
@@ -634,6 +653,7 @@ export class LiveHistorySnapshot {
         sessions: filterSessionsByDirectoryScope(this.data.sessions, options.directoryScope),
         projects: this.data.projects,
         candidates: this.searchCandidates,
+        now_ms: this.searchNowMs,
         related_work: this.data.related_work,
         query: options.query,
         project_id: options.projectId,
@@ -697,15 +717,16 @@ export class LiveHistorySnapshot {
 }
 
 export async function scanLiteHistory(options: ScanLiteHistoryOptions = {}): Promise<LiveHistorySnapshot> {
-  return withPreparedScan(options, (sources, scanGuard, getPlan) =>
-    scanResolvedSources(scanGuard.guardedOptions(options), sources, scanGuard, getPlan));
+  return withPreparedScan(options, (sources, scanGuard, getPlan, tracedOptions) =>
+    scanResolvedSources(scanGuard.guardedOptions(tracedOptions), sources, scanGuard, getPlan));
 }
 
 /** Query-only selective reads never escape as a reusable full snapshot. */
 export async function scanLiteQuery(query: LogicalQuery, options: ScanLiteHistoryOptions = {}): Promise<LiveQueryRead> {
   const work = newQueryReadWork();
   options = { ...options, contextMode: "none" };
-  return withPreparedScan(options, async (sources, scanGuard, getPlan) => {
+  return withPreparedScan(options, async (sources, scanGuard, getPlan, tracedOptions) => {
+    options = tracedOptions;
     const guardedOptions = scanGuard.guardedOptions(options);
     let selection: SelectiveGroupPlan | undefined;
     for (const source of sources) {
@@ -733,46 +754,81 @@ export async function scanLiteQuery(query: LogicalQuery, options: ScanLiteHistor
   });
 }
 
-async function withPreparedScan<T>(options: ScanLiteHistoryOptions,
-  run: (sources: SourceDefinition[], guard: ActiveScanGuard, getPlan: GetSourceScanPlan) => Promise<T>,
+async function withPreparedScan<T extends LiveHistorySnapshot | LiveQueryRead>(options: ScanLiteHistoryOptions,
+  run: (sources: SourceDefinition[], guard: ActiveScanGuard, getPlan: GetSourceScanPlan, options: ScanLiteHistoryOptions) => Promise<T>,
 ): Promise<T> {
-  if (options.contextMode === "matching" && resolveContextTargets(options).length === 0) {
-    throw new Error("matching context mode requires at least one context target.");
+  const sink = options.onDiagnostic;
+  const attemptId = sink ? randomUUID() : undefined;
+  const startedAt = performance.now();
+  if (sink) {
+    const progress = options.onProgress;
+    const report: ReadDiagnosticSink = event => {
+      const memory = process.memoryUsage();
+      sink({ ...event, attempt_id: attemptId, elapsed_ms: performance.now() - startedAt,
+        heap_used_bytes: memory.heapUsed, rss_bytes: memory.rss,
+        process_peak_rss_bytes: process.resourceUsage().maxRSS * 1024 });
+    };
+    options = { ...options, onDiagnostic: report, onProgress: event => {
+      report({ kind: "progress", stage: event.stage, source_id: event.source_id, slot_id: event.slot_id,
+        file_index: event.file_index, file_count: event.file_count, size_bytes: event.size_bytes,
+        count: event.count, count_unit: event.count_unit,
+        stage_elapsed_ms: event.elapsed_ms === undefined ? undefined : Math.max(0, event.elapsed_ms) });
+      progress?.(event);
+    } };
+    report({ kind: "read_start", directory: options.directoryScope ?? null, source_refs: options.sourceRefs ?? [],
+      context_mode: options.contextMode ?? "full", conversation: options.retainConversationEvidence ?? false });
   }
-  let sources = await resolveLiteSources(options);
-  const exactPlatforms = exactCanonicalSessionPlatforms(options.sessionRefs ?? []);
-  if (exactPlatforms.size > 0) {
-    sources = sources.filter((source) => exactPlatforms.has(source.platform));
-    if (sources.length === 0) {
-      throw new SessionReferenceNotFoundError(`No selected Lite source can resolve requested session ${options.sessionRefs?.join(", ")}.`);
-    }
-  }
-  const sourceAdapters = await import("@cchistory/source-adapters");
-  const metadata = new PreparationMetadata();
-  const plans = new Map<string, Promise<PreparedSourceScan>>();
-  const getPlan: GetSourceScanPlan = (source, scanOptions) => {
-    const key = JSON.stringify([source.id, scanOptions.sessionRefs ?? []]);
-    let pending = plans.get(key);
-    if (!pending) {
-      pending = prepareSourceScan(source, scanOptions, sourceAdapters, metadata).catch(async (error) => {
-        if (!(error instanceof sourceAdapters.SourceFileReadPlanChangedError)) throw error;
-        // Live metadata is an optimization, not a prerequisite for reading history.
-        const files = await sourceAdapters.listSourceFiles(source.platform, source.base_dir, scanOptions.limitFiles);
-        const selected = scanOptions.sample
-          ? await selectSampleSourceFiles(source, files, scanOptions.sample.perSource, sourceAdapters) : files;
-        return { discoveredPrimaryFiles: files.length,
-          readPlan: await sourceAdapters.createSourceFileReadPlan(source, selected, scanOptions.safeMode ?? false),
-          selectionEvidence: [] };
-      });
-      plans.set(key, pending);
-    }
-    return pending;
-  };
-  const scanGuard = await beginScanGuard(options, sources, getPlan);
+  let scanGuard: ActiveScanGuard | undefined;
   try {
-    return await run(sources, scanGuard, getPlan);
+    if (options.contextMode === "matching" && resolveContextTargets(options).length === 0) {
+      throw new Error("matching context mode requires at least one context target.");
+    }
+    let sources = await resolveLiteSources(options);
+    const exactPlatforms = exactCanonicalSessionPlatforms(options.sessionRefs ?? []);
+    if (exactPlatforms.size > 0) {
+      sources = sources.filter((source) => exactPlatforms.has(source.platform));
+      if (sources.length === 0) {
+        throw new SessionReferenceNotFoundError(`No selected Lite source can resolve requested session ${options.sessionRefs?.join(", ")}.`);
+      }
+    }
+    const sourceAdapters = await import("@cchistory/source-adapters");
+    const metadata = new PreparationMetadata();
+    const plans = new Map<string, Promise<PreparedSourceScan>>();
+    const getPlan: GetSourceScanPlan = (source, scanOptions) => {
+      const key = JSON.stringify([source.id, scanOptions.sessionRefs ?? []]);
+      let pending = plans.get(key);
+      if (!pending) {
+        pending = prepareSourceScan(source, scanOptions, sourceAdapters, metadata).catch(async (error) => {
+          if (!(error instanceof sourceAdapters.SourceFileReadPlanChangedError)) throw error;
+          // Live metadata is an optimization, not a prerequisite for reading history.
+          const files = await sourceAdapters.listSourceFiles(source.platform, source.base_dir, scanOptions.limitFiles);
+          const selected = scanOptions.sample
+            ? await selectSampleSourceFiles(source, files, scanOptions.sample.perSource, sourceAdapters) : files;
+          return { discoveredPrimaryFiles: files.length,
+            readPlan: await sourceAdapters.createSourceFileReadPlan(source, selected, scanOptions.safeMode ?? false),
+            selectionEvidence: [] };
+        });
+        plans.set(key, pending);
+      }
+      return pending;
+    };
+    scanGuard = await beginScanGuard(options, sources, getPlan);
+    const result = await run(sources, scanGuard, getPlan, options);
+    if (result instanceof LiveHistorySnapshot) {
+      options.onDiagnostic?.({ kind: "read_done", read_id: result.readIdentity.id,
+        sessions: result.data.sessions.length, turns: result.data.turns.length,
+        read_status: result.getReadStatus(options.directoryScope) });
+    } else if (result && typeof result === "object" && "work" in result) {
+      const read = result as LiveQueryRead;
+      options.onDiagnostic?.({ kind: "query_work", ...read.work });
+      options.onDiagnostic?.({ kind: "read_done", read_id: read.identity.id, read_status: read.readStatus });
+    }
+    return result;
+  } catch (error) {
+    options.onDiagnostic?.({ kind: "read_error", error_class: error instanceof Error ? error.name : "unknown" });
+    throw error;
   } finally {
-    await scanGuard.release();
+    await scanGuard?.release();
   }
 }
 
@@ -858,14 +914,24 @@ async function beginScanGuard(
     let available: number | undefined;
     try { available = (deps.readAvailableBytes ?? readAvailableMemoryBytes)(); } catch { /* use heap */ }
     const heap = (deps.readHeapBytes ?? readRemainingHeapBytes)();
-    return Math.max(0, Math.min(heap, available ?? heap)) * SCAN_GUARD_REFUSE_AVAILABLE_FRACTION / multiplier;
+    return { heap, available, bytes: Math.max(0, Math.min(heap, available ?? heap)) * SCAN_GUARD_REFUSE_AVAILABLE_FRACTION / multiplier };
   };
+  let largestAdmittedUnit = -1;
   const readBudget: SourceReadBudget = {
+    maximumUnitBytes: () => Math.floor(readHeadroom().bytes),
     admit(bytes, unit) {
       // Parsed temporary payloads are released between groups. Lifetime input
       // bytes are not resident memory; price the next allocation against live headroom.
-      const allowed = Math.floor(readHeadroom());
-      if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > allowed) throw new SourceReadBudgetExceededError(unit, bytes, allowed);
+      const headroom = readHeadroom();
+      const allowed = Math.floor(headroom.bytes);
+      const refused = !Number.isSafeInteger(bytes) || bytes < 0 || bytes > allowed;
+      if (refused || bytes > largestAdmittedUnit) {
+        options.onDiagnostic?.({ kind: "budget", decision: refused ? "refused" : "admitted", unit,
+          requested_bytes: bytes, allowed_native_bytes: allowed, profile: request.profile,
+          heap_available_bytes: headroom.heap, system_available_bytes: headroom.available ?? null });
+        if (!refused) largestAdmittedUnit = bytes;
+      }
+      if (refused) throw new SourceReadBudgetExceededError(unit, bytes, allowed);
     },
   };
   const watchdog = createScanWatchdog({
@@ -1117,7 +1183,10 @@ async function scanSourceWithCollector(
   if (selectSessionFiles && !options.readBudget) {
     sourceFiles = await sourceAdapters.selectSourceSessionFiles(source, sourceFiles, options.sessionRefs!);
   }
-  const probe = await sourceAdapters.runSourceProbe(work ? evidence => { work.canonicalInterpretations++; return interpretSessionEvidence(evidence); } : interpretSessionEvidence,
+  const probe = await sourceAdapters.runSourceProbe(evidence => {
+    if (work) work.canonicalInterpretations++;
+    return interpretSessionEvidence(evidence, { formatContextBodies: contextMode !== "none" });
+  },
     {
       ...buildProbeOptions(source, options),
       source_file_paths: { [source.id]: sourceFiles },
@@ -1291,7 +1360,10 @@ async function scanLogicalSessionGroups(
   let host: Host | undefined;
 
   for (const [groupIndex, group] of selectedGroupFiles.entries()) {
-    const probe = await sourceAdapters.runSourceProbe(work ? evidence => { work.canonicalInterpretations++; return interpretSessionEvidence(evidence); } : interpretSessionEvidence,
+    const probe = await sourceAdapters.runSourceProbe(evidence => {
+      if (work) work.canonicalInterpretations++;
+      return interpretSessionEvidence(evidence, { formatContextBodies: contextMode !== "none" });
+    },
       {
         ...buildProbeOptions(source, options, group.targetSessionRefs),
         source_file_paths: { [source.id]: group.files },
@@ -1535,6 +1607,7 @@ function buildProbeOptions(
 ) {
   return {
     source_ids: [source.id],
+    retain_raw_records: false,
     read_budget: options.readBudget,
     target_session_refs: targetSessionRefs,
     limit_files_per_source: options.limitFiles,
@@ -2027,5 +2100,7 @@ export { compileSql, compileSqlRequest, parseSqlRequest, QueryValidationError, S
 export type { SqlRequest, SqlOperation, CompiledSqlRequest } from "./sql-query.js";
 
 export type { LiveQueryRead, QueryReadWork } from "./selective-query.js";
+export { BoundedCache } from "./bounded-cache.js";
+export type { ReadDiagnostic, ReadDiagnosticSink } from "./diagnostics.js";
 export { LiveHistoryReader } from "./history-reader.js";
 export { EvidenceCursorError, validateEvidenceBudget, DEFAULT_EVIDENCE_CHARS, MAX_EVIDENCE_CHARS } from "@cchistory/canonical";

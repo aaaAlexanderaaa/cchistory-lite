@@ -48,6 +48,7 @@ interface SearchOperation extends QueryOperationBase {
   limit?: number;
   offset?: number;
   content?: "authored" | "conversation";
+  group_by?: "session" | "message";
   max_chars?: number;
 }
 
@@ -228,9 +229,9 @@ function executeOperation(
   if (operation.kind === "search") {
     const project = operation.project_ref ? snapshot.getProject(operation.project_ref) : undefined;
     if (operation.project_ref && !project) throw new QueryReferenceError(`Project not found: ${operation.project_ref}.`);
-    if (operation.content === "conversation") return { query: operation.query, unit: "session",
+    if (operation.content === "conversation") return { query: operation.query, unit: operation.group_by === "message" ? "message" : "session",
       ...snapshot.searchConversation({ query: operation.query, projectId: project?.project_id,
-        directoryScope, limit: operation.limit, offset: operation.offset, max_chars: operation.max_chars }) };
+        directoryScope, limit: operation.limit, offset: operation.offset, max_chars: operation.max_chars, group_by: operation.group_by }) };
     const limit = operation.limit ?? 50;
     const offset = operation.offset ?? 0;
     const result = snapshot.searchSessions({
@@ -355,7 +356,7 @@ function parseOperation(value: unknown, index: number): QueryOperation {
     return parsed;
   }
   if (kind === "search") {
-    assertOnlyKeys(operation, new Set(["id", "kind", "query", "project_ref", "limit", "offset", "content", "max_chars"]), `operation ${id}`);
+    assertOnlyKeys(operation, new Set(["id", "kind", "query", "project_ref", "limit", "offset", "content", "max_chars", "group_by"]), `operation ${id}`);
     const parsed: SearchOperation = {
       id,
       kind,
@@ -371,6 +372,11 @@ function parseOperation(value: unknown, index: number): QueryOperation {
     if (operation.max_chars !== undefined) {
       if (parsed.content !== "conversation") throw new QueryRequestError("search max_chars requires content: conversation.");
       parsed.max_chars = requireInteger(operation.max_chars, "max_chars", 256);
+    }
+    if (operation.group_by !== undefined) {
+      if (parsed.content !== "conversation") throw new QueryRequestError("search group_by requires content: conversation.");
+      if (operation.group_by !== "session" && operation.group_by !== "message") throw new QueryRequestError("search group_by must be session or message.");
+      parsed.group_by = operation.group_by;
     }
     if (parsed.content === "conversation") {
       try { validateEvidenceBudget(parsed); } catch (error) { throw new QueryRequestError((error as Error).message); }

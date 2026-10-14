@@ -103,6 +103,6 @@ export { QUERY_COLUMNS, collectionQueryTemplate, executeCanonicalQuery, executeQ
 export { summarizeDirectoryScope } from "./directory-scope.js";
 
 export { selectSampleSessions } from "./query.js";
-export { buildConversationEvidence, readConversationEvidence, searchConversationEvidence, validateEvidenceBudget,
+export { buildConversationEvidence, readConversationEvidence, prepareConversationEvidence, searchConversationEvidence, validateEvidenceBudget,
   EvidenceCursorError, DEFAULT_EVIDENCE_CHARS, MAX_EVIDENCE_CHARS } from "./conversation-evidence.js";
 export { summarizeReadStatus } from "./read-status.js";

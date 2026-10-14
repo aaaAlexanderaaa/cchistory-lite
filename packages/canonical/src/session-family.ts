@@ -424,7 +424,7 @@ function attributeBlobs(
     }
     bytesBySession.set(
       record.session_ref,
-      (bytesBySession.get(record.session_ref) ?? 0) + Buffer.byteLength(record.raw_json, "utf8"),
+      (bytesBySession.get(record.session_ref) ?? 0) + (record.raw_size_bytes ?? Buffer.byteLength(record.raw_json, "utf8")),
     );
   }
 

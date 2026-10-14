@@ -129,7 +129,8 @@
           "minimum": 256,
           "maximum": 64000,
           "default": 8000
-        }
+        },
+        "group_by": { "enum": ["session", "message"], "default": "session" }
       },
       "additionalProperties": false,
       "allOf": [
@@ -168,6 +169,10 @@
               "content"
             ]
           }
+        },
+        {
+          "if": { "required": ["group_by"] },
+          "then": { "properties": { "content": { "const": "conversation" } }, "required": ["content"] }
         }
       ]
     },

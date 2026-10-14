@@ -15,6 +15,8 @@ export interface JsonlSidecarSource {
 export interface JsonlRecordCollectionOptions {
   observedAt?: string;
   sidecars?: readonly JsonlSidecarSource[];
+  transformRecord?: (record: RawRecord) => RawRecord;
+  admitLineBytes?: (bytes: number) => void;
 }
 
 export interface JsonlRecordHelpers {
@@ -34,7 +36,7 @@ export async function collectJsonlRecords(
   const observedAt = options.observedAt ?? helpers.nowIso();
 
   forEachNonEmptyTrimmedLine(text, (line, ordinal) => {
-    records.push({
+    const record: RawRecord = {
       id: helpers.createRecordId(ordinal, `${ordinal}`),
       source_id: identity.sourceId,
       blob_id: identity.blobId,
@@ -44,14 +46,15 @@ export async function collectJsonlRecords(
       observed_at: observedAt,
       parseable: true,
       raw_json: line,
-    });
+    };
+    records.push(options.transformRecord ? options.transformRecord(record) : record);
   });
 
   for (const sidecar of options.sidecars ?? []) {
     if (!(await helpers.pathExists(sidecar.filePath))) {
       continue;
     }
-    records.push({
+    const record: RawRecord = {
       id: helpers.createRecordId(records.length, sidecar.pointer),
       source_id: identity.sourceId,
       blob_id: identity.blobId,
@@ -61,20 +64,19 @@ export async function collectJsonlRecords(
       observed_at: sidecar.observedAt ?? helpers.nowIso(),
       parseable: true,
       raw_json: await helpers.readTextFile(sidecar.filePath),
-    });
+    };
+    records.push(options.transformRecord ? options.transformRecord(record) : record);
   }
 
   return records;
 }
 
-// Stage 3: streaming variant of collectJsonlRecords. Reads the file as
+// Streaming variant of collectJsonlRecords. Reads the file as
 // Buffer chunks (line-boundary aware) instead of one big string, so the
 // oversized JSONL capture path can collect records without materializing
 // the whole file. \n and \r never appear inside a multi-byte UTF-8 sequence,
 // so byte-level splitting is safe and we only decode at line granularity.
-// Sidecars are not supported here — they are small enough to read in full
-// after streaming the primary file, and the oversized capture path doesn't
-// use them.
+// Declared sidecars are read after the primary stream using the same transform.
 export async function collectJsonlRecordsStreaming(
   chunks: AsyncIterable<Buffer>,
   identity: JsonlRecordIdentity,
@@ -85,7 +87,7 @@ export async function collectJsonlRecordsStreaming(
   const observedAt = options.observedAt ?? helpers.nowIso();
 
   await forEachNonEmptyTrimmedLineStreaming(chunks, (line, ordinal) => {
-    records.push({
+    const record: RawRecord = {
       id: helpers.createRecordId(ordinal, `${ordinal}`),
       source_id: identity.sourceId,
       blob_id: identity.blobId,
@@ -95,14 +97,15 @@ export async function collectJsonlRecordsStreaming(
       observed_at: observedAt,
       parseable: true,
       raw_json: line,
-    });
-  });
+    };
+    records.push(options.transformRecord ? options.transformRecord(record) : record);
+  }, options.admitLineBytes);
 
   for (const sidecar of options.sidecars ?? []) {
     if (!(await helpers.pathExists(sidecar.filePath))) {
       continue;
     }
-    records.push({
+    const record: RawRecord = {
       id: helpers.createRecordId(records.length, sidecar.pointer),
       source_id: identity.sourceId,
       blob_id: identity.blobId,
@@ -112,7 +115,8 @@ export async function collectJsonlRecordsStreaming(
       observed_at: sidecar.observedAt ?? helpers.nowIso(),
       parseable: true,
       raw_json: await helpers.readTextFile(sidecar.filePath),
-    });
+    };
+    records.push(options.transformRecord ? options.transformRecord(record) : record);
   }
 
   return records;
@@ -243,39 +247,44 @@ function forEachNonEmptyTrimmedLine(
 export async function forEachNonEmptyTrimmedLineStreaming(
   chunks: AsyncIterable<Buffer>,
   visitor: (line: string, ordinal: number) => void,
+  admitLineBytes?: (bytes: number) => void,
 ): Promise<void> {
-  let pending: Uint8Array = new Uint8Array(0);
+  let pieces: Buffer[] = [];
+  let pendingBytes = 0;
   let ordinal = 0;
+  let previousWasCarriageReturn = false;
+
+  const append = (piece: Buffer) => {
+    if (!piece.length) return;
+    admitLineBytes?.(pendingBytes + piece.length);
+    pieces.push(piece);
+    pendingBytes += piece.length;
+  };
+  const flush = () => {
+    const buffer = pieces.length === 1 ? pieces[0]! : Buffer.concat(pieces, pendingBytes);
+    const line = buffer.toString("utf8").trim();
+    pieces = []; pendingBytes = 0;
+    if (line) visitor(line, ordinal++);
+  };
 
   for await (const chunk of chunks) {
-    pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
-
+    if (!chunk.length) continue;
     let lineStart = 0;
-    for (let index = 0; index < pending.length; index += 1) {
-      const byte = pending[index]!;
-      if (byte !== 10 && byte !== 13) {
-        continue;
-      }
-      const lineBuffer = Buffer.from(pending.subarray(lineStart, index));
-      const line = lineBuffer.toString("utf8").trim();
-      if (line) {
-        visitor(line, ordinal);
-        ordinal += 1;
-      }
-      // Treat \r\n as a single separator by skipping the trailing \n.
-      if (byte === 13 && index + 1 < pending.length && pending[index + 1] === 10) {
-        index += 1;
-      }
+    if (previousWasCarriageReturn && chunk[0] === 10) lineStart = 1;
+    previousWasCarriageReturn = false;
+    let nextLf = chunk.indexOf(10, lineStart), nextCr = chunk.indexOf(13, lineStart);
+    while (nextLf !== -1 || nextCr !== -1) {
+      let index = nextCr === -1 ? nextLf : nextLf === -1 ? nextCr : Math.min(nextLf, nextCr);
+      const byte = chunk[index]!;
+      append(chunk.subarray(lineStart, index));
+      flush();
+      if (byte === 13 && chunk[index + 1] === 10) index++;
+      else if (byte === 13 && index === chunk.length - 1) previousWasCarriageReturn = true;
       lineStart = index + 1;
+      if (nextLf !== -1 && nextLf < lineStart) nextLf = chunk.indexOf(10, lineStart);
+      if (nextCr !== -1 && nextCr < lineStart) nextCr = chunk.indexOf(13, lineStart);
     }
-
-    pending = pending.subarray(lineStart);
+    append(chunk.subarray(lineStart));
   }
-
-  if (pending.length > 0) {
-    const line = Buffer.from(pending).toString("utf8").trim();
-    if (line) {
-      visitor(line, ordinal);
-    }
-  }
+  if (pendingBytes > 0) flush();
 }

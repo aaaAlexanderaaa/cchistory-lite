@@ -20,6 +20,7 @@ import type {
   UserTurnProjection,
 } from "@cchistory/domain";
 import type { LiveHistorySnapshot } from "@cchistory/live-runtime";
+import { BoundedCache } from "@cchistory/live-runtime";
 
 export const UNLINKED_PROJECT_KEY = "__unlinked__";
 
@@ -76,7 +77,8 @@ export class LiteBrowserModel {
   private readonly sessionsById: Map<string, SessionProjection>;
   /** Additive cache for contexts fetched on demand after the initial scan. */
   private readonly contextOverlay = new Map<string, TurnContextProjection>();
-  private readonly searchCache = new Map<string, LiteSearchPage>();
+  private readonly searchCache = new BoundedCache<string, LiteSearchPage>(32, 20_000,
+    (page, query) => page.results.reduce((total, row) => total + 1 + row.highlights.length * 2, Math.ceil(query.length / 128)));
 
   constructor(snapshot: LiveHistorySnapshot, options: { includeSessionRefs?: readonly string[] } = {}) {
     this.snapshot = snapshot;

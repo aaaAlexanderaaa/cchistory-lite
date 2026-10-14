@@ -3,6 +3,22 @@
 CC History Lite is a read-only pipeline: native agent history on disk in, canonical snapshot in
 memory out. Everything below follows from that.
 
+## Outcome, judgment, and execution
+
+Start consequential assessments with [purpose and authority](docs/contracts/working-discipline.md#purpose-and-authority)
+and [task context and value](docs/contracts/working-discipline.md#task-context-and-value).
+Read [causal investigation](docs/contracts/working-discipline.md#causal-investigation) for scope and evidence,
+[capacity and observability](docs/contracts/working-discipline.md#capacity-and-observability) for resource/failure work,
+and [verification and completion](docs/contracts/working-discipline.md#verification-and-completion) before claiming delivery.
+Use only applicable sections for ordinary work; the learning survey is not a startup checklist.
+
+The 2026-10-13 comparison found gaps in goal/ROI judgment, example-driven scope narrowing, and
+resource/evidence claims. Their rules now live at the linked owners. The
+[learning and validation record](docs/research/2026-10-13-working-discipline.md) retains the comparison
+and verification limits; recorded rules do not yet prove improved behavior. [PLAN.md](PLAN.md)
+tracks the current authorized work. The invariants, visual approval, source-access, fixture,
+and release requirements below remain in force.
+
 ## Invariants
 
 These are not style preferences. Breaking one is a defect regardless of what it enables.

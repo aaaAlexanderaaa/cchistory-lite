@@ -258,7 +258,11 @@ export interface RawRecord {
   record_path_or_offset: string;
   observed_at: string;
   parseable: boolean;
+  /** Original body; empty only when raw_text_retained is explicitly false. */
   raw_json: string;
+  /** Native body length remains available for attribution when only metadata is retained. */
+  raw_size_bytes?: number;
+  raw_text_retained?: boolean;
 }
 
 export interface RawEvent {

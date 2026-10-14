@@ -15,8 +15,8 @@ export function getSourceFilePriority(platform: SourcePlatform, filePath: string
   return getPlatformAdapter(platform)?.getSourceFilePriority?.(filePath) ?? 0;
 }
 
-export function deriveSessionId(platform: SourcePlatform, filePath: string, fileBuffer: Buffer): string {
-  const sourceSessionId = extractSourceSessionId(platform, filePath, fileBuffer);
+export function deriveSessionId(platform: SourcePlatform, filePath: string, fileBuffer: Buffer, decodedRoot?: { value: unknown }): string {
+  const sourceSessionId = extractSourceSessionId(platform, filePath, fileBuffer, decodedRoot);
   if (sourceSessionId) {
     return `sess:${platform}:${sourceSessionId}`;
   }
@@ -24,11 +24,11 @@ export function deriveSessionId(platform: SourcePlatform, filePath: string, file
   return `sess:${platform}:${path.basename(filePath, path.extname(filePath))}`;
 }
 
-export function extractSourceSessionId(platform: SourcePlatform, filePath: string, fileBuffer: Buffer): string | undefined {
+export function extractSourceSessionId(platform: SourcePlatform, filePath: string, fileBuffer: Buffer, decodedRoot?: { value: unknown }): string | undefined {
   if (platform === "amp") {
     try {
-      const parsed = JSON.parse(fileBuffer.toString("utf8")) as Record<string, unknown>;
-      const id = asString(parsed.id);
+      const parsed: unknown = decodedRoot ? decodedRoot.value : JSON.parse(fileBuffer.toString("utf8"));
+      const id = isObject(parsed) ? asString(parsed.id) : undefined;
       if (id) {
         return id;
       }

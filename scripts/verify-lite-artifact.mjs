@@ -93,6 +93,7 @@ async function main() {
       'cchistory-lite-query-result-v3.schema.json',
       'cchistory-lite-error-v1.schema.json',
       'cchistory-lite-agent-v1.schema.json',
+      'cchistory-lite-diagnostic-v1.schema.json',
     ];
     for (const schemaName of schemaNames) {
       JSON.parse(await readFile(path.join(installedRoot, 'schemas', schemaName), 'utf8'));
@@ -325,9 +326,17 @@ async function assertAgentEvidence(cli, tempRoot) {
   const fixtureRoot = path.join(repoRoot, 'mock_data', 'fixtures', 'agent-evidence');
   const run = async operations => {
     await writeFile(requestPath, JSON.stringify({ schema: 'cchistory-lite-query/v2', operations }));
-    const output = await execFile(cli, ['query', '--request', requestPath, '--source', 'codex',
+    const output = await execFile(cli, ['query', '--request', requestPath, '--diagnostics', '--source', 'codex',
       '--source-root', `codex=${fixtureRoot}`, '--dir', '/fixture/agent-project', '--safe'], { cwd: tempRoot, maxBuffer: 1024 * 1024 });
     const result = JSON.parse(output.stdout);
+    const events = output.stderr.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+    if (!events.some(event => event.schema === 'cchistory-lite-diagnostic/v1' && event.kind === 'read_done')) {
+      throw new Error('Installed diagnostic stream lost structured read completion.');
+    }
+    if (!events.some(event => event.kind === 'progress' && typeof event.stage_elapsed_ms === 'number'
+      && event.stage_elapsed_ms >= 0 && typeof event.elapsed_ms === 'number')) {
+      throw new Error('Installed diagnostic stream lost stage/attempt duration distinction.');
+    }
     if (!result.read?.id || !result.read_status || result.projection_issues?.length || result.operations.some(op => op.status !== 'ok')) {
       throw new Error('Installed evidence query lost read identity, diagnostics or operation results.');
     }
@@ -347,6 +356,21 @@ async function assertAgentEvidence(cli, tempRoot) {
     || !second.operations[1].result.messages.some(m => m.turn_id === null && m.text.includes('checksum'))) {
     throw new Error('Installed evidence continuation or child message read failed.');
   }
+  const matches = await run([{ id: 'messages', kind: 'search', content: 'conversation', query: 'fixture', group_by: 'message', limit: 1 }]);
+  const page = matches.operations[0].result;
+  if (page.unit !== 'message' || page.total !== 4 || page.next_offset !== 1) throw new Error('Installed message search collapsed older evidence.');
+  const hits = [...page.results];
+  let offset = page.next_offset;
+  while (offset !== null) {
+    if (hits.length >= 4) throw new Error('Installed message continuation did not terminate.');
+    const older = await run([{ id: 'older', kind: 'search', content: 'conversation', query: 'fixture', group_by: 'message', limit: 1, offset }]);
+    hits.push(...older.operations[0].result.results);
+    offset = older.operations[0].result.next_offset;
+  }
+  const oldHit = hits.find(hit => hit.matched_session_id === 'sess:codex:evidence-parent' && hit.role === 'user');
+  if (new Set(hits.map(hit => hit.message_id)).size !== 4 || !oldHit?.turn_id) throw new Error('Installed message continuation lost identity.');
+  const cited = await run([{ id: 'cite', kind: 'read', turn_ref: oldHit.turn_id }]);
+  if (!cited.operations[0].result.messages.some(message => message.message_id === oldHit.message_id)) throw new Error('Installed older match could not be read by its citation.');
 }
 
 async function assertSelectiveLatest(cli, installedRoot, tempRoot) {

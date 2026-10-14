@@ -57,3 +57,53 @@ test("ZCode and both Cursor container paths retain budget failures as per-file d
     }
   } finally { await rm(scratch, { recursive: true, force: true }); }
 });
+
+test("ZCode admits message parts independently and metadata retention preserves canonical evidence", async () => {
+  const scratch = await mkdtemp(path.join(os.tmpdir(), "lite-zcode-units-"));
+  try {
+    const file = path.join(scratch, "db.sqlite");
+    const db = new DatabaseSync(file);
+    try {
+      db.exec(await readFile(new URL("../../../../mock_data/fixtures/context-boundary/zcode/fixture.sql", import.meta.url), "utf8"));
+      const template = db.prepare("SELECT data FROM part WHERE id = 'parent-tool'").get()!.data as string;
+      const insert = db.prepare("INSERT INTO part VALUES (?, 'parent-assistant', 'zcode-parent', 1775955603000, 1775955603000, ?)");
+      for (let index = 0; index < 80; index++) {
+        const part = JSON.parse(template);
+        part.callID = `fixture-call-${index}`;
+        part.state.output = part.state.output.repeat(1024);
+        insert.run(`fixture-part-${index}`, JSON.stringify(part));
+      }
+    } finally { db.close(); }
+    const source = getDefaultSourcesForHost({ homeDir: scratch, includeMissing: true }).find(s => s.platform === "zcode")!;
+    const selected = { ...source, base_dir: scratch };
+    const source_file_paths = { [source.id]: [file] };
+    const complete = (await runSourceProbe({ safe_mode: true, source_file_paths }, [selected])).sources[0]!;
+    const largest = 64 * 1024;
+    const metadata = (await runSourceProbe({ safe_mode: true, source_file_paths, retain_raw_records: false,
+      read_budget: { admit(bytes, unit) { if (bytes > largest) throw new SourceReadBudgetExceededError(unit, bytes, largest); } },
+    }, [selected])).sources[0]!;
+    assert.deepEqual(metadata.sessions, complete.sessions);
+    assert.deepEqual(metadata.turns, complete.turns);
+    assert.deepEqual(metadata.contexts, complete.contexts);
+    assert.deepEqual(metadata.loss_audits, []);
+    assert.ok(metadata.records.every(record => record.raw_text_retained === false && record.raw_json === "" && record.raw_size_bytes! > 0));
+    assert.ok(metadata.records.every(record => !("parsed_value" in record)), "borrowed decoder objects stop at the parser boundary");
+    assert.deepEqual(metadata.records.map(record => record.raw_size_bytes), complete.records.map(record => Buffer.byteLength(record.raw_json, "utf8")));
+    assert.equal(metadata.source.total_records, complete.source.total_records);
+    const convert = new DatabaseSync(file);
+    try {
+      convert.exec(`ALTER TABLE part RENAME TO old_part;
+        CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT) WITHOUT ROWID;
+        INSERT INTO part SELECT * FROM old_part; DROP TABLE old_part;`);
+    } finally { convert.close(); }
+    const convertedComplete = (await runSourceProbe({ safe_mode: true, source_file_paths }, [selected])).sources[0]!;
+    const withoutRowid = (await runSourceProbe({ safe_mode: true, source_file_paths, retain_raw_records: false }, [selected])).sources[0]!;
+    assert.deepEqual(withoutRowid.sessions, convertedComplete.sessions);
+    assert.deepEqual(withoutRowid.turns, convertedComplete.turns);
+    assert.deepEqual(withoutRowid.contexts, convertedComplete.contexts);
+    assert.deepEqual(withoutRowid.turns.map(turn => turn.canonical_text), complete.turns.map(turn => turn.canonical_text));
+    assert.equal(withoutRowid.contexts.reduce((count, context) => count + context.tool_calls.length, 0),
+      complete.contexts.reduce((count, context) => count + context.tool_calls.length, 0));
+    assert.deepEqual(withoutRowid.loss_audits, []);
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+});

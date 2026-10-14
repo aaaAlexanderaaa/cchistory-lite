@@ -273,6 +273,8 @@ test("invalid evidence requests fail before scanning", async () => {
     { kind: "read", session_ref: parent, cursor: "bad-cursor" },
     { kind: "search", query: "fixture", content: "conversation", max_chars: 64001 },
     { kind: "search", query: "fixture", content: "all" },
+    { kind: "search", query: "fixture", group_by: "message" },
+    { kind: "search", query: "fixture", content: "conversation", group_by: "turn" },
   ];
   let scans = 0;
   for (const operation of invalid) {
@@ -280,6 +282,72 @@ test("invalid evidence requests fail before scanning", async () => {
     assert.equal(await runLiteCli(["query", "--request", "-", "--dir", directory], captured.io), 2, captured.err.join(""));
   }
   assert.equal(scans, 0);
+});
+
+test("older decision, later mention and reversal remain individually addressable in one shell scan", async () => {
+  const scratch = await mkdtemp(path.join(os.tmpdir(), "lite-old-decisions-"));
+  try {
+    await cp(fixture, scratch, { recursive: true });
+    const file = path.join(scratch, "parent.jsonl"), before = await stat(file);
+    const rows = (await readFile(file, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    const original = rows[2].payload.content[0].text;
+    rows[4].payload.content[0].text = "Mention exponential backoff with jitter in the migration notes.";
+    rows.push({ ...rows[1], timestamp: "2026-04-12T10:07:00Z", payload: { ...rows[1].payload,
+      content: [{ type: "input_text", text: "Record the revised retry decision." }] } });
+    rows.push({ ...rows[2], timestamp: "2026-04-12T10:08:00Z", payload: { ...rows[2].payload,
+      content: [{ type: "output_text", text: "Reversal: replace exponential backoff with jitter with the server retry-after schedule." }] } });
+    await writeFile(file, rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+    await utimes(file, before.atime, new Date(before.mtimeMs + 2000));
+    const captured = capture(); let step = 0, scans = 0;
+    const code = await runLiteShell({ jsonLines: true, directoryScope: directory,
+      scan: async overrides => { scans++; return scanLiteHistory({ ...options(scratch), ...overrides }); },
+      io: { ...captured.io, readLine: async () => {
+        if (step++ === 0) return JSON.stringify({ kind: "search", query: "exponential backoff", content: "conversation", group_by: "message", limit: 1 });
+        if (step <= 3) return JSON.stringify({ kind: "search", query: "exponential backoff", content: "conversation", group_by: "message", limit: 1,
+          offset: JSON.parse(captured.out[step - 2]!).operations[0].result.next_offset });
+        if (step === 4) return JSON.stringify({ kind: "read", turn_ref: JSON.parse(captured.out[2]!).operations[0].result.results[0].turn_id });
+        return null;
+      } } });
+    assert.equal(code, 0, captured.err.join("")); assert.equal(scans, 1);
+    const responses = captured.out.map(line => JSON.parse(line));
+    const hits = responses.slice(0, 3).map(response => response.operations[0].result.results[0]);
+    assert.equal(new Set(hits.map(hit => hit.message_id)).size, 3);
+    assert.match(hits[0].text, /Reversal/); assert.match(hits[1].text, /Mention/);
+    assert.equal(hits[2].text, original);
+    assert.ok(hits.every(hit => hit.session_id === parent && hit.matched_session_id === parent && hit.turn_id));
+    assert.equal(new Set(responses.map(response => response.read.id)).size, 1);
+    assert.ok(responses[3].operations[0].result.messages.some((message: { message_id: string; text: string }) => message.message_id === hits[2].message_id && message.text === original));
+    const snapshot = await scanLiteHistory({ ...options(scratch), contextMode: "none", retainConversationEvidence: true });
+    assert.equal(snapshot.searchConversation({ query: "exponential backoff" }).total, 1, "default grouping stays compatible");
+    const childHit = snapshot.searchConversation({ query: "checksum", group_by: "message" }).results[0]!;
+    assert.equal(childHit.matched_session_id, child); assert.equal(childHit.turn_id, null);
+    assert.deepEqual(snapshot.projectionIssues, []);
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+});
+
+test("opt-in diagnostics emit metadata JSONL, preserve stdout results and explain SQL work and shell reuse", async () => {
+  const args = ["query", "--sql", "SELECT id FROM sessions LIMIT 2", "--complete", "--source", "codex", "--source-root", `codex=${fixture}`, "--dir", directory];
+  const ordinary = capture(), diagnosed = capture();
+  assert.equal(await runLiteCli(args, ordinary.io), 0, ordinary.err.join(""));
+  assert.equal(await runLiteCli([...args, "--diagnostics"], diagnosed.io), 0, diagnosed.err.join(""));
+  assert.deepEqual(JSON.parse(diagnosed.out.join("")).operations, JSON.parse(ordinary.out.join("")).operations);
+  assert.equal(ordinary.err.length, 0);
+  const events = diagnosed.err.flatMap(chunk => chunk.trim().split("\n").map(line => JSON.parse(line)));
+  assert.ok(events.every(event => event.schema === "cchistory-lite-diagnostic/v1"));
+  for (const kind of ["read_start", "progress", "budget", "query_work", "read_done"]) assert.ok(events.some(event => event.kind === kind), kind);
+  assert.ok(events.some(event => event.kind === "progress" && event.count_unit === "sessions"));
+  assert.ok(events.filter(event => event.attempt_id).every(event => Number.isFinite(event.rss_bytes) && Number.isFinite(event.heap_used_bytes)));
+  assert.doesNotMatch(diagnosed.err.join(""), /exponential backoff|checksum|rejected fixed delay/);
+  const snapshot = await scanLiteHistory({ ...options(), contextMode: "none", retainConversationEvidence: true });
+  const cacheEvents: { kind: string; decision?: unknown }[] = [];
+  const reader = new LiveHistoryReader(async () => snapshot, undefined, undefined, event => cacheEvents.push(event));
+  await reader.collection(true);
+  await reader.detail([{ kind: "session", ref: parent }], { evidenceOnly: true });
+  await reader.refresh(); reader.close();
+  assert.deepEqual(cacheEvents.map(event => event.decision), ["miss", "hit", "refresh", "closed"]);
+  const failures: { kind: string; error_class?: unknown }[] = [];
+  await assert.rejects(scanLiteHistory({ ...options(), contextMode: "matching", onDiagnostic: event => failures.push(event) }), /requires/);
+  assert.equal(failures.at(-1)?.kind, "read_error");
 });
 
 test("agent journey: SQL success with a lost file reports partial history at the top level", async () => {

@@ -94,6 +94,10 @@ Other agents can keep running while Lite reads their history. Appends and SQLite
 WAL updates are normal; the snapshot may be slightly behind the writer. Changed
 selection evidence falls back to an ordinary read. Unreadable or oversized inputs
 leave diagnostics alongside the history that could be read.
+Use `--diagnostics` on a CLI history read or shell for opt-in structured progress,
+budget and cache events on stderr; stdout keeps its existing contract. For past
+decisions, [message-grouped search](docs/guide/agent-evidence.md) also exposes older
+matches within a session.
 
 The CLI and TUI automatically grow Node's default heap when available system memory
 allows, leaving half that capacity for other uses. Estimates warn; they do not

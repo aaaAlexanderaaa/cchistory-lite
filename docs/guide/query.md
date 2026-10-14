@@ -3,6 +3,9 @@
 For bounded question/answer evidence and full conversation text search, use the
 [v2 agent operations](agent-evidence.md). SQL remains the interface for selecting
 fields and combining conditions over canonical collections.
+Use conversation `group_by: "message"` for older decisions within a session.
+Optional `--diagnostics` exposes execution stages and SQL work counters as stderr
+JSONL while preserving stdout; see the [diagnostic contract](agent-evidence.md#observe-a-read).
 
 Use a finite PostgreSQL-style SELECT to combine conditions over canonical history. `sessions`
 contains every addressable session, including empty sessions and delegated children. `turns`

@@ -82,7 +82,7 @@ const VALUE_FLAGS = new Set([
   "dir",
   "request", "sql", "sql-file", "params", "idle-timeout",
 ]);
-const BOOLEAN_FLAGS = new Set(["safe", "json", "help", "version", "all", "no-dir", "complete"]);
+const BOOLEAN_FLAGS = new Set(["safe", "json", "help", "version", "all", "no-dir", "complete", "diagnostics"]);
 const FORBIDDEN_COMMANDS = new Set([
   "sync",
   "import",
@@ -133,6 +133,15 @@ export async function runLiteCli(argv: string[], io: LiteCliIo = defaultIo()): P
   let structuredOutput = false;
   try {
     const parsed = parseArgs(argv);
+    if (parsed.booleans.has("diagnostics")) {
+      const stderr = io.stderr;
+      io = { ...io, stderr: text => {
+        let event: unknown;
+        try { event = JSON.parse(text); }
+        catch { event = { schema: "cchistory-lite-diagnostic/v1", kind: "notice", message: text.trimEnd() }; }
+        stderr(`${JSON.stringify(event)}\n`);
+      } };
+    }
     structuredOutput = requestsStructuredOutput(parsed);
     if (parsed.booleans.has("version")) {
       io.stdout(`${VERSION}\n`);
@@ -166,6 +175,8 @@ export async function runLiteCli(argv: string[], io: LiteCliIo = defaultIo()): P
         jsonLines,
         idleTimeoutSeconds: optionalInteger(parsed, "idle-timeout", 0),
         directoryScope: resolveDirectoryScope(parsed, io),
+        onDiagnostic: parsed.booleans.has("diagnostics")
+          ? event => io.stderr(JSON.stringify({ schema: "cchistory-lite-diagnostic/v1", ...event }) + "\n") : undefined,
         scan: (overrides) => scan(parsed, io, overrides?.contextMode ?? "none", jsonLines, overrides),
       });
     }
@@ -347,9 +358,15 @@ function buildScanOptions(
     sample: parsed.command === "sample" ? { perSource: parseSampleLimit(parsed.positionals) } : undefined,
     scanGuard: scanGuardRequestFor(parsed, contextMode),
     onScanGuardEvent: (event) => {
-      if (event.type === "warn") io.stderr(`${formatScanGuardWarning(event.assessment)}\n`);
+      if (event.type === "warn") {
+        if (parsed.booleans.has("diagnostics")) io.stderr(JSON.stringify({ schema: "cchistory-lite-diagnostic/v1",
+          kind: "budget", decision: "preflight_warning", assessment: event.assessment }) + "\n");
+        else io.stderr(`${formatScanGuardWarning(event.assessment)}\n`);
+      }
     },
-    onProgress: io.isTTY && !json ? (event) => {
+    onDiagnostic: parsed.booleans.has("diagnostics")
+      ? event => io.stderr(JSON.stringify({ schema: "cchistory-lite-diagnostic/v1", ...event }) + "\n") : undefined,
+    onProgress: io.isTTY && !json && !parsed.booleans.has("diagnostics") ? (event) => {
       if (event.stage === "source_start") {
         io.stderr(`Scanning ${event.display_name} (${event.slot_id})…\n`);
       } else if (event.stage === "source_missing") {
@@ -1738,6 +1755,9 @@ function validateCommandShape(parsed: ParsedArgs): void {
 }
 
 function validateCommandOptions(parsed: ParsedArgs): void {
+  if (parsed.booleans.has("diagnostics") && (parsed.command === "tui" || parsed.command === "agent")) {
+    throw new UsageError(`--diagnostics is only available on CLI history reads and shell.`);
+  }
   const allowedValues = new Set(["source-root", "source", "limit-files"]);
   if (parsed.command === "agent") {
     // agent is pure introspection: it never scans, so scan flags are rejected.
@@ -2018,6 +2038,7 @@ Source options:
   --source <slot-or-id>              Select registered adapters; repeatable
   --limit-files <n>                  Limit source files per adapter
   --safe                             Enable adapter safe mode
+  --diagnostics                      Write structured read progress and budget/cache diagnostics to stderr
 
 Output options:
   --json                             Compact agent-facing JSON (cchistory-lite/v2)

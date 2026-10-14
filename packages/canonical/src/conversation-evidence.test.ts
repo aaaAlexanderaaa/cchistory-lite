@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { ConversationEvidence } from "@cchistory/domain";
-import { readConversationEvidence, EvidenceCursorError, validateEvidenceBudget } from "./conversation-evidence.js";
+import { readConversationEvidence, prepareConversationEvidence, searchConversationEvidence, EvidenceCursorError, validateEvidenceBudget } from "./conversation-evidence.js";
 import { auditProjectionConsistency } from "./projection-audit.js";
 import { summarizeReadStatus } from "./read-status.js";
 
@@ -45,6 +45,26 @@ test("cursors reject changed content, another target, reordered evidence and mal
   assert.throws(() => validateEvidenceBudget({ cursor: "not-a-cursor" }), EvidenceCursorError);
 });
 
+test("prepared pages own immutable content and agree with direct reads, including unpaired surrogates", () => {
+  const mutable = messages.map(message => ({ ...message, text: message.text.repeat(37) + "\ud800" }));
+  const original = mutable.map(message => ({ ...message }));
+  const prepared = prepareConversationEvidence(mutable, "session:fixture-parent");
+  mutable[0]!.text = "Changed after preparation";
+  mutable.reverse();
+  let cursor: string | undefined;
+  for (let count = 0; ; count++) {
+    assert.ok(count < 100);
+    const options = { max_chars: 257, limit: 2, cursor };
+    const page = prepared.read(options);
+    assert.deepEqual(page, readConversationEvidence(original, "session:fixture-parent", options));
+    if (!page.has_more) break;
+    cursor = page.next_cursor!;
+  }
+  assert.notEqual(prepared.read().revision, readConversationEvidence(mutable, "session:fixture-parent").revision);
+  const replaced = original.map(message => ({ ...message, text: message.text.replace(/\ud800/g, "\ufffd") }));
+  assert.notEqual(prepared.read().revision, readConversationEvidence(replaced, "session:fixture-parent").revision);
+});
+
 test("empty sessions and empty messages terminate without inventing text", () => {
   assert.deepEqual(readConversationEvidence([], "empty").messages, []);
   assert.equal(readConversationEvidence([], "empty").next_cursor, null);
@@ -52,6 +72,25 @@ test("empty sessions and empty messages terminate without inventing text", () =>
   assert.equal(result.returned_chars, 0);
   assert.equal(result.messages.length, 2);
   assert.ok(result.next_cursor);
+});
+
+test("message-grouped search paginates older matches without changing default session grouping", () => {
+  const sessions: Parameters<typeof searchConversationEvidence>[0]["sessions"] = [{ id: "fixture-parent", source_id: "fixture-source",
+    source_platform: "codex", host_id: "fixture-host", created_at: messages[0]!.created_at,
+    updated_at: messages.at(-1)!.created_at, turn_count: 2, sync_axis: "current" }];
+  const input = { messages, sessions, related_work: [], query: "fixture", limit: 1 };
+  const grouped = searchConversationEvidence(input);
+  assert.equal(grouped.total, 1);
+  assert.equal(grouped.results[0]?.message_id, "message-3");
+  assert.equal(grouped.next_offset, null);
+  const first = searchConversationEvidence({ ...input, group_by: "message" });
+  const second = searchConversationEvidence({ ...input, group_by: "message", offset: first.next_offset! });
+  assert.equal(first.total, 2);
+  assert.equal(first.next_offset, 1);
+  assert.equal(second.results[0]?.message_id, "message-0");
+  assert.equal(second.results[0]?.turn_id, "turn-0");
+  assert.equal(second.results[0]?.session_id, "fixture-parent");
+  assert.equal(second.next_offset, null);
 });
 
 test("evidence identity failures remain projection diagnostics", () => {
