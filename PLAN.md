@@ -6,8 +6,15 @@ Status: the capacity/recall delivery and subsequently approved speed follow-up a
 and verified as one integrated working-tree result. The owner has now authorized commit, push,
 a new tag and npm publication. Release target: 0.7.0, following the existing CI Release workflow;
 implementation commit and push precede CI validation/publication and its release commit/tag.
-Publication and remote verification are in progress; the records below retain their pre-release
-evidence and do not claim an npm result yet.
+Implementation commit `4838268` is pushed to `main`; its Linux/macOS, architecture and artifact
+[CI run](https://github.com/aaaAlexanderaaa/cchistory-lite/actions/runs/38500987563) passed.
+Publication is blocked: the current GitHub CLI token's Release dispatch returned HTTP 403
+(`Resource not accessible by personal access token`), and browser access to Brave was not approved.
+No new Release run started; npm still reports 0.6.0. The owner must start the existing
+[Release workflow](https://github.com/aaaAlexanderaaa/cchistory-lite/actions/workflows/release.yml)
+with `version: 0.7.0`, `dry_run: false`, or supply equivalent existing-account Actions permission.
+CI owns the release commit and `v0.7.0` tag; creating that tag early would fail its preparation
+check. The records below retain their pre-release evidence and do not claim an npm result yet.
 
 Speed acceptance: compare the frozen pre-speed working-tree build and candidate on identical
 fixture evidence and requests, including large SQLite, a large logical JSONL session, many small
