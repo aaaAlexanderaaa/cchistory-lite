@@ -1,6 +1,7 @@
 import type { SourceReadBudget } from "./read-budget.js";
 import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
+import { applyMaskTemplates } from "../masks.js";
 import { encodeRecordValue } from "./decoded-record.js";
 import path from "node:path";
 import type {
@@ -43,6 +44,16 @@ import { extractGeminiProjectKey, resolveGeminiRoot } from "../platforms/gemini.
 import { resolveKimiSessionDir } from "../platforms/kimi.js";
 import { parseKimiRecord as parseKimiRuntimeRecord } from "../platforms/kimi/runtime.js";
 import { iterateZcodeSqliteSeeds } from "../platforms/zcode/runtime.js";
+import {
+  extractGrokBotStoreSeeds,
+  loadGrokBotProfileTitleForSourceFile,
+} from "../platforms/grok-bot/runtime.js";
+import {
+  extractGrokBotProfileUpdateName,
+  isGrokBotHiddenPromptText,
+  resolveGrokBotSessionTitle,
+} from "../platforms/grok-bot/title.js";
+import { parseGrokBotAgentIdFromPath } from "../platforms/grok-bot.js";
 import { collectJsonlRecords, extractContentMaxTimestamp, isIncrementalJsonlPlatform } from "./jsonl-records.js";
 import {
   collectConversationSeedsFromValue as collectConversationSeedsFromValueRuntime,
@@ -213,6 +224,7 @@ export async function extractRecords(
   const fallbackObservedAt =
     context.source.platform === "factory_droid" ||
     context.source.platform === "grok" ||
+    context.source.platform === "grok_bot" ||
     context.source.platform === "cursor" ||
     context.source.platform === "cursor_agent"
     ? await fs.stat(context.filePath).then((stats) => stats.mtime.toISOString()).catch(() => nowIso())
@@ -299,7 +311,11 @@ export async function extractRecords(
     );
     return interleaveGrokTurnCompletedRecords(ordered);
   }
-  if (context.source.platform === "cursor" || context.source.platform === "cursor_agent") {
+  if (
+    context.source.platform === "cursor" ||
+    context.source.platform === "cursor_agent" ||
+    context.source.platform === "grok_bot"
+  ) {
     return applyJsonlOrdinalObservedTimes(collected, fallbackObservedAt);
   }
   return collected;
@@ -485,7 +501,8 @@ export function parseRecord(
     context.source.platform === "gemini" ||
     context.source.platform === "opencode" ||
     context.source.platform === "lobechat" ||
-    context.source.platform === "zcode"
+    context.source.platform === "zcode" ||
+    context.source.platform === "grok_bot"
   ) {
     if ((context.source.platform === "cursor" || context.source.platform === "cursor_agent") && asString(parsed.type) === "turn_ended") {
       return { fragments: [], lossAudits: [] };
@@ -592,6 +609,17 @@ export async function extractMultiSessionSeeds(
     const seeds = [...iterateZcodeSeeds(source, filePath, targetSessionRefs, budget)];
     return seeds.length ? seeds : undefined;
   }
+  if (source.platform === "grok_bot" && path.basename(filePath) === "store.db") {
+    return extractGrokBotStoreSeeds(source.platform, filePath, {
+      asString,
+      asNumber,
+      isObject,
+      safeJsonParse,
+      epochMillisToIso,
+      nowIso,
+      truncate,
+    }, targetSessionRefs, budget);
+  }
   if (source.platform === "opencode" || source.platform === "gemini") {
     const exportSeeds = await extractConversationExportSeeds(source, filePath, fileBuffer, blobId);
     if (exportSeeds && exportSeeds.length > 0) {
@@ -614,6 +642,62 @@ function adapterRecordValue(value: Record<string, unknown>, retainRawRecords: bo
   return { raw_json: encoded.rawJson, ...(encoded.parsedValue ? {
     parsed_value: encoded.parsedValue, raw_size_bytes: encoded.rawSizeBytes, raw_text_retained: false,
   } : {}) };
+}
+
+function polishGrokBotSessionDraft(
+  draft: SessionDraft,
+  atoms: ConversationAtom[],
+  filePath: string,
+): void {
+  const agentId =
+    parseGrokBotAgentIdFromPath(filePath) ??
+    draft.source_session_id ??
+    draft.id.replace(/^sess:grok_bot:/u, "");
+  const profileTitle = loadGrokBotProfileTitleForSourceFile(
+    filePath,
+    {
+      asString,
+      isObject,
+      safeJsonParse,
+      truncate: value => value,
+    },
+    agentId,
+  );
+
+  let profileUpdateName: string | undefined;
+  let firstUserText: string | undefined;
+  for (const atom of atoms) {
+    if (atom.content_kind !== "text") {
+      continue;
+    }
+    const text = asString(atom.payload.text);
+    if (!text) {
+      continue;
+    }
+    if (!profileUpdateName) {
+      profileUpdateName = extractGrokBotProfileUpdateName(text);
+    }
+    if (
+      !firstUserText &&
+      atom.actor_kind === "user" &&
+      atom.origin_kind === "user_authored" &&
+      !isGrokBotHiddenPromptText(text)
+    ) {
+      firstUserText = text;
+    }
+  }
+
+  const title = resolveGrokBotSessionTitle({
+    agentId,
+    profileName: profileTitle,
+    profileUpdateName,
+    firstUserText: firstUserText ?? draft.title,
+    truncate: value => value,
+  });
+  draft.title = truncate(title, 72);
+  // Use the shared masking implementation before the display cut can split a
+  // sensitive value. An empty result must not fall back to the raw title.
+  draft.canonical_title = truncate(applyMaskTemplates(title, "user_message").canonical_text, 72);
 }
 
 export function buildAdapterBlobResult(
@@ -702,6 +786,9 @@ export function createAdapterBlobBuilder(
     atoms.push(...atomized.atoms);
     edges.push(...atomized.edges);
     hydrateDraftFromAtoms(draft, atoms, blob.file_modified_at);
+    if (source.platform === "grok_bot") {
+      polishGrokBotSessionDraft(draft, atoms, filePath);
+    }
     // Note: the resume command is built from the *post-hydration* working_directory.
     // R40 deliberately reuses the latest cwd as the resume cwd signal, so the
     // synthesized `cd <cwd> && resume <uuid>` may diverge from the original

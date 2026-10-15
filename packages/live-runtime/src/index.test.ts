@@ -36,6 +36,7 @@ const fixtureRoots = {
   accio: "fixtures/accio-multi-agent/agents",
   cursor_agent: "fixtures/cursor-agent",
   grok: "fixtures/grok-cli",
+  grok_bot: "fixtures/grok-bot",
 } as const;
 
 test("mapPool never runs more than the requested number of tasks at once", async () => {

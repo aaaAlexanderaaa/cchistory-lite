@@ -60,6 +60,19 @@ export function extractSourceSessionId(platform: SourcePlatform, filePath: strin
     }
   }
 
+
+  if (platform === "grok_bot") {
+    const normalized = filePath.replace(/\\/gu, "/");
+    const storeMatch = normalized.match(/\/agents\/([^/]+)\/store\.db$/u);
+    if (storeMatch?.[1]) {
+      return storeMatch[1];
+    }
+    const transcriptMatch = normalized.match(/\/agent-transcripts\/([^/]+)\/[^/]+\.jsonl$/u);
+    if (transcriptMatch?.[1]) {
+      return transcriptMatch[1];
+    }
+  }
+
   if (platform === "gemini") {
     try {
       const parsed = JSON.parse(fileBuffer.toString("utf8")) as Record<string, unknown>;

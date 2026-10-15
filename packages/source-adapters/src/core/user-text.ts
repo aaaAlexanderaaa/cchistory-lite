@@ -70,13 +70,14 @@ const LEADING_INJECTED_ENVELOPES: readonly {
   },
 ];
 
-export function splitUserText(
-  text: string,
-  options: {
-    platform?: SourcePlatform;
-    filePath?: string;
-  } = {},
-): UserTextChunk[] {
+type UserTextOptions = { platform?: SourcePlatform; filePath?: string };
+
+export function splitUserText(text: string, options: UserTextOptions = {}): UserTextChunk[] {
+  const chunks = splitUserTextChunks(text, options);
+  return options.platform === "grok_bot" ? reclassifySandHiddenAuthoredChunks(chunks) : chunks;
+}
+
+function splitUserTextChunks(text: string, options: UserTextOptions): UserTextChunk[] {
   const normalized = text.replace(/\r\n/g, "\n").trim();
   if (!normalized) {
     return [];
@@ -96,8 +97,8 @@ export function splitUserText(
   }
 
   const cursorEnvelope =
-    options.platform === "cursor" || options.platform === "cursor_agent" || options.platform === "grok"
-      ? splitCursorPromptEnvelope(normalized)
+    options.platform === "cursor" || options.platform === "cursor_agent" || options.platform === "grok" || options.platform === "grok_bot"
+      ? splitCursorPromptEnvelope(normalized, options.platform)
       : undefined;
   if (cursorEnvelope) {
     return cursorEnvelope;
@@ -265,7 +266,7 @@ export function isAutomationTriggerUserText(text: string): boolean {
   return text.startsWith("[cron:");
 }
 
-export function splitCursorPromptEnvelope(text: string): UserTextChunk[] | undefined {
+export function splitCursorPromptEnvelope(text: string, platform?: SourcePlatform): UserTextChunk[] | undefined {
   const tagPattern =
     /<(timestamp|manually_attached_skills|user_query|user_info|skill_information|agent_transcripts|attached_files|open_and_recently_viewed_files|cursor_rules_context|always_applied_workspace_rules|system_reminder|system-reminder)>[\s\S]*?<\/\1>/gu;
   const matches = [...text.matchAll(tagPattern)];
@@ -301,7 +302,12 @@ export function splitCursorPromptEnvelope(text: string): UserTextChunk[] | undef
   if (after) {
     pushCursorEnvelopeResidual(chunks, authoredParts, after);
   }
-  const authored = authoredParts.join("\n\n").trim();
+  // Remove Grok Bot cues before joining so they cannot swallow a real query.
+  const authoredChunks = authoredParts.map(text => ({ originKind: "user_authored" as const, text }));
+  const classified = platform === "grok_bot" ? reclassifySandHiddenAuthoredChunks(authoredChunks) : authoredChunks;
+  chunks.push(...classified.filter(chunk => chunk.originKind !== "user_authored"));
+  const authored = classified.filter(chunk => chunk.originKind === "user_authored")
+    .map(chunk => chunk.text).join("\n\n").trim();
   if (authored) {
     chunks.push({
       originKind: "user_authored",
@@ -383,11 +389,29 @@ function stripLeadingSlash(value: string | undefined): string | undefined {
 }
 
 /**
- * Detects messages that are structurally `role: user` in the raw data but
- * are system-injected rather than human-authored.  Covers patterns from
- * Codex (review actions, turn_aborted) and Claude Code (sub-agent
- * callbacks, compact-continuation summaries, local-command wrappers).
+ * Grok Bot injects first-run / profile-update cues, including inside envelopes.
+ * Apply this only to Grok Bot chunks; the marker is literal text elsewhere.
  */
+export function reclassifySandHiddenAuthoredChunks(chunks: UserTextChunk[]): UserTextChunk[] {
+  return chunks.flatMap((chunk) => {
+    if (chunk.originKind !== "user_authored") {
+      return [chunk];
+    }
+    const trimmed = chunk.text.replace(/\r\n/g, "\n").trim();
+    if (!trimmed.startsWith("[SAND_HIDDEN_PROMPT]")) {
+      return [chunk];
+    }
+    return [
+      {
+        originKind: "injected_user_shaped" as const,
+        text: chunk.text,
+        displayPolicy: "collapse" as const,
+      },
+    ];
+  });
+}
+
+/** Detect shared system-injected patterns that are structurally role: user. */
 export function isSyntheticUserShapedText(text: string): boolean {
   for (const prefix of SYNTHETIC_USER_SHAPED_PREFIXES) {
     if (text.startsWith(prefix)) return true;

@@ -22,6 +22,7 @@ test("platform adapter registry provides exactly one adapter per supported platf
     "factory_droid",
     "gemini",
     "grok",
+    "grok_bot",
     "kimi",
     "lobechat",
     "openclaw",
@@ -67,7 +68,7 @@ test("platform adapter registry distinguishes stable and experimental support ti
     "openclaw",
     "opencode",
   ]);
-  assert.deepEqual(experimentalPlatforms, ["accio", "cursor_agent", "grok", "kimi", "lobechat", "zcode"]);
+  assert.deepEqual(experimentalPlatforms, ["accio", "cursor_agent", "grok", "grok_bot", "kimi", "lobechat", "zcode"]);
 });
 
 test("stable support tier is backed by documented real-world validation assets", async () => {

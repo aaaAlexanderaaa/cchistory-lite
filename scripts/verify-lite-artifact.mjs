@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile as execFileCallback } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -108,6 +108,7 @@ async function main() {
     }
     await assertSelectiveLatest(cli, installedRoot, tempRoot);
     await assertAgentEvidence(cli, tempRoot);
+    await assertGrokBotQuery(cli, tempRoot);
     const requestPath = path.join(tempRoot, 'query.json');
     await writeFile(requestPath, `${JSON.stringify({
       schema: 'cchistory-lite-query/v2',
@@ -248,6 +249,7 @@ async function assertPublishableNpmPackage(installedRoot, tempRoot, expectedVers
   if (JSON.parse(sql.stdout).operations?.[0]?.result?.shown !== 1) throw new Error('Prefix-installed SQL execution failed.');
   await assertSelectiveLatest(npmCli, path.join(npmPrefix, 'node_modules', '@cchistory', 'lite'), tempRoot);
   await assertAgentEvidence(npmCli, tempRoot);
+  await assertGrokBotQuery(npmCli, tempRoot);
 
   const launchedTui = await execFile(
     npmCli,
@@ -257,6 +259,29 @@ async function assertPublishableNpmPackage(installedRoot, tempRoot, expectedVers
   if (!/CC History Lite TUI/u.test(launchedTui.stdout) || !/Ephemeral live snapshot/u.test(launchedTui.stdout)) {
     throw new Error(`Prefix-installed CLI could not launch the sibling TUI: ${launchedTui.stdout}`);
   }
+}
+
+async function assertGrokBotQuery(cli, tempRoot) {
+  const sourceRoot = await mkdtemp(path.join(tempRoot, 'grok-bot-'));
+  try {
+    await cp(path.join(repoRoot, 'mock_data', 'fixtures', 'grok-bot'), sourceRoot, { recursive: true });
+    const fixture = JSON.parse(await readFile(path.join(sourceRoot, 'review-cases.json'), 'utf8'));
+    const token = fixture.masking.token_prefix + fixture.masking.token_character.repeat(fixture.masking.token_length);
+    const padding = fixture.masking.cut_padding_character.repeat(fixture.masking.cut_padding_length);
+    await writeFile(path.join(sourceRoot, 'agents', fixture.agent_id, 'profile.json'),
+      JSON.stringify({ name: `${padding} ${token} ${fixture.masking.name}` }));
+    const query = await execFile(cli, ['query', '--sql', 'SELECT id, title, turn_count FROM sessions LIMIT 10',
+      '--source', 'grok_bot', '--source-root', `grok_bot=${sourceRoot}`, '--safe', '--no-dir'],
+    { cwd: tempRoot, maxBuffer: 8 * 1024 * 1024 });
+    const rows = JSON.parse(query.stdout).operations?.[0]?.result?.rows;
+    const fallback = rows?.find(row => row.id === `sess:grok_bot:${fixture.agent_id}`);
+    if (rows?.length !== 5 || new Set(rows.map(row => row.id)).size !== 5
+        || !fallback?.title?.startsWith(padding) || !fallback.title.includes('Fixture')
+        || fallback.turn_count !== 1 || query.stdout.includes(fixture.masking.token_prefix)) {
+      throw new Error('Installed Grok Bot store/JSONL projection or canonical title masking failed.');
+    }
+    console.log('[cchistory] installed Grok Bot SQL reads store/JSONL fixtures with canonical title masking');
+  } finally { await rm(sourceRoot, { recursive: true, force: true }); }
 }
 
 // Compare actual launchers against bare Node in the same environment. An exit

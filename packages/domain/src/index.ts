@@ -20,6 +20,7 @@ export type SourcePlatform =
   | "kimi"
   | "cursor_agent"
   | "grok"
+  | "grok_bot"
   | "other";
 
 export type LinkState = "committed" | "candidate" | "unlinked";

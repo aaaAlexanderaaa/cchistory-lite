@@ -1,0 +1,2 @@
+{"role":"user","message":{"content":[{"type":"text","text":"Fallback jsonl after empty store."}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Using jsonl fallback."}]}}

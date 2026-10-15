@@ -79,9 +79,20 @@ Each adapter is referenced by its slot id.
 | `zcode` | ZCode | `~/.zcode` | experimental |
 | `kimi` | Kimi Code | `~/.kimi-code` | experimental |
 | `grok` | Grok CLI | `~/.grok` | experimental |
+| `grok_bot` | Grok Bot | `~/agent-data`, `~/sand-data` | experimental |
 
 `cursor` still merges Agent CLI transcripts with composer/chat-store evidence
 when they share a native agent id.
+`grok_bot` reads sidebar-agent `store.db` first. After a successful parse finds
+conversation evidence, it skips that agent's duplicate `agent-transcripts` JSONL
+within the current scan. Empty, unreadable and non-conversation-only stores allow
+the JSONL fallback; malformed records and unsupported message roles retain evidence
+and parse diagnostics. Each scan reads the current SQLite state, including WAL
+commits. Titles prefer
+`profile.json`, then `SAND_AGENT_PROFILE_UPDATE`, then the first real user message;
+canonical titles apply the shared masking rules before display truncation.
+Grok Bot hidden-prompt markers and native title tags are interpreted only for this source.
+
 `cursor_agent` is opt-in (`--source cursor_agent`) so a default scan does not
 emit those transcripts twice.
 

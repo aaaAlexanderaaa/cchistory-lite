@@ -1,0 +1,4 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\n[SAND_HIDDEN_PROMPT][first run] Ignore this cue.\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Ready."}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\n[t0u]\nSummarize the feeds layout.\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Feeds under /workspace/feeds."}]}}

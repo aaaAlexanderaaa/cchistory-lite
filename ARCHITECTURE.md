@@ -50,12 +50,19 @@ This layer decides *what history means*. It must never learn where history is st
 
 ### `@cchistory/source-adapters`
 
-The 16 adapters, plus the probe that drives them. Each adapter knows one tool's on-disk layout
+The 17 adapters, plus the probe that drives them. Each adapter knows one tool's on-disk layout
 and normalizes it into parsed session metadata, atoms, edges, and provenance. Runtime explicitly
 supplies the canonical interpreter when calling `runSourceProbe`; the collector invokes it after
 native reconciliation and assembles its results with source diagnostics into a probe payload.
 There is no adapter-owned projection implementation or default interpreter, and neither sibling
 package imports the other. It never materializes a snapshot or imports the runtime.
+
+Grok Bot inventories both SQLite stores and JSONL without opening a database during
+discovery. The normal budgeted parse establishes store preference within one attempt;
+a store with conversation atoms suppresses its duplicate JSONL before capture. An
+empty, unreadable or non-conversation-only store allows JSONL, while unexpected store
+records and parse losses remain in the payload. There is no process-wide store-content
+cache, so the next read observes SQLite WAL changes through its read-only transaction.
 
 The collector still hydrates native draft metadata, performs source-specific cross-file
 reconciliation, and decodes question schemas. The interpretation boundary constructs semantic

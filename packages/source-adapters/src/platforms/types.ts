@@ -25,7 +25,8 @@ export type SupportedSourcePlatform =
   | "zcode"
   | "kimi"
   | "cursor_agent"
-  | "grok";
+  | "grok"
+  | "grok_bot";
 
 export interface DefaultSourceResolutionOptions {
   homeDir?: string;
@@ -73,6 +74,7 @@ export function isSupportedSourcePlatform(platform: SourcePlatform): platform is
     platform === "zcode" ||
     platform === "kimi" ||
     platform === "cursor_agent" ||
-    platform === "grok"
+    platform === "grok" ||
+    platform === "grok_bot"
   );
 }

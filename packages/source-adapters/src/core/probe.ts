@@ -22,7 +22,7 @@ import type {
   SourceFormatProfile,
   SourcePlatform,
 } from "@cchistory/domain";
-import { deriveHostId, deriveSourceInstanceId, selectTailBlob } from "@cchistory/domain";
+import { deriveHostId, deriveSourceInstanceId, isConversationActivityAtom, selectTailBlob } from "@cchistory/domain";
 import {
   nowIso,
   stableId,
@@ -46,6 +46,7 @@ import { extractAntigravityLiveSeeds } from "../platforms/antigravity/live.js";
 import { isAntigravityBrainSourceFile, isAntigravityHistoryIndexFile } from "../platforms/antigravity.js";
 import { extractCursorChatStoreSeed, clearCursorWorkspaceIndexCache } from "../platforms/cursor/runtime.js";
 import { getPlatformAdapter } from "../platforms/registry.js";
+import { isGrokBotStorePath, isGrokBotTranscriptPath, parseGrokBotAgentIdFromPath } from "../platforms/grok-bot.js";
 import {
   deriveSourceFileLogicalSessionKey,
   inspectSourceFileLogicalSessionMetadata,
@@ -560,8 +561,22 @@ async function* streamCollectedFileInputs(
     elapsed_ms: Date.now() - listFilesStartedAt,
   });
 
+  const preferredGrokBotAgents = new Set<string>();
   for (const [fileIndex, filePath] of files.entries()) {
-    yield* streamSingleFileInputs(
+    const grokBotAgentId = source.platform === "grok_bot" ? parseGrokBotAgentIdFromPath(filePath) : undefined;
+    if (grokBotAgentId && isGrokBotTranscriptPath(filePath) && preferredGrokBotAgents.has(grokBotAgentId)) {
+      emitProbeProgress(options, source, {
+        stage: "file_skip",
+        message: `Skipped duplicate Grok Bot transcript after parsing store conversation: ${filePath}`,
+        file_path: filePath,
+        file_index: fileIndex + 1,
+        file_count: files.length,
+      });
+      yield { originPath: filePath, sessionInputs: [], orphanBlobs: [], lossAudits: [],
+        trustedBytesByBlobId: new Map(), skipReason: "superseded" };
+      continue;
+    }
+    for await (const collected of streamSingleFileInputs(
       source,
       host,
       sourceFormatProfile,
@@ -574,7 +589,12 @@ async function* streamCollectedFileInputs(
       filePath,
       fileIndex,
       files.length,
-    );
+    )) {
+      if (grokBotAgentId && isGrokBotStorePath(filePath) && collected.sessionInputs.some(hasGrokBotStoreConversation)) {
+        preferredGrokBotAgents.add(grokBotAgentId);
+      }
+      yield collected;
+    }
   }
 }
 
@@ -1011,6 +1031,7 @@ function isMultiSessionContainer(platform: SourcePlatform, filePath: string): bo
     (platform === "openclaw" && isOpenClawCronRunFile(filePath)) ||
     platform === "zcode" ||
     platform === "lobechat" ||
+    (platform === "grok_bot" && basename === "store.db") ||
     ((platform === "cursor" || platform === "antigravity") &&
       (basename === "state.vscdb" || basename === "store.db"))
   );
@@ -1020,6 +1041,9 @@ function isPathBackedSqliteSourceFile(platform: SourcePlatform, filePath: string
   const basename = path.basename(filePath);
   if (platform === "zcode") {
     return basename === "db.sqlite";
+  }
+  if (platform === "grok_bot") {
+    return basename === "store.db";
   }
   return (
     (platform === "cursor" || platform === "antigravity") &&
@@ -1145,7 +1169,11 @@ function mergeSessionBuildInput(
       incomingHasComposer &&
       currentHasTranscript &&
       !currentHasComposer;
-    if (preferIncomingComposerMeta) {
+    const preferIncomingGrokBotMeta = current.draft.source_platform === "grok_bot" &&
+      (hasGrokBotStoreConversation(sessionInput) ||
+        (!hasGrokBotStoreConversation(current) && sessionInput.blobs.some(blob => isGrokBotTranscriptPath(blob.origin_path))));
+    const preferIncomingMeta = preferIncomingComposerMeta || preferIncomingGrokBotMeta;
+    if (preferIncomingMeta) {
       current.draft.title = sessionInput.draft.title ?? current.draft.title;
       current.draft.canonical_title = sessionInput.draft.canonical_title ?? current.draft.canonical_title;
       current.draft.working_directory = sessionInput.draft.working_directory ?? current.draft.working_directory;
@@ -1156,7 +1184,7 @@ function mergeSessionBuildInput(
     } else if (current.draft.title === sessionInput.draft.title) {
       current.draft.canonical_title = current.draft.canonical_title ?? sessionInput.draft.canonical_title;
     }
-    if (!preferIncomingComposerMeta) {
+    if (!preferIncomingMeta) {
       current.draft.working_directory = current.draft.working_directory ?? sessionInput.draft.working_directory;
       current.draft.model = current.draft.model ?? sessionInput.draft.model;
     }
@@ -1169,6 +1197,7 @@ function mergeSessionBuildInput(
     current.draft.created_at = minIso(current.draft.created_at, sessionInput.draft.created_at);
     current.draft.updated_at = maxIso(current.draft.updated_at, sessionInput.draft.updated_at);
     suppressOverlappingCursorConversation(current);
+    suppressOverlappingGrokBotConversation(current);
     return;
   }
 
@@ -1234,6 +1263,43 @@ function suppressOverlappingCursorConversation(session: SessionBuildInput): void
       dropCursorConversationRecords(session, nonStoreBlobIds, { keepMeta: true });
     }
   }
+}
+
+
+function hasGrokBotStoreConversation(session: SessionBuildInput): boolean {
+  if (session.draft.source_platform !== "grok_bot") return false;
+  const storeBlobIds = new Set(session.blobs.filter(blob => isGrokBotStorePath(blob.origin_path)).map(blob => blob.id));
+  const storeRecordIds = new Set(session.records.filter(record => storeBlobIds.has(record.blob_id)).map(record => record.id));
+  const storeFragmentIds = new Set(session.fragments.filter(fragment => storeRecordIds.has(fragment.record_id)).map(fragment => fragment.id));
+  return session.atoms.some(atom => isConversationActivityAtom(atom) &&
+    atom.fragment_refs.some(ref => storeFragmentIds.has(ref)));
+}
+
+function suppressOverlappingGrokBotConversation(session: SessionBuildInput): void {
+  if (session.draft.source_platform !== "grok_bot") {
+    return;
+  }
+  const storeBlobIds = new Set(
+    session.blobs
+      .filter((blob) => {
+        const normalized = blob.origin_path.replace(/\\/g, "/");
+        return path.basename(blob.origin_path) === "store.db" && normalized.includes("/agents/");
+      })
+      .map((blob) => blob.id),
+  );
+  const transcriptBlobIds = new Set(
+    session.blobs
+      .filter((blob) => {
+        const normalized = blob.origin_path.replace(/\\/g, "/");
+        return normalized.includes("/agent-transcripts/") && normalized.endsWith(".jsonl");
+      })
+      .map((blob) => blob.id),
+  );
+  if (storeBlobIds.size === 0 || transcriptBlobIds.size === 0 || !hasGrokBotStoreConversation(session)) {
+    return;
+  }
+  // Prefer store.db when both shapes are present for the same agent session.
+  dropCursorConversationRecords(session, transcriptBlobIds, { keepMeta: false });
 }
 
 function collapseOverlappingCursorComposerConversations(session: SessionBuildInput): void {

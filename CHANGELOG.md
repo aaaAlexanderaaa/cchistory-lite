@@ -7,6 +7,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Experimental `grok_bot` source for Grok Bot sidebar agents (`~/agent-data` /
+  `~/sand-data`), with SQLite conversation evidence preferred over duplicate JSONL.
+- Grok Bot titles prefer `profile.json`, then `SAND_AGENT_PROFILE_UPDATE`, then
+  the first real user message; hidden prompts remain injected evidence.
+
+### Fixed
+
+- Grok Bot canonical titles use shared masking before truncation for user, profile
+  and recovered names. Fully masked titles do not fall back to raw evidence.
+- Empty, malformed and non-conversation-only Grok Bot stores allow JSONL fallback
+  while retaining unexpected evidence and parse diagnostics. Store preference is
+  based on the current parse, so WAL inserts/deletes are visible after refresh.
+- Grok Bot hidden-prompt and title cleanup rules apply only to that source;
+  other sources preserve literal markers, turn tags and timestamp text.
+- Grok Bot store messages with missing or unsupported roles retain unknown
+  evidence and diagnostics without suppressing JSONL fallback.
+- Opaque Grok Bot `conversation-blobs.db` caches are excluded from companion capture.
+- Grok Bot fixtures participate in layout and sanitization validation.
+
 ## [0.7.0] - 2026-10-14
 
 ### Added

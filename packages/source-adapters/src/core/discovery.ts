@@ -192,6 +192,14 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     description: "Grok CLI sessions under ~/.grok/sessions/<encoded-cwd>/<session-id>/chat_history.jsonl, with summary.json metadata and updates/signals companions retained as evidence. Subagent sibling sessions are linked through parent/subagents/*/meta.json and summary session_kind.",
     capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
   },
+  grok_bot: {
+    id: "grok_bot:agent-store:v1",
+    family: "local_coding_agent",
+    platform: "grok_bot",
+    parser_version: "grok-bot-parser@2026-10-15.1",
+    description: "Grok Bot sidebar agents under ~/agent-data or ~/sand-data: agents/<id>/store.db transcript_entries are preferred after parsing conversation evidence; empty, unreadable or non-conversation-only stores allow agent-transcripts/<id>/*.jsonl fallback. Titles prefer profile name, then SAND_AGENT_PROFILE_UPDATE, then first real user text, with canonical masking.",
+    capabilities: ["session_meta", "title_signal", ...COMMON_PARSER_CAPABILITIES],
+  },
 };
 
 const DEFAULT_SOURCE_SPECS: ReadonlyArray<
@@ -292,6 +300,12 @@ const DEFAULT_SOURCE_SPECS: ReadonlyArray<
     family: "local_coding_agent",
     platform: "grok",
     display_name: "Grok CLI",
+  },
+  {
+    slot_id: "grok_bot",
+    family: "local_coding_agent",
+    platform: "grok_bot",
+    display_name: "Grok Bot",
   },
 ];
 

@@ -1,0 +1,2 @@
+{"role":"user","message":{"content":[{"type":"text","text":"Jsonl-only session: list default roots."}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Defaults are ~/agent-data and ~/sand-data."}]}}

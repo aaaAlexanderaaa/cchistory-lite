@@ -1,6 +1,125 @@
 # Project work
 
-## Current work — 2026-10-14
+## Current work — 2026-10-15 Grok Bot review fixes
+
+Status: complete. The experimental source and the reviewed repairs are integrated
+into `main` following the owner's merge authorization. The recorded merge blockers
+below are closed for the checked fixture cases. Repair commit `3c2993b` is on
+`codex/grok-bot-source-fixes`, based on `origin/feat/grok-bot-source-0.7` at
+`ae9a734`. The authorization includes merging and pushing; no release is part of
+this work.
+
+Preserve the experimental source's store-first behavior, source identity, read-only
+access and canonical projection contract. Inventory both native shapes without
+opening SQLite during discovery. Prefer a store only after its normal budgeted
+parse yields conversation evidence, then skip the corresponding JSONL within that
+attempt. Retain non-message and malformed store evidence, expose parse losses, and
+use JSONL when the store cannot supply conversation evidence. Remove the process-wide
+mtime cache so WAL changes are observed on the next scan. Apply the shared canonical
+masking rules to the final selected title, including profile and recovered names,
+before truncation.
+
+Acceptance: regression fixtures for title masking, event/malformed/unsupported-only
+stores, corrupt databases, both native shapes and WAL insert/delete refreshes;
+zero runtime projection issues; Grok Bot fixture layout/content validation; build,
+package/boundary tests, governance and standalone/local-npm artifact checks. Keep
+the eight pre-existing missing Gemini scenario paths visible. Verification uses
+sanitized fixtures only and makes no native-capacity claim.
+
+Pre-fix evidence at `ae9a734`: all 686 package tests passed, but fixture-derived
+event-only/malformed-only stores and a WAL delete returned zero sessions and no
+loss audits despite valid JSONL. A synthetic maskable token appeared in an actual
+CLI SQL title while the turn text was masked. Fixture validation added 12 layout
+failures beyond the eight existing Gemini omissions. The repair adds regression
+coverage at the adapter and actual reader/SQL projection boundaries; valid stores
+still avoid reading their duplicate JSONL, rather than decoding both shapes on
+every ordinary scan.
+
+Initial repair verification, including the title-cut follow-up: `build:lite`, **691 package tests** (domain 103, canonical 40,
+adapters 270, runtime 122, CLI 69, TUI 87) and dependency boundaries passed.
+Governance passed **13 tests / 5 rules / 122 rule-file matches**. Standalone
+extraction and local npm installation passed the artifact verifier, including a
+Grok Bot SQL read over both native shapes with a synthetic maskable profile name
+across the display-cut boundary.
+All **175 fixture files**, including 13 Grok Bot files, passed layout and content
+sanitization. Full `mock-data:validate` still reports exactly the eight pre-existing
+missing Gemini scenario paths and no new findings. Whitespace checks passed.
+The WAL regression observed inserts and deletes through actual reader refreshes
+with unchanged main-file mtime; all fallback/SQL cases had zero projection issues.
+Temporary test roots, package installs and the isolated npm cache were removed.
+Changes are uncommitted and unpushed; no native-history or release claim is made.
+
+The initial title regression set passed, but a further boundary check found that
+masking an already truncated title left a short token fragment unrecognized.
+The final repair applies the shared masking
+function before truncation, matching the existing title-hydration discipline;
+user, profile and recovered-name regressions cover the cut in both native shapes.
+An empty canonical title stays empty instead of falling back to raw evidence.
+
+Merge-readiness reassessment — 2026-10-15:
+
+- P1: Grok Bot's `[SAND_HIDDEN_PROMPT]` prefix was added to the shared synthetic
+  classifier without a platform boundary. The main branch's splitting function
+  classifies the same literal input as authored. In the candidate's actual Codex
+  fixture read, adding that prefix to the otherwise unchanged user request yields
+  zero turns and zero authored-search hits, with no loss audits or projection issues;
+  the ordinary control yields one turn and one hit. Shared title normalization also
+  strips literal `[t123]` from a Codex title. Scope Grok-specific injection and title
+  cleanup to the corresponding native source and add non-Grok countercases.
+- P2: A Grok store message with a missing or unrecognized role is interpreted as
+  assistant evidence. It then qualifies for store preference and suppresses valid
+  JSONL. Fixture-derived missing-role and unknown-role cases each yielded zero turns,
+  zero diagnostics and a skipped fallback. Keep unsupported role evidence with a
+  diagnostic and allow fallback instead of treating an inferred actor as successful
+  conversation parsing.
+
+These are bounded sanitized counterexamples, not observations of native failure
+frequency. Reused prior build/package/governance/artifact results still apply to the
+unchanged production code, but the 691-test suite does not cover these cases. The
+eight existing Gemini omissions remain separate from these merge blockers. A fresh
+fetch confirmed `origin/main` at `d8725e8` and the Grok branch at `ae9a734`; all repair
+changes are still local and uncommitted. This assessment changed only this task
+record, without merging, committing, pushing or implementing the new findings.
+
+Follow-up repair authorized by the owner: scope hidden-cue classification to Grok
+Bot, preserving separate envelope parts until classification before joining real
+authored text. Keep literal Grok marker and
+timestamp text in shared title normalization; the Grok Bot title helper remains
+responsible for its native cleanup. Preserve store messages with unsupported or
+missing roles as unknown evidence with a parse-loss diagnostic, so they cannot
+supersede usable JSONL. A genuine assistant-only store must still be preferred,
+with its message retained under `turn_id: null` and no invented user turn.
+Regression acceptance includes literal marker titles/search/evidence through the
+actual Codex and Claude runtime, hidden cues in multiple text envelopes, retained
+unsupported role payloads and the existing projection and artifact gates.
+
+Follow-up result: the new source-isolation, shared-title and unsupported-role
+regressions each failed against the earlier repair. They now pass, including
+missing, unknown, empty and non-string roles with the original payload retained.
+A mixed-envelope countercase also showed that joining hidden and real queries
+before classification discarded the real request. Both envelope orders now keep
+the real query; ordinary multiple queries retain their existing joined text.
+The genuine assistant-only store remains preferred, with no invented turn.
+
+Final verification after the follow-up: `build:lite`, **696 package tests**
+(domain 103, canonical 40, adapters 272, runtime 125, CLI 69, TUI 87), dependency
+boundaries and governance (**13 tests / 5 rules / 122 rule-file matches**) passed.
+Fresh standalone extraction and local npm installation passed the artifact verifier,
+including both installed Grok Bot SQL checks. Runtime cases assert zero projection
+issues, preserved Codex/Claude literal-marker titles, search hits and message
+identity, safe fallback and assistant-only evidence. All **175 fixture files**
+(13 Grok Bot files) pass layout and sanitization; full fixture validation still
+reports exactly the eight pre-existing missing Gemini paths. Whitespace checks
+passed. Temporary fixture roots, installs and the isolated npm cache were removed.
+Integration — 2026-10-15: combine repair commit `3c2993b` with `main` at `d8725e8`.
+The only merge conflict was this task record; the complete 0.7.0 release-verification
+record from `main` is retained below. The integrated tree matches the tested repair
+outside this record, so the build, package, governance and artifact results above
+remain applicable. Remote integration is confirmed through Git and the push-triggered
+CI run. Fixture results do not establish native completeness or an independent
+review, and no release is performed.
+
+## Previous work — 2026-10-14
 
 Status: complete and published as **0.7.0**. The owner authorized commit, push, a new tag and
 npm publication, then manually started the existing Release workflow. Implementation commit
