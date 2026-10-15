@@ -95,7 +95,7 @@ export interface SourceProbeFileChunk {
   trusted_bytes_by_blob_id: ReadonlyMap<string, Buffer>;
 }
 
-export type SourceProbeFileSkipReason = "unchanged" | "metadata_only" | "oversized" | "capture_failed";
+export type SourceProbeFileSkipReason = "unchanged" | "metadata_only" | "oversized" | "capture_failed" | "superseded";
 
 export type SourceProbeEvent =
   | { kind: "source_start"; source_id: string; source: SourceStatus }

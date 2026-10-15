@@ -1,6 +1,6 @@
 import { runSourceProbe } from "../probe-reference.test.js";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +10,7 @@ import {
   listSourceFiles,
 } from "../index.js";
 import { splitUserText } from "../core/user-text.js";
+import { normalizeSessionTitleCandidate } from "../core/atomizer.js";
 import { createSourceDefinition, getRepoMockDataRoot } from "../test-helpers.js";
 import {
   grokBotAdapter,
@@ -17,7 +18,6 @@ import {
   isGrokBotTranscriptPath,
   listGrokBotCompanionEvidencePaths,
   parseGrokBotAgentIdFromPath,
-  shouldMatchGrokBotTranscript,
 } from "./grok-bot.js";
 import {
   cleanGrokBotUserTitleText,
@@ -34,6 +34,22 @@ const EMPTY_STORE_JSONL = "dddddddd-eeee-4fff-8111-222222222222";
 const DELETED_AGENT = "eeeeeeee-ffff-4111-8222-333333333333";
 const MISSING_PROFILE = "ffffffff-1111-4222-8333-444444444444";
 const fixtureRoot = path.join(getRepoMockDataRoot(), "fixtures/grok-bot");
+const reviewCases = JSON.parse(await readFile(path.join(fixtureRoot, "review-cases.json"), "utf8")) as {
+  agent_id: string;
+  masking: { token_prefix: string; token_character: string; token_length: number; cut_padding_character: string;
+    cut_padding_length: number; name: string; prompt: string; reply: string; timestamp_ms: number };
+  source_isolation: { literal_prompts: string[]; hidden_prompt_shapes: string[]; mixed_prompts: string[]; ordinary_multi_query: string };
+  fallback_cases: Array<{ name: string; entries?: unknown[]; raw_entry?: string; database_text?: string;
+    missing_table?: boolean; diagnostic?: string; retained_text?: string; retained_item_type?: string }>;
+};
+
+async function copyAgentFixture(root: string, agentId = reviewCases.agent_id): Promise<string> {
+  for (const directory of ["agents", "agent-transcripts"]) {
+    await mkdir(path.join(root, directory), { recursive: true });
+    await cp(path.join(fixtureRoot, directory, agentId), path.join(root, directory, agentId), { recursive: true });
+  }
+  return path.join(root, "agents", agentId, "store.db");
+}
 
 function seedStore(dbPath: string, messages: Array<Record<string, unknown>>): void {
   const db = new DatabaseSync(dbPath);
@@ -117,6 +133,28 @@ test("[grok_bot] SAND_HIDDEN_PROMPT user_query chunks are injected, not authored
   );
 });
 
+test("[grok_bot] hidden prompt classification is scoped to Grok Bot across text envelopes", () => {
+  for (const text of reviewCases.source_isolation.hidden_prompt_shapes) {
+    for (const platform of [undefined, "codex", "claude_code", "cursor", "cursor_agent", "grok", "grok_bot"] as const) {
+      const authored = splitUserText(text, { platform }).filter(chunk => chunk.originKind === "user_authored");
+      assert.equal(authored.some(chunk => chunk.text.includes("[SAND_HIDDEN_PROMPT]")), platform !== "grok_bot", `${platform}: ${text}`);
+    }
+  }
+  for (const text of reviewCases.source_isolation.mixed_prompts) {
+    const authored = splitUserText(text, { platform: "grok_bot" }).filter(chunk => chunk.originKind === "user_authored");
+    assert.deepEqual(authored.map(chunk => chunk.text), [reviewCases.masking.prompt]);
+  }
+  const ordinary = splitUserText(reviewCases.source_isolation.ordinary_multi_query, { platform: "grok_bot" })
+    .filter(chunk => chunk.originKind === "user_authored");
+  assert.deepEqual(ordinary.map(chunk => chunk.text), [Array(2).fill(reviewCases.masking.prompt).join("\n\n")]);
+});
+
+test("[grok_bot] shared title normalization preserves literal Grok markers", () => {
+  for (const text of reviewCases.source_isolation.literal_prompts) {
+    assert.equal(normalizeSessionTitleCandidate(text), text);
+  }
+});
+
 test("[grok_bot] fixture corpus: store preferred, titles cleaned, empty store skipped", async () => {
   const source = createSourceDefinition("src-grok-bot-fixture", "grok_bot", fixtureRoot);
   const files = await listSourceFiles("grok_bot", fixtureRoot);
@@ -125,15 +163,9 @@ test("[grok_bot] fixture corpus: store preferred, titles cleaned, empty store sk
   assert.ok(files.some((file) => file.endsWith(`${EMPTY_STORE_JSONL}.jsonl`)));
   assert.ok(files.some((file) => file.endsWith(`${DELETED_AGENT}.jsonl`)));
   assert.ok(files.some((file) => file.endsWith(`${MISSING_PROFILE}.jsonl`)));
-  // Overlapping transcript for the store agent must not be matched when store has rows.
+  // Inventory is path-only; preference follows the actual budgeted store parse.
   assert.equal(
     files.some((file) => file.includes(STORE_AGENT) && file.endsWith(".jsonl")),
-    false,
-  );
-  assert.equal(shouldMatchGrokBotTranscript(path.join(fixtureRoot, "agent-transcripts", STORE_AGENT, `${STORE_AGENT}.jsonl`)), false);
-  // Empty store allows jsonl match.
-  assert.equal(
-    shouldMatchGrokBotTranscript(path.join(fixtureRoot, "agent-transcripts", EMPTY_STORE_JSONL, `${EMPTY_STORE_JSONL}.jsonl`)),
     true,
   );
 
@@ -312,16 +344,130 @@ test("[grok_bot] when both shapes exist for one agent, store wins", async () => 
 
     const files = await listSourceFiles("grok_bot", tempRoot);
     assert.ok(files.some((file) => file.endsWith("store.db")));
-    assert.equal(files.some((file) => file.endsWith(".jsonl")), false);
+    assert.equal(files.some((file) => file.endsWith(".jsonl")), true);
 
     const source = createSourceDefinition("src-grok-bot-both", "grok_bot", tempRoot);
-    const [payload] = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources;
+    const events: Array<{ stage: string; file_path?: string }> = [];
+    const [payload] = (await runSourceProbe({ source_ids: [source.id], on_progress: event => events.push(event) }, [source])).sources;
     assert.ok(payload);
     assert.equal(payload.sessions.length, 1);
     assert.equal(payload.turns[0]?.canonical_text, "Preferred store text");
     assert.equal(payload.turns.some((turn) => turn.canonical_text.includes("Duplicate jsonl")), false);
+    assert.ok(events.some(event => event.stage === "file_skip" && event.file_path?.endsWith(".jsonl")));
+    assert.equal(events.some(event => event.stage === "file_capture_done" && event.file_path?.endsWith(".jsonl")), false);
+
+    // Explicit inventories may put JSONL before SQLite. Reconciliation must use
+    // parsed evidence even when raw bodies are not retained.
+    for (const retainRaw of [true, false]) {
+      const [reversed] = (await runSourceProbe({ source_ids: [source.id],
+        source_file_paths: { [source.id]: [...files].reverse() }, retain_raw_records: retainRaw }, [source])).sources;
+      assert.ok(reversed);
+      assert.deepEqual(reversed.turns.map(turn => turn.canonical_text), ["Preferred store text"]);
+    }
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("[grok_bot] unusable stores retain evidence and allow the JSONL conversation", async () => {
+  for (const fixture of reviewCases.fallback_cases) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `cchistory-grok-bot-${fixture.name}-`));
+    try {
+      const storePath = await copyAgentFixture(root);
+      if (fixture.database_text) {
+        await writeFile(storePath, fixture.database_text, "utf8");
+      } else {
+        const db = new DatabaseSync(storePath);
+        try {
+          if (fixture.missing_table) {
+            db.exec("DROP TABLE transcript_entries");
+          } else {
+            const entries = fixture.raw_entry ? [fixture.raw_entry] : fixture.entries!.map(entry => JSON.stringify(entry));
+            const insert = db.prepare("INSERT INTO transcript_entries (seq, id, entry) VALUES (?, ?, ?)");
+            entries.forEach((entry, index) => insert.run(index + 1, `fixture-${index}`, entry));
+          }
+        } finally { db.close(); }
+      }
+      const source = createSourceDefinition("src-grok-bot-fallback", "grok_bot", root);
+      const [payload] = (await runSourceProbe({ safe_mode: true, retain_raw_records: false }, [source])).sources;
+      assert.ok(payload);
+      assert.equal(payload.sessions.length, 1, fixture.name);
+      assert.deepEqual(payload.turns.map(turn => turn.canonical_text), ["Fallback jsonl after empty store."], fixture.name);
+      assert.equal(payload.sessions[0]?.title, "Empty Store With Jsonl", fixture.name);
+      if (fixture.diagnostic) {
+        assert.ok(payload.loss_audits.some(audit => audit.diagnostic_code === fixture.diagnostic), fixture.name);
+      }
+      if (fixture.retained_text) {
+        assert.ok(payload.atoms.some(atom => atom.payload.text === fixture.retained_text), fixture.name);
+      }
+      if (fixture.retained_item_type) {
+        const unknown = payload.fragments.find(fragment => fragment.fragment_kind === "unknown" &&
+          fragment.payload.type === fixture.retained_item_type);
+        assert.ok(unknown, fixture.name);
+        assert.deepEqual(unknown.payload.raw, fixture.entries?.[0], fixture.name);
+      }
+      if (!fixture.database_text && !fixture.missing_table) {
+        assert.ok(payload.records.some(record => record.record_path_or_offset !== "meta" &&
+          payload.blobs.some(blob => blob.id === record.blob_id && blob.origin_path.endsWith("store.db"))), fixture.name);
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test("[grok_bot] canonical masks user, profile and recovered titles in both native shapes", async () => {
+  const fixture = reviewCases.masking;
+  const token = fixture.token_prefix + fixture.token_character.repeat(fixture.token_length);
+  for (const shape of ["store", "jsonl"] as const) {
+    for (const titleSource of ["user", "profile", "profile-update"] as const) {
+      for (const padding of ["", fixture.cut_padding_character.repeat(fixture.cut_padding_length) + " "]) {
+        const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-grok-bot-mask-"));
+        try {
+          const storePath = await copyAgentFixture(root);
+          const agentDir = path.dirname(storePath);
+          await rm(path.join(agentDir, "profile.json"));
+          const entries = [
+            { kind: "message", id: "t0u", role: "user", content: titleSource === "user" ? `${padding}${token} ${fixture.prompt}` : fixture.prompt, timestampMs: fixture.timestamp_ms },
+            { kind: "message", id: "t0a0", role: "assistant", content: fixture.reply, timestampMs: fixture.timestamp_ms + 1000 },
+          ];
+          if (titleSource === "profile") {
+            await writeFile(path.join(agentDir, "profile.json"), JSON.stringify({ name: `${padding}${token} ${fixture.name}` }));
+          } else if (titleSource === "profile-update") {
+            const update = Buffer.from(JSON.stringify({ name: `${padding}${token} ${fixture.name}` })).toString("base64url");
+            entries.unshift({ kind: "message", id: "profile-update", role: "user",
+              content: `[SAND_HIDDEN_PROMPT]<<SAND_AGENT_PROFILE_UPDATE:v1:${update}>>`, timestampMs: fixture.timestamp_ms - 1000 });
+          }
+          if (shape === "store") {
+            const db = new DatabaseSync(storePath);
+            try {
+              const insert = db.prepare("INSERT INTO transcript_entries (seq, id, entry) VALUES (?, ?, ?)");
+              entries.forEach((entry, index) => insert.run(index + 1, entry.id, JSON.stringify(entry)));
+            } finally { db.close(); }
+          } else {
+            await writeFile(path.join(root, "agent-transcripts", reviewCases.agent_id, `${reviewCases.agent_id}.jsonl`),
+              entries.map(entry => JSON.stringify({ role: entry.role, content: entry.content })).join("\n"));
+          }
+          const source = createSourceDefinition("src-grok-bot-mask", "grok_bot", root);
+          const [payload] = (await runSourceProbe({ safe_mode: true }, [source])).sources;
+          assert.ok(payload);
+          assert.ok(payload.sessions[0]?.title?.includes(fixture.token_prefix), `${shape}/${titleSource} raw evidence`);
+          const canonical = payload.sessions[0]?.canonical_title;
+          assert.ok(canonical);
+          assert.equal(canonical.includes(fixture.token_prefix), false, `${shape}/${titleSource} token fragment`);
+          if (padding) {
+            assert.ok(canonical.startsWith(padding.trim()), `${shape}/${titleSource} prefix`);
+            assert.ok(canonical.includes(titleSource === "user" ? "Rotate" : "Fixture"), `${shape}/${titleSource} visible title`);
+          } else {
+            assert.equal(canonical, titleSource === "user" ? fixture.prompt : fixture.name, `${shape}/${titleSource}`);
+          }
+          assert.equal(payload.turns[0]?.canonical_text, titleSource === "user" && padding ? `${padding} ${fixture.prompt}` : fixture.prompt, `${shape}/${titleSource}`);
+          if (titleSource === "profile" && padding) {
+            await writeFile(path.join(agentDir, "profile.json"), JSON.stringify({ name: token }));
+            const [masked] = (await runSourceProbe({ safe_mode: true }, [source])).sources;
+            assert.equal(masked?.sessions[0]?.canonical_title, "", `${shape} fully masked profile`);
+          }
+        } finally { await rm(root, { recursive: true, force: true }); }
+      }
+    }
   }
 });
 

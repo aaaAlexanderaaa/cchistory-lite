@@ -196,8 +196,8 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     id: "grok_bot:agent-store:v1",
     family: "local_coding_agent",
     platform: "grok_bot",
-    parser_version: "grok-bot-parser@2026-10-07.1",
-    description: "Grok Bot sidebar agents under ~/agent-data or ~/sand-data: agents/<id>/store.db transcript_entries (preferred), profile.json for titles, and agent-transcripts/<id>/*.jsonl fallback when the store is empty. Titles prefer profile name, then SAND_AGENT_PROFILE_UPDATE, then first real user text.",
+    parser_version: "grok-bot-parser@2026-10-15.1",
+    description: "Grok Bot sidebar agents under ~/agent-data or ~/sand-data: agents/<id>/store.db transcript_entries are preferred after parsing conversation evidence; empty, unreadable or non-conversation-only stores allow agent-transcripts/<id>/*.jsonl fallback. Titles prefer profile name, then SAND_AGENT_PROFILE_UPDATE, then first real user text, with canonical masking.",
     capabilities: ["session_meta", "title_signal", ...COMMON_PARSER_CAPABILITIES],
   },
 };

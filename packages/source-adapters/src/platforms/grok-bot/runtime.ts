@@ -50,17 +50,12 @@ export function extractGrokBotStoreSeeds(
     return [];
   }
 
-  let db: DatabaseSync;
-  try {
-    db = new DatabaseSync(filePath, { readOnly: true });
-  } catch {
-    return undefined;
-  }
+  const db = new DatabaseSync(filePath, { readOnly: true });
 
   try {
     db.exec("BEGIN");
     if (!tableExists(db, "transcript_entries")) {
-      return undefined;
+      throw new Error("Grok Bot store is missing the transcript_entries table");
     }
 
     const rows = readBudgetedSqliteRows(
@@ -92,7 +87,6 @@ export function extractGrokBotStoreSeeds(
 
     let createdAt: string | undefined;
     let updatedAt: string | undefined;
-    let messageCount = 0;
     let firstUserText: string | undefined;
     let profileUpdateName: string | undefined;
 
@@ -104,12 +98,9 @@ export function extractGrokBotStoreSeeds(
         records.push({
           pointer: `entry:${entryId}`,
           observedAt: helpers.nowIso(),
-          rawJson: JSON.stringify({
-            id: entryId,
-            role: "system",
-            content: [{ type: "text", text: rawEntry ?? "", synthetic: true }],
-            grok_bot: { unparseable_entry: true, seq: helpers.asNumber(row.seq) },
-          }),
+          // Keep the original value so the ordinary parser retains unknown
+          // evidence and emits its normal JSON/non-object loss diagnostic.
+          rawJson: rawEntry ?? "null",
         });
         continue;
       }
@@ -121,11 +112,13 @@ export function extractGrokBotStoreSeeds(
       updatedAt = maxIso(updatedAt, observedAt) ?? observedAt;
 
       if (kind === "message") {
-        const role = helpers.asString(parsed.role) ?? "assistant";
-        const content = normalizeMessageContent(parsed.content, helpers);
-        if (content.length === 0) {
-          continue;
-        }
+        const role = helpers.asString(parsed.role);
+        const supportedRole = role === "user" || role === "assistant" || role === "system" ||
+          role === "developer" || role === "tool";
+        // An inferred actor must not make an unusable store supersede JSONL.
+        // Unknown content retains the complete native entry and a parse loss.
+        const content = supportedRole ? normalizeMessageContent(parsed.content, helpers)
+          : [{ type: "grok_bot_unsupported_role", raw: parsed }];
         const plainText = contentText(content, helpers);
         if (!profileUpdateName) {
           profileUpdateName = extractGrokBotProfileUpdateName(plainText);
@@ -133,15 +126,14 @@ export function extractGrokBotStoreSeeds(
         if (role === "user" && !firstUserText && plainText && !isGrokBotHiddenPromptText(plainText)) {
           firstUserText = plainText;
         }
-        messageCount += 1;
         records.push({
           pointer: `message:${entryId}`,
           observedAt,
           rawJson: JSON.stringify({
             id: entryId,
-            role,
+            role: supportedRole ? role : "system",
             timestamp: observedAt,
-            content,
+            content: content.length > 0 ? content : [{ type: "grok_bot_empty_message", raw: parsed }],
             grok_bot: {
               kind,
               seq: helpers.asNumber(row.seq),
@@ -165,13 +157,13 @@ export function extractGrokBotStoreSeeds(
           id: entryId,
           role: "system",
           timestamp: observedAt,
-          content: [
+          content: ["event", "send-message", "user-attachment"].includes(kind) ? [
             {
               type: "text",
               text: opaqueText,
               synthetic: true,
             },
-          ],
+          ] : [{ type: "grok_bot_unknown_entry", raw: parsed }],
           grok_bot: {
             kind,
             seq: helpers.asNumber(row.seq),
@@ -181,7 +173,7 @@ export function extractGrokBotStoreSeeds(
       });
     }
 
-    if (messageCount === 0) {
+    if (records.length === 1) {
       return [];
     }
 
@@ -273,7 +265,11 @@ function normalizeMessageContent(
     return [{ type: "text", text: content }];
   }
   if (Array.isArray(content)) {
-    return content.filter((entry): entry is Record<string, unknown> => helpers.isObject(entry));
+    return content.map((entry) => helpers.isObject(entry)
+      ? entry
+      : typeof entry === "string" && entry.trim()
+        ? { type: "text", text: entry }
+        : { type: "grok_bot_unsupported_content", raw: entry });
   }
   if (helpers.isObject(content)) {
     const text = helpers.asString(content.text) ?? helpers.asString(content.content);

@@ -1,0 +1,170 @@
+{
+  "agent_id": "dddddddd-eeee-4fff-8111-222222222222",
+  "masking": {
+    "token_prefix": "sk-",
+    "token_character": "A",
+    "token_length": 24,
+    "cut_padding_character": "x",
+    "cut_padding_length": 60,
+    "name": "Fixture Bot",
+    "prompt": "Rotate the fixture credential.",
+    "reply": "The fixture credential was rotated.",
+    "timestamp_ms": 1791367200000
+  },
+  "fallback_cases": [
+    {
+      "name": "event-only",
+      "entries": [
+        {
+          "kind": "event",
+          "id": "fixture-event",
+          "event": {
+            "type": "fixture-event"
+          },
+          "timestampMs": 1791367200000
+        }
+      ],
+      "retained_text": "[event] fixture-event"
+    },
+    {
+      "name": "malformed-only",
+      "raw_entry": "{not-json",
+      "diagnostic": "record_json_parse_failed"
+    },
+    {
+      "name": "non-object-only",
+      "entries": [
+        [
+          "fixture non-object entry"
+        ]
+      ],
+      "diagnostic": "record_not_object"
+    },
+    {
+      "name": "empty-message-only",
+      "entries": [
+        {
+          "kind": "message",
+          "id": "fixture-empty",
+          "role": "user",
+          "content": [],
+          "timestampMs": 1791367200000
+        }
+      ],
+      "diagnostic": "grok_bot_unsupported_content_item"
+    },
+    {
+      "name": "unsupported-content-only",
+      "entries": [
+        {
+          "kind": "message",
+          "id": "fixture-unsupported",
+          "role": "assistant",
+          "content": [
+            {
+              "type": "fixture-unknown",
+              "value": "unrecognized fixture evidence"
+            }
+          ],
+          "timestampMs": 1791367200000
+        }
+      ],
+      "diagnostic": "grok_bot_unsupported_content_item"
+    },
+    {
+      "name": "unknown-kind-only",
+      "entries": [
+        {
+          "kind": "fixture-future-kind",
+          "id": "fixture-unknown",
+          "value": "unrecognized fixture entry",
+          "timestampMs": 1791367200000
+        }
+      ],
+      "diagnostic": "grok_bot_unsupported_content_item"
+    },
+    {
+      "name": "corrupt-database",
+      "database_text": "not-a-sqlite-database",
+      "diagnostic": "blob_processing_failed"
+    },
+    {
+      "name": "missing-transcript-table",
+      "missing_table": true,
+      "diagnostic": "blob_processing_failed"
+    },
+    {
+      "name": "missing-role",
+      "entries": [
+        {
+          "kind": "message",
+          "id": "fixture-missing-role",
+          "content": "Rotate the fixture credential.",
+          "timestampMs": 1791367200000
+        }
+      ],
+      "diagnostic": "grok_bot_unsupported_content_item",
+      "retained_item_type": "grok_bot_unsupported_role"
+    },
+    {
+      "name": "unknown-role",
+      "entries": [
+        {
+          "kind": "message",
+          "id": "fixture-unknown-role",
+          "content": "Rotate the fixture credential.",
+          "timestampMs": 1791367200000,
+          "role": "fixture-unknown-role"
+        }
+      ],
+      "diagnostic": "grok_bot_unsupported_content_item",
+      "retained_item_type": "grok_bot_unsupported_role"
+    },
+    {
+      "name": "empty-role",
+      "entries": [
+        {
+          "kind": "message",
+          "id": "fixture-empty-role",
+          "content": "Rotate the fixture credential.",
+          "timestampMs": 1791367200000,
+          "role": ""
+        }
+      ],
+      "diagnostic": "grok_bot_unsupported_content_item",
+      "retained_item_type": "grok_bot_unsupported_role"
+    },
+    {
+      "name": "non-string-role",
+      "entries": [
+        {
+          "kind": "message",
+          "id": "fixture-non-string-role",
+          "content": "Rotate the fixture credential.",
+          "timestampMs": 1791367200000,
+          "role": 17
+        }
+      ],
+      "diagnostic": "grok_bot_unsupported_content_item",
+      "retained_item_type": "grok_bot_unsupported_role"
+    }
+  ],
+  "source_isolation": {
+    "literal_prompts": [
+      "[SAND_HIDDEN_PROMPT] Rotate the fixture credential.",
+      "[t123] Rotate the fixture credential.",
+      "<timestamp>fixture</timestamp> Rotate the fixture credential."
+    ],
+    "hidden_prompt_shapes": [
+      "[SAND_HIDDEN_PROMPT] Rotate the fixture credential.",
+      "<timestamp>fixture</timestamp>\n<user_query>[SAND_HIDDEN_PROMPT] Rotate the fixture credential.</user_query>",
+      "[User Request]\n[SAND_HIDDEN_PROMPT] Rotate the fixture credential.",
+      "<environment_context>fixture envelope</environment_context>\n[SAND_HIDDEN_PROMPT] Rotate the fixture credential."
+    ],
+    "mixed_prompts": [
+      "<user_query>[SAND_HIDDEN_PROMPT] Rotate the fixture credential.</user_query>\n<user_query>Rotate the fixture credential.</user_query>",
+      "<user_query>Rotate the fixture credential.</user_query>\n<user_query>[SAND_HIDDEN_PROMPT] Rotate the fixture credential.</user_query>"
+    ],
+    "ordinary_multi_query": "<user_query>Rotate the fixture credential.</user_query>\n<user_query>Rotate the fixture credential.</user_query>"
+  }
+}

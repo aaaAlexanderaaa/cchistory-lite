@@ -7,12 +7,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Experimental `grok_bot` source for Grok Bot sidebar agents (`~/agent-data` /
+  `~/sand-data`), with SQLite conversation evidence preferred over duplicate JSONL.
+- Grok Bot titles prefer `profile.json`, then `SAND_AGENT_PROFILE_UPDATE`, then
+  the first real user message; hidden prompts remain injected evidence.
+
+### Fixed
+
+- Grok Bot canonical titles use shared masking before truncation for user, profile
+  and recovered names. Fully masked titles do not fall back to raw evidence.
+- Empty, malformed and non-conversation-only Grok Bot stores allow JSONL fallback
+  while retaining unexpected evidence and parse diagnostics. Store preference is
+  based on the current parse, so WAL inserts/deletes are visible after refresh.
+- Grok Bot hidden-prompt and title cleanup rules apply only to that source;
+  other sources preserve literal markers, turn tags and timestamp text.
+- Grok Bot store messages with missing or unsupported roles retain unknown
+  evidence and diagnostics without suppressing JSONL fallback.
+- Opaque Grok Bot `conversation-blobs.db` caches are excluded from companion capture.
+- Grok Bot fixtures participate in layout and sanitization validation.
+
 ## [0.7.0] - 2026-10-14
 
 ### Added
 
-- Experimental `grok_bot` source for Grok Bot sidebar agents (`~/agent-data` / `~/sand-data`): prefers `agents/<id>/store.db`, falls back to `agent-transcripts` jsonl when the store is empty.
-- `grok_bot` titles prefer `profile.json` name, then `SAND_AGENT_PROFILE_UPDATE`, then the first real user message (never `[SAND_HIDDEN_PROMPT]`).
 - Agent `read` operations return bounded user/assistant evidence with stable session,
   turn and message references, Unicode-safe continuation and content-bound cursors.
 - Query/shell `search` accepts `content: "conversation"` to search full masked user
@@ -38,9 +57,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   faster delimiter lookup and bounded buffer/tail retention to reduce first-read work.
 
 ### Fixed
-
-- `grok_bot` no longer full-byte-captures opaque `conversation-blobs.db` companions (store messages are the projection truth).
-- `grok_bot` strips Grok Bot hidden prompts from authored turns and session titles; deleted agents stay searchable with recovered names.
 
 - A missing session reference in a query/shell detail batch returns an operation-level
   error while preserving valid results; genuine scan failures still propagate.

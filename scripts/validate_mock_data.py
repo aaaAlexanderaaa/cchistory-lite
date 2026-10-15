@@ -28,6 +28,9 @@ ALLOWED_FILE_PATTERNS = [
         r"fixtures/grok-cli/sessions/[^/]+/[0-9a-f-]+/subagents/[0-9a-f-]+/meta\.json"
     ),
     re.compile(r"fixtures/cursor-agent/[^/]+/agent-transcripts/[0-9a-f-]+/[0-9a-f-]+\.jsonl"),
+    re.compile(r"fixtures/grok-bot/agent-transcripts/[0-9a-f-]+/[0-9a-f-]+\.jsonl"),
+    re.compile(r"fixtures/grok-bot/agents/[0-9a-f-]+/(?:store\.db|conversation-blobs\.db|profile\.json)"),
+    re.compile(r"fixtures/grok-bot/review-cases\.json"),
     re.compile(r"fixtures/source-shapes/(?:claude|codex)/[^/]+\.jsonl"),
     re.compile(r"fixtures/query-contract/review\.json"),
     re.compile(r"fixtures/read-budget/(?:sqlite|cursor-store|cursor-state)\.sql"),

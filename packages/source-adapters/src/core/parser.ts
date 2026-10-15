@@ -1,6 +1,7 @@
 import type { SourceReadBudget } from "./read-budget.js";
 import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
+import { applyMaskTemplates } from "../masks.js";
 import { encodeRecordValue } from "./decoded-record.js";
 import path from "node:path";
 import type {
@@ -43,7 +44,6 @@ import { extractGeminiProjectKey, resolveGeminiRoot } from "../platforms/gemini.
 import { resolveKimiSessionDir } from "../platforms/kimi.js";
 import { parseKimiRecord as parseKimiRuntimeRecord } from "../platforms/kimi/runtime.js";
 import { iterateZcodeSqliteSeeds } from "../platforms/zcode/runtime.js";
-import { extractZcodeSqliteSeeds } from "../platforms/zcode/runtime.js";
 import {
   extractGrokBotStoreSeeds,
   loadGrokBotProfileTitleForSourceFile,
@@ -659,7 +659,7 @@ function polishGrokBotSessionDraft(
       asString,
       isObject,
       safeJsonParse,
-      truncate,
+      truncate: value => value,
     },
     agentId,
   );
@@ -692,10 +692,12 @@ function polishGrokBotSessionDraft(
     profileName: profileTitle,
     profileUpdateName,
     firstUserText: firstUserText ?? draft.title,
-    truncate,
+    truncate: value => value,
   });
-  draft.title = title;
-  draft.canonical_title = title;
+  draft.title = truncate(title, 72);
+  // Use the shared masking implementation before the display cut can split a
+  // sensitive value. An empty result must not fall back to the raw title.
+  draft.canonical_title = truncate(applyMaskTemplates(title, "user_message").canonical_text, 72);
 }
 
 export function buildAdapterBlobResult(

@@ -211,16 +211,10 @@ export function normalizeSessionTitleCandidate(value: string | undefined): strin
   const stripped = value
     .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/giu, " ")
     .replace(/<command-(?:name|message|args)>[\s\S]*?<\/command-(?:name|message|args)>/giu, " ")
-    .replace(/<timestamp>[\s\S]*?<\/timestamp>/giu, " ")
-    .replace(/^\[SAND_HIDDEN_PROMPT\][\s\S]*$/u, " ")
-    .replace(/^\[t\d+[a-z]?\d*\]\s*/iu, "")
     .replace(/\s+/gu, " ")
     .trim();
 
-  if (!stripped || stripped.startsWith("[SAND_HIDDEN_PROMPT]")) {
-    return undefined;
-  }
-  return stripped;
+  return stripped || undefined;
 }
 
 export function deriveSourceNativeProjectRef(source: SourceDefinition, filePath: string): string | undefined {

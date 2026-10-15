@@ -1,6 +1,4 @@
-import { existsSync, statSync } from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { normalizePathSeparators } from "../core/path-utils.js";
 import type { PlatformAdapter } from "./types.js";
 
@@ -8,8 +6,6 @@ const STORE_BASENAME = "store.db";
 const BLOBS_BASENAME = "conversation-blobs.db";
 const AGENTS_DIR = "agents";
 const TRANSCRIPTS_DIR = "agent-transcripts";
-
-const storeTranscriptCache = new Map<string, { mtimeMs: number; hasEntries: boolean }>();
 
 export function isGrokBotStorePath(filePath: string): boolean {
   const normalized = normalizePathSeparators(filePath);
@@ -86,53 +82,6 @@ export function uniqueExistingPaths(candidates: readonly string[]): string[] {
   return unique;
 }
 
-/**
- * Prefer store.db when it already has transcript rows. Jsonl is a fallback export
- * that often duplicates (and pollutes) the same agent conversation.
- */
-export function grokBotStoreHasTranscriptEntries(storePath: string): boolean {
-  try {
-    const { mtimeMs } = statSync(storePath);
-    const cached = storeTranscriptCache.get(storePath);
-    if (cached && cached.mtimeMs === mtimeMs) {
-      return cached.hasEntries;
-    }
-    const db = new DatabaseSync(storePath, { readOnly: true });
-    try {
-      const row = db.prepare("SELECT 1 AS ok FROM transcript_entries LIMIT 1").get() as
-        | { ok?: unknown }
-        | undefined;
-      const hasEntries = row?.ok !== undefined && row?.ok !== null;
-      storeTranscriptCache.set(storePath, { mtimeMs, hasEntries });
-      return hasEntries;
-    } finally {
-      db.close();
-    }
-  } catch {
-    return false;
-  }
-}
-
-export function shouldMatchGrokBotTranscript(filePath: string): boolean {
-  if (!isGrokBotTranscriptPath(filePath)) {
-    return false;
-  }
-  const agentId = parseGrokBotAgentIdFromPath(filePath);
-  if (!agentId) {
-    return true;
-  }
-  const dataRoot = resolveGrokBotDataRootFromTranscript(filePath);
-  if (!dataRoot) {
-    return true;
-  }
-  const storePath = path.join(dataRoot, AGENTS_DIR, agentId, STORE_BASENAME);
-  if (!existsSync(storePath)) {
-    return true;
-  }
-  // Prefer store when it has rows; allow jsonl when store is empty or unreadable.
-  return !grokBotStoreHasTranscriptEntries(storePath);
-}
-
 function resolveGrokBotDataRootFromTranscript(filePath: string): string | undefined {
   const normalized = normalizePathSeparators(filePath);
   const marker = `/${TRANSCRIPTS_DIR}/`;
@@ -164,10 +113,7 @@ export function listGrokBotCompanionEvidencePaths(_baseDir: string, filePath: st
     const dataRoot = resolveGrokBotDataRootFromTranscript(filePath);
     if (agentId && dataRoot) {
       const agentDir = path.join(dataRoot, AGENTS_DIR, agentId);
-      companions.push(
-        path.join(agentDir, STORE_BASENAME),
-        path.join(agentDir, "profile.json"),
-      );
+      companions.push(path.join(agentDir, "profile.json"));
     }
   }
   return companions;
@@ -201,7 +147,9 @@ export const grokBotAdapter: PlatformAdapter = {
     if (isGrokBotStorePath(filePath)) {
       return true;
     }
-    return shouldMatchGrokBotTranscript(filePath);
+    // Inventory stays path-only. The probe selects a preferred store only after
+    // its budgeted parse succeeds, using attempt-local evidence rather than mtime.
+    return isGrokBotTranscriptPath(filePath);
   },
   getSourceFilePriority: (filePath) => {
     if (isGrokBotStorePath(filePath)) {
