@@ -36,7 +36,9 @@ import {
   searchSessionsInMemory,
   searchTurnsInMemory,
   sessionMatchesDirectoryScope,
+  sourcePlatformTracksWorkingDirectory,
   stripSearchTruncationMarker,
+  summarizeDirectoryScope,
   summarizeSessionUsage,
 } from "./index.js";
 
@@ -953,6 +955,34 @@ test("directory scope uses path boundaries and canonical session relationships",
   assert.deepEqual(tree.projects.map((entry) => entry.project.project_id), ["project-app"]);
   assert.deepEqual(tree.projects[0]?.sessions.map((entry) => entry.id), ["session-api"]);
   assert.deepEqual(tree.unlinkedSessions, []);
+});
+
+test("directory-agnostic sources without cwd stay visible under any scope", () => {
+  const source = createSource();
+  const grokSource = { ...createSource(), id: "source-grok-bot", platform: "grok_bot" as const, display_name: "Grok Bot" };
+  const unknownCodex = { ...createSession(source), id: "session-unknown-codex", working_directory: undefined };
+  const grokSession = {
+    ...createSession(grokSource),
+    id: "session-grok",
+    working_directory: undefined,
+  };
+  const scopedCodex = { ...createSession(source), id: "session-codex-in", working_directory: "/tmp/project" };
+
+  assert.equal(sourcePlatformTracksWorkingDirectory("codex"), true);
+  assert.equal(sourcePlatformTracksWorkingDirectory("grok_bot"), false);
+  assert.equal(sessionMatchesDirectoryScope(unknownCodex, "/tmp"), false);
+  assert.equal(sessionMatchesDirectoryScope(grokSession, "/tmp"), true);
+  assert.equal(sessionMatchesDirectoryScope(grokSession, "/workspace"), true);
+  assert.deepEqual(
+    filterSessionsByDirectoryScope([unknownCodex, grokSession, scopedCodex], "/tmp").map((entry) => entry.id),
+    ["session-grok", "session-codex-in"],
+  );
+
+  const summary = summarizeDirectoryScope([unknownCodex, grokSession, scopedCodex], "/tmp");
+  assert.equal(summary?.observed_sessions, 3);
+  assert.equal(summary?.matching_sessions, 2);
+  assert.equal(summary?.unknown_directory_sessions, 1);
+  assert.equal(summary?.directory_agnostic_sessions, 1);
 });
 
 test("usage directory scope filters turns through their sessions", () => {

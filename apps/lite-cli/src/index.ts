@@ -1505,6 +1505,7 @@ function output(
   if (jsonMode === "none") {
     reportProjectionIssues(snapshot, io);
     if (scope?.unknown_directory_sessions) io.stderr(`Directory attribution is unknown for ${scope.unknown_directory_sessions} observed sessions; they are excluded from this scoped result. Scope was retained.\n`);
+    if (scope?.directory_agnostic_sessions) io.stderr(`Including ${scope.directory_agnostic_sessions} sessions from sources without a working-directory concept (for example grok_bot); they stay visible under any --dir.\n`);
     for (const source of snapshot.data.sources) if (source.error_message) io.stderr(`Source ${source.slot_id}: ${source.error_message}\n`);
     io.stdout(shouldColorize(io) ? text : stripAnsi(text));
     return;
@@ -1910,7 +1911,7 @@ function emitDirectoryScopeNotice(
     const scopedToCwd = path.resolve(directoryScope) === path.resolve(io.cwd);
     const where = scopedToCwd ? `${directoryScope} (current directory)` : directoryScope;
     io.stderr(
-      `Filtering sessions whose working directory is under ${where}. The memory estimate counts source files that may match this directory. Whole-machine listing: --no-dir\n`,
+      `Filtering sessions whose working directory is under ${where}. Sources without a working-directory concept (for example grok_bot) stay included. The memory estimate counts source files that may match this directory. Whole-machine listing: --no-dir\n`,
     );
     return;
   }
@@ -1981,7 +1982,7 @@ Optional discovery: cchistory-lite sources --json (root metadata only, no histor
 Use sources --complete for counted status. Agent contract: cchistory-lite agent.
 The shell prepares history on its first valid read and reuses it until refresh or exit.
 Directory scope defaults to the current directory. Unknown directory attribution is
-reported in diagnostics; an empty scoped result is not proof that no history exists.
+reported in diagnostics (cwd-less sources like grok_bot stay included); empty is not absence.
 read bounds body text and returns next_cursor; legacy LIMIT only bounds rows.
 read_status describes known data gaps separately from query success and SQL coverage.
 Memory admission also applies to sample and exact-id reads.
@@ -2020,7 +2021,9 @@ Delegated children are replaced by their parent. It is not a complete host scan.
 latest turns is one record per UserTurn and shows its session, model, and total tokens. Use latest 50
 or latest turns 50 to choose a count.
 Directory paths are resolved from the current directory and support ~. Sessions without a
-working directory are excluded when a directory scope is present. --dir applies only to
+working directory are excluded when a directory scope is present, except for sources that
+have no working-directory concept (for example grok_bot), which stay included under any
+--dir. --dir applies only to
 collection views, search, stats, tree projects, query, shell, and sample. Those commands
 default to the current working directory for both the human CLI and --json; pass --no-dir
 for a whole-machine listing. A whole-machine listing can use a lot of memory — bound it with

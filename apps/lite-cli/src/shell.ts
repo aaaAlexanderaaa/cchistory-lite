@@ -60,6 +60,7 @@ export async function runLiteShell(input: ShellLifetime & {
 function reportShellDiagnostics(snapshot: LiveHistorySnapshot, io: LiteShellIo, directoryScope?: string): void {
   const scope = snapshot.getDirectoryScopeDiagnostics(directoryScope);
   if (scope?.unknown_directory_sessions) io.stderr(`Directory attribution is unknown for ${scope.unknown_directory_sessions} observed sessions; excluded from this scoped result.\n`);
+  if (scope?.directory_agnostic_sessions) io.stderr(`Including ${scope.directory_agnostic_sessions} sessions from sources without a working-directory concept (for example grok_bot); they stay visible under any --dir.\n`);
   for (const source of snapshot.data.sources) if (source.error_message) io.stderr(`Source ${source.slot_id}: ${source.error_message}\n`);
   for (const issue of snapshot.projectionIssues) io.stderr(`Projection issue ${issue.code}: ${issue.detail}\n`);
 }

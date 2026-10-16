@@ -69,7 +69,10 @@ export {
   normalizeDirectoryScopePath,
   pathMatchesDirectoryScope,
   projectMatchesDirectoryScope,
+  sessionIsDirectoryAgnostic,
+  sessionLacksDirectoryAttribution,
   sessionMatchesDirectoryScope,
+  sourcePlatformTracksWorkingDirectory,
   type DirectoryScopeOptions,
   type DirectoryScopedProjectTreeProjection,
 } from "./directory-scope.js";

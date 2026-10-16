@@ -16,6 +16,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Directory scope keeps `grok_bot` sessions visible under any `--dir`: that source has
+  no working-directory concept, so missing cwd is no longer treated as a filter miss.
+  Diagnostics count these as `directory_agnostic_sessions` instead of unknown gaps;
+  other sources still exclude sessions without a working directory.
 - Grok Bot canonical titles use shared masking before truncation for user, profile
   and recovered names. Fully masked titles do not fall back to raw evidence.
 - Empty, malformed and non-conversation-only Grok Bot stores allow JSONL fallback

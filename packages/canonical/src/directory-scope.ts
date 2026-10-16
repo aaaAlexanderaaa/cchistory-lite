@@ -3,12 +3,34 @@ import {
   type ProjectIdentity,
   type SessionProjection,
   type SessionRelatedWorkProjection,
+  type SourcePlatform,
   type UserTurnProjection,
 } from "@cchistory/domain";
 import { filterTopLevelSessions } from "./session-collections.js";
 
 export interface DirectoryScopeOptions {
   platform?: NodeJS.Platform;
+}
+
+/**
+ * Sources that never record a working directory. Missing cwd here is not a
+ * gap to exclude: the native format has no directory concept, so directory
+ * scope keeps those sessions visible under any --dir.
+ */
+export function sourcePlatformTracksWorkingDirectory(platform: SourcePlatform): boolean {
+  return platform !== "grok_bot";
+}
+
+export function sessionLacksDirectoryAttribution(session: SessionProjection | undefined): boolean {
+  return Boolean(session && !normalizeDirectoryScopePath(session.working_directory));
+}
+
+export function sessionIsDirectoryAgnostic(session: SessionProjection | undefined): boolean {
+  return Boolean(
+    session &&
+      sessionLacksDirectoryAttribution(session) &&
+      !sourcePlatformTracksWorkingDirectory(session.source_platform),
+  );
 }
 
 export function normalizeDirectoryScopePath(
@@ -40,7 +62,11 @@ export function sessionMatchesDirectoryScope(
   directoryScope: string,
   options: DirectoryScopeOptions = {},
 ): boolean {
-  return pathMatchesDirectoryScope(session?.working_directory, directoryScope, options);
+  if (pathMatchesDirectoryScope(session?.working_directory, directoryScope, options)) {
+    return true;
+  }
+  // Directory-agnostic sources (no native cwd) stay visible under any scope.
+  return sessionIsDirectoryAgnostic(session);
 }
 
 export function projectMatchesDirectoryScope(
@@ -160,10 +186,17 @@ export function buildDirectoryScopedProjectTreeProjection(params: {
 /** Counts only observed sessions; missing cwd is not evidence of another directory. */
 export function summarizeDirectoryScope(sessions: readonly SessionProjection[], directoryScope?: string) {
   if (!directoryScope) return null;
+  const unknown = sessions.filter(
+    (session) =>
+      sessionLacksDirectoryAttribution(session) &&
+      sourcePlatformTracksWorkingDirectory(session.source_platform),
+  ).length;
+  const directoryAgnostic = sessions.filter((session) => sessionIsDirectoryAgnostic(session)).length;
   return {
     directory: directoryScope,
     observed_sessions: sessions.length,
-    matching_sessions: sessions.filter(session => sessionMatchesDirectoryScope(session, directoryScope)).length,
-    unknown_directory_sessions: sessions.filter(session => !normalizeDirectoryScopePath(session.working_directory)).length,
+    matching_sessions: sessions.filter((session) => sessionMatchesDirectoryScope(session, directoryScope)).length,
+    unknown_directory_sessions: unknown,
+    directory_agnostic_sessions: directoryAgnostic,
   };
 }

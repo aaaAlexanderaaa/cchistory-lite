@@ -138,6 +138,25 @@ test("Grok Bot retains the real query beside a hidden prompt in either envelope 
   }
 });
 
+
+test("Grok Bot sessions without cwd remain visible under directory scope", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "lite-grok-bot-dir-scope-"));
+  try {
+    await copyAgentFixture(root);
+    const snapshot = await scanLiteHistory(options(root));
+    const sessions = snapshot.listResolvedSessions();
+    assert.equal(sessions.length, 1);
+    assert.equal(sessions[0]?.working_directory, undefined);
+    assert.equal(snapshot.listResolvedSessions({ directoryScope: "/tmp" }).length, 1);
+    assert.equal(snapshot.listResolvedSessions({ directoryScope: "/workspace" }).length, 1);
+    const scope = snapshot.getDirectoryScopeDiagnostics("/tmp");
+    assert.equal(scope?.matching_sessions, 1);
+    assert.equal(scope?.unknown_directory_sessions, 0);
+    assert.equal(scope?.directory_agnostic_sessions, 1);
+    assert.equal(snapshot.search({ query: "Fallback", directoryScope: "/tmp" }).total, 1);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("Codex and Claude preserve literal Grok markers in turns, search, titles and evidence", async () => {
   const titles = await compileSql("SELECT title FROM sessions LIMIT 1");
   for (const platform of ["codex", "claude_code"] as const) {

@@ -400,8 +400,10 @@ The shell prepares on its first valid read; help, invalid requests, cold exit an
 expiry do not scan. A cold `refresh` explicitly prepares; failed refresh retains the
 previous snapshot. Collection results include `diagnostics.directory_scope` with
 observed/matching/unknown-directory session counts, plus sources and loss audits.
-Unknown directory attribution is excluded by the directory predicate and reported,
-not automatically searched with `--no-dir`. Resource failures are errors with
+Unknown directory attribution from sources that track a working directory is excluded
+by the directory predicate and reported, not automatically searched with `--no-dir`.
+Sources without a working-directory concept (for example `grok_bot`) stay included under
+any `--dir` and are counted as `directory_agnostic_sessions`. Resource failures are errors with
 `resource.complete: false`; they are never exact empty results. `sample` still
 selects native file/groups and caps rendered sessions, but container parsing is not
 bounded by its rendered row count.

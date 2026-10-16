@@ -1181,7 +1181,7 @@ test("Lite CLI help documents latest, limits, and directory scope", async () => 
   assert.match(help, /latest turns is one record per UserTurn/);
   assert.match(help, /sessions with 0 turns are omitted/);
   assert.match(help, /last real message activity/);
-  assert.match(help, /Sessions without a\nworking directory are excluded/);
+  assert.match(help, /Sessions without a\nworking directory are excluded when a directory scope is present, except for sources that\nhave no working-directory concept/);
   assert.match(help, /does not open parent project folders or later Codex cwd lines/);
   assert.match(help, /default: current directory/);
   assert.match(help, /can use a lot of memory/);
