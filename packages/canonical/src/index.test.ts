@@ -21,6 +21,7 @@ import {
   compareTurnsByRecency,
   computeRelevanceScore,
   computeUsageOverview,
+  computeUsageRollup,
   deriveProjectLinkSnapshot,
   filterProjectsByDirectoryScope,
   filterSessionsByDirectoryScope,
@@ -70,6 +71,63 @@ test("projection audit accepts a coherent snapshot and reports cross-entity drif
     new Set(broken.map((issue) => issue.code)),
     new Set(["session-primary-project", "missing-session", "missing-project", "session-turn-count"]),
   );
+});
+
+test("projection audit binds independent usage events to their own turn and checks totals", () => {
+  const source = createSource();
+  const session = createSession(source);
+  const turn = createTurn(source, session);
+  const tokenUsage = { input_tokens: 2, output_tokens: 3, total_tokens: 5 };
+  turn.context_summary.token_usage = tokenUsage;
+  turn.context_summary.total_tokens = 5;
+  session.usage_events = [{ id: "call-one", turn_id: turn.id, created_at: turn.created_at, token_usage: tokenUsage },
+    { id: "call-two", turn_id: null, created_at: turn.created_at, token_usage: tokenUsage }];
+  const input = { sources: [source], projects: [], sessions: [session], turns: [turn] };
+  assert.deepEqual(auditProjectionConsistency(input), []);
+  assert.equal(summarizeSessionUsage([turn], session).total_tokens, 10);
+  const broken = { ...session, usage_events: [
+    { ...session.usage_events[0]!, token_usage: { total_tokens: 6 } },
+    { ...session.usage_events[1]!, id: "call-one", turn_id: "other-session-turn" },
+  ] };
+  const codes = new Set(auditProjectionConsistency({ ...input, sessions: [broken] }).map(issue => issue.code));
+  assert.ok(codes.has("duplicate-id"));
+  assert.ok(codes.has("usage-event-turn-mismatch"));
+  assert.ok(codes.has("usage-event-total-mismatch"));
+});
+
+test("usage rollups preserve recorded call models and unique user-turn counts", () => {
+  const source = createSource();
+  const session = createSession(source);
+  const turn = createTurn(source, session);
+  turn.context_summary.primary_model = "model-a";
+  turn.context_summary.token_usage = { input_tokens: 19, cached_input_tokens: 20, output_tokens: 8, total_tokens: 47 };
+  turn.context_summary.total_tokens = 47;
+  session.usage_events = [
+    { id: "call-a", turn_id: turn.id, created_at: turn.created_at, model: "model-a",
+      token_usage: { input_tokens: 10, cache_read_input_tokens: 20, output_tokens: 5, total_tokens: 35 } },
+    { id: "call-b", turn_id: turn.id, created_at: turn.created_at, model: "model-b",
+      token_usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 } },
+    { id: "call-orphan", turn_id: null, created_at: turn.created_at, model: "model-b",
+      token_usage: { input_tokens: 1, output_tokens: 4, total_tokens: 5 } },
+    { id: "call-unknown", turn_id: turn.id, created_at: turn.created_at,
+      token_usage: { input_tokens: 2, total_tokens: 2 } },
+  ];
+  const params = { filters: {}, listResolvedTurns: () => [turn], listResolvedSessions: () => [session],
+    listSources: () => [source], listProjects: () => [] };
+  const overview = computeUsageOverview(params);
+  assert.equal(overview.total_tokens, 52);
+  assert.equal(overview.total_turns, 1);
+  assert.equal(overview.turns_with_token_usage, 1);
+  assert.equal(overview.turns_with_primary_model, 1);
+  const model = computeUsageRollup({ ...params, dimension: "model" });
+  assert.deepEqual(model.rows.map(row => [row.key, row.total_tokens, row.turn_count]), [["model-a", 35, 1], ["model-b", 15, 1], ["unknown", 2, 1]]);
+  for (const dimension of ["source", "project", "day"] as const) {
+    const rollup = computeUsageRollup({ ...params, dimension });
+    assert.equal(rollup.rows[0]?.turn_count, 1, dimension);
+    assert.equal(rollup.rows[0]?.total_tokens, 52, dimension);
+  }
+  assert.equal(computeUsageOverview({ ...params, filters: { source_ids: ["other-source"] } }).total_tokens, 0);
+  assert.equal(computeUsageOverview({ ...params, filters: { after_date: "2099-01-01" } }).total_tokens, 0);
 });
 
 test("projection audit covers duplicate identities, references, counts, order, and link state", () => {

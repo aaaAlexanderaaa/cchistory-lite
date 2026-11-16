@@ -26,16 +26,23 @@
         "antigravity-same-path-different-storage-ids",
         "antigravity-current-backup-divergent",
         "antigravity-brain-artifacts",
-        "antigravity-live-trajectory-responses"
+        "antigravity-live-trajectory-responses",
+        "antigravity-sqlite-history-usage"
       ],
       "validation_basis": [
         "sanitized_local_disk",
-        "sanitized_local_runtime_fixture"
+        "sanitized_local_runtime_fixture",
+        "synthetic_fixture_from_installed_2.32.1_schema"
       ],
       "runtime_fixture_paths": [
         "fixtures/antigravity-live/trajectory-summaries.json",
         "fixtures/antigravity-live/steps/035b86d5-8ae6-4dfd-bdf0-3a28e9f1df5e.json",
-        "fixtures/antigravity-live/steps/f016bbd7-ad8f-4b3b-bab0-a73e197f391a.json"
+        "fixtures/antigravity-live/steps/f016bbd7-ad8f-4b3b-bab0-a73e197f391a.json",
+        "fixtures/antigravity-sqlite/cases.json",
+        "fixtures/antigravity-sqlite/conversation_summaries.db",
+        "fixtures/antigravity-sqlite/conversations/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee11.db",
+        "fixtures/antigravity-sqlite/conversations/bbbbbbbb-cccc-4ddd-8eee-ffffffffee22.db",
+        "fixtures/antigravity-sqlite/conversations/cccccccc-dddd-4eee-8fff-11111111ee33.db"
       ]
     },
     {

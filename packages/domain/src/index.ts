@@ -649,6 +649,16 @@ export interface SessionProjection {
   resume_command_confidence?: number;
   primary_project_id?: string;
   sync_axis: SyncAxis;
+  /** Independent native model calls, including work without a user turn. */
+  usage_events?: SessionUsageEvent[];
+}
+
+export interface SessionUsageEvent {
+  id: string;
+  turn_id: string | null;
+  created_at: string;
+  model?: string;
+  token_usage: TokenUsageSummary;
 }
 
 export type SessionRelatedWorkKind = "delegated_session" | "automation_run";

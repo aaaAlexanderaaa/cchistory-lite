@@ -65,7 +65,7 @@ export function executeCanonicalQuery(data: QuerySnapshotData, query: LogicalQue
         if (field === "title") return s.canonical_title ?? null;
         if (field === "last_message_at") return last?.get(s.id) ?? null;
         if (field === "is_top_level") return top?.has(s.id) ?? false;
-        if (field === "total_tokens") return summarizeSessionUsage(ownTurns.get(s.id) ?? []).total_tokens ?? null;
+        if (field === "total_tokens") return summarizeSessionUsage(ownTurns.get(s.id) ?? [], s).total_tokens ?? null;
       } else {
         const t = entity as UserTurnProjection;
         if (field === "source_platform") return sessions.get(t.session_id)?.source_platform ?? null;

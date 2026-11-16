@@ -8,6 +8,7 @@ export interface ExtractedSessionSeed {
   updatedAt?: string;
   model?: string;
   workingDirectory?: string;
+  diagnostics?: Array<{ code: string; detail: string }>;
   records: Array<{
     pointer: string;
     observedAt?: string;

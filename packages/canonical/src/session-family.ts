@@ -15,7 +15,7 @@ import type {
   UserTurnProjection,
 } from "@cchistory/domain";
 import { buildSessionRelatedWorkIndex } from "./related-work.js";
-import { resolveStructuredTokenTotal, resolveTurnUsage } from "./usage.js";
+import { resolveStructuredTokenTotal, resolveTurnUsage, resolveSessionUsageMetrics } from "./usage.js";
 import { asOptionalString, compositeKey, uniqueStrings } from "./utils.js";
 
 export const FAMILY_IO_PREVIEW_CHARS = 240;
@@ -554,7 +554,7 @@ function buildOwnerStats(options: {
 }): SessionContributionStats {
   const stats = statsForOwner(options.ownerKey, options.attribution, options.atoms);
   stats.turn_count = options.session?.turn_count ?? options.turns.length;
-  const turnUsage = summarizeTurnUsage(options.turns);
+  const turnUsage = resolveSessionUsageMetrics(options.session) ?? summarizeTurnUsage(options.turns);
   if (turnUsage.total_tokens !== undefined) {
     stats.input_tokens = turnUsage.input_tokens;
     stats.output_tokens = turnUsage.output_tokens;

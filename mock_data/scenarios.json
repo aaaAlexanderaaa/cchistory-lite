@@ -702,5 +702,22 @@
       "fixtures/grok-cli/sessions/%2Fworkspace%2Fgrok-fixture/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee/subagents/bbbbbbbb-cccc-4ddd-8eee-ffffffffffff/meta.json",
       "fixtures/grok-cli/sessions/%2Fworkspace%2Fgrok-fixture/bbbbbbbb-cccc-4ddd-8eee-ffffffffffff/chat_history.jsonl"
     ]
+  },
+  {
+    "id": "antigravity-sqlite-history-usage",
+    "apps": [
+      "antigravity"
+    ],
+    "visible_cue": "Antigravity 2.32.1 keeps offline conversations and recorded model usage in SQLite databases. Several steps may share one generation.",
+    "tricky": "Preserve literal repeated prompts and duplicate session titles; count explicit generation records once, include cache tokens, keep reasoning within output, and retain delegated and assistant-only identities.",
+    "visible_roots": [
+      "/workspace/antigravity-fixture"
+    ],
+    "paths": [
+      "fixtures/antigravity-sqlite/conversation_summaries.db",
+      "fixtures/antigravity-sqlite/conversations/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee11.db",
+      "fixtures/antigravity-sqlite/conversations/bbbbbbbb-cccc-4ddd-8eee-ffffffffee22.db",
+      "fixtures/antigravity-sqlite/conversations/cccccccc-dddd-4eee-8fff-11111111ee33.db"
+    ]
   }
 ]

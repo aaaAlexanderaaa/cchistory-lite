@@ -1,5 +1,85 @@
 # Project work
 
+## Current work — 2026-11-16 Antigravity SQLite history and usage
+
+Status: implementation is complete, built and verified. The owner authorized
+committing and pushing this work on 2026-11-16; the destination is `origin/main`.
+
+Commit preflight — 2026-11-16: all four required commands were rerun on the combined
+tree with Node 24.22.1 and the pinned pnpm 10.30.3. `build:lite`, `pnpm test`
+(709 tests plus dependency boundaries), `verify:governance` (13 tests, 5 rules,
+125 matches), and `verify:lite-artifact` passed. All 182 fixture files pass layout
+and sanitization; the eight previously recorded Gemini scenario omissions remain.
+
+Follow-up — model breakdown and use: complete in the local working tree. The
+owner asked to split consumption by model and use the local build. The existing
+`stats --by model` and TUI model dimension are retained. Independent native calls
+now use their recorded models within mixed-model user turns. Overview/source/
+project/day rollups count unique turns so model switches preserve overall counts.
+A sanitized generation fixture and actual CLI reads verify the split. Local
+commands use the available Node runtime and built CLI directly.
+
+The mixed-model fixture first reproduced incorrect attribution: a second model's
+35 tokens were included in the first model's 1,223-token row. The same actual
+runtime now reports 1,188 and 35 separately. Model-less calls retain `unknown`.
+Model rows count each participating user turn once; overview/source/project/day
+counts deduplicate those identities across models. Native CLI model totals sum
+to the previously reconciled aggregate, with no observed read/projection issues.
+
+Follow-up checks: recompiled canonical output; **709 package tests** (103 domain,
+42 canonical, 280 adapters, 128 runtime, 69 CLI, 87 TUI) and dependency boundaries
+passed. The final missing-model edge case passed focused canonical/runtime checks;
+**13 governance tests / 5 rules / 125 matches** passed. Standalone extraction and
+local npm installation passed against the current compiled output, reusing the
+unchanged surface builds. Native model names and account totals stay outside the
+repository. The usage guide documents `i` and the model dimension in the existing
+TUI; CLI access remains `stats --by model`. The owner subsequently authorized
+committing and pushing the combined adaptation and model-accounting changes.
+
+Owner request: adapt Antigravity so the owner can inspect conversation history and
+token consumption. The installed 2.32.1 uses per-conversation SQLite databases
+under `~/.gemini/antigravity/conversations`, with protobuf steps and independent
+generation records. The existing adapter covers older live/state/brain evidence.
+
+Implement direct read-only SQLite parsing at the adapter boundary, preserving
+canonical conversation identity, project attribution, related sessions and option-B
+usage. Count each generation once through its explicit step indices/execution ID;
+retain malformed or unsupported evidence and diagnostics. Reuse existing CLI/TUI
+views. Preserve legacy inputs, zero-store behavior and source read-only access.
+
+Native numeric reconciliation exposed two existing canonical accounting limits:
+tool-only turns lose signals when there is no assistant text reply, and sessions
+with no user turn fall outside turn-only aggregates. Preserve independent native
+model calls on the canonical session, with nullable own-turn references. Sum the
+assigned calls for turn usage and include unassigned calls in session/family and
+aggregate usage while retaining actual user-turn counts. The projection audit,
+fixture matrix and repository contract cover these identities and totals together.
+
+Acceptance: sanitized SQLite fixtures, missing/empty/corrupt and malformed input,
+cache/reasoning accounting, repeated generation metadata, assistant-only and
+delegated identity, targeted reads and WAL refresh; zero projection issues through
+the runtime and actual CLI reads. Run build, package/boundary, governance, fixture
+and extracted-artifact checks. Native verification uses the adapter after schema
+inspection and reports observed coverage separately. Commit and push are now
+authorized by the owner.
+
+Delivery verification: `build:lite` (including the artifact verifier's fresh build),
+**707 package tests** (domain 103, canonical 41, adapters 280, runtime 127,
+CLI 69, TUI 87), dependency boundaries and **13 governance tests / 5 architecture
+rules / 125 matches** passed. Fresh standalone extraction and local npm
+installation both read the SQLite fixture with correct parent, child and
+assistant-only usage. All **182 fixture files** pass layout and content
+sanitization. Full fixture validation retains exactly the eight previously
+recorded missing Gemini scenario paths. Whitespace checks pass.
+
+Native acceptance: actual CLI statistics, recent-session SQL and a bounded
+question/answer page succeeded on the installed 2.32.1 data with zero observed
+read losses or projection issues. An independent read-only sum of numeric
+generation counters agreed with the canonical aggregate. Native files changed
+during the comparison window, so this is an observed reconciliation rather than
+an atomic-read claim. Native transcripts, identifiers and account totals remain
+outside the repository and fixtures.
+
 ## Current work — 2026-10-15 Grok Bot review fixes
 
 Status: complete. The experimental source and the reviewed repairs are integrated

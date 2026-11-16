@@ -25,6 +25,10 @@ export interface AntigravityRoots {
   conversationDir?: string;
 }
 
+export function isAntigravityConversationDatabase(filePath: string): boolean {
+  return path.basename(path.dirname(filePath)) === "conversations" && filePath.endsWith(".db");
+}
+
 export function isAntigravityBrainSourceFile(filePath: string): boolean {
   const baseName = path.basename(filePath);
   return baseName === "task.md" || ANTIGRAVITY_CONVERSATION_HISTORY_FILE.test(baseName);
@@ -48,16 +52,16 @@ export const antigravityAdapter: PlatformAdapter = {
       return [
         path.join(homeDir, "Library", "Application Support", "Antigravity", "User"),
         path.join(homeDir, "Library", "Application Support", "Antigravity"),
-        path.join(homeDir, ".gemini", "antigravity", "brain"),
         path.join(homeDir, ".gemini", "antigravity"),
+        path.join(homeDir, ".gemini", "antigravity", "brain"),
       ];
     }
     if (hostPlatform === "win32") {
       return [
         path.join(appDataDir, "Antigravity", "User"),
         path.join(appDataDir, "Antigravity"),
-        path.join(homeDir, ".gemini", "antigravity", "brain"),
         path.join(homeDir, ".gemini", "antigravity"),
+        path.join(homeDir, ".gemini", "antigravity", "brain"),
       ];
     }
     return [
@@ -65,15 +69,19 @@ export const antigravityAdapter: PlatformAdapter = {
       path.join(homeDir, ".config", "Antigravity"),
       path.join(homeDir, ".config", "antigravity", "User"),
       path.join(homeDir, ".config", "antigravity"),
-      path.join(homeDir, ".gemini", "antigravity", "brain"),
       path.join(homeDir, ".gemini", "antigravity"),
+      path.join(homeDir, ".gemini", "antigravity", "brain"),
     ];
   },
   matchesSourceFile: (filePath) =>
+    path.basename(filePath) === "conversation_summaries.db" ||
+    isAntigravityConversationDatabase(filePath) ||
     path.basename(filePath) === "state.vscdb" ||
     isAntigravityHistoryIndexFile(filePath) ||
     isAntigravityBrainSourceFile(filePath),
   getSourceFilePriority: (filePath) => {
+    if (path.basename(filePath) === "conversation_summaries.db") return -2;
+    if (isAntigravityConversationDatabase(filePath)) return -1;
     if (filePath.includes(`${path.sep}globalStorage${path.sep}`)) {
       return 0;
     }
@@ -90,7 +98,7 @@ export const antigravityAdapter: PlatformAdapter = {
   },
   getSupplementalSourceRoots: (baseDir) => {
     const roots = resolveAntigravityRoots(baseDir);
-    return roots.brainDir ? [roots.brainDir] : [];
+    return roots.conversationDir ? [path.dirname(roots.conversationDir)] : [];
   },
 };
 

@@ -18,6 +18,7 @@ import "./core/read-budget.test.js";
 import "./core/decoded-record.test.js";
 import "./platforms/cursor.test.js";
 import "./platforms/antigravity.test.js";
+import "./platforms/antigravity-sqlite.test.js";
 import "./platforms/openclaw.test.js";
 import "./platforms/opencode.test.js";
 import "./platforms/claude.test.js";

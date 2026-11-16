@@ -328,6 +328,11 @@ s                 source status       ?                 help
 r                 refresh from disk    q                 quit and release snapshot
 ```
 
+In the usage overlay, press `Tab` to cycle source → project → model → day.
+For Antigravity SQLite history, model totals use each recorded model call. A
+user turn using several models can appear under each model; the overview and
+source/project/day rollups retain unique user-turn counts.
+
 The interactive TUI uses the alternate screen and raw keyboard input. Search
 queries of one to three characters wait for Enter; queries of four or more
 characters run automatically as you type. Startup and refresh scans are

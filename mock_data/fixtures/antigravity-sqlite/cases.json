@@ -1,0 +1,22 @@
+{
+  "parent_id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee11",
+  "child_id": "bbbbbbbb-cccc-4ddd-8eee-ffffffffee22",
+  "assistant_only_id": "cccccccc-dddd-4eee-8fff-11111111ee33",
+  "parent_tokens": 1177,
+  "child_tokens": 5,
+  "first_usage": {
+    "input_tokens": 100,
+    "output_tokens": 30,
+    "cache_read_input_tokens": 1000,
+    "cache_creation_input_tokens": 20,
+    "reasoning_output_tokens": 10
+  },
+  "unanchored_generation_hex": "0a1722041064181e9a010e67656d696e692d66697874757265",
+  "assistant_only_tokens": 6,
+  "mixed_model_generation": {
+    "index": 110,
+    "data_hex": "0a1e220b08f80b100b1804500428149a010e636c617564652d6669787475726512010222166d697865642d6d6f64656c2d67656e65726174696f6e",
+    "model": "claude-fixture",
+    "total_tokens": 35
+  }
+}

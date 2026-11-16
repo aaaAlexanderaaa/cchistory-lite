@@ -17,10 +17,14 @@ The scenarios are intentionally framed around what a user actually notices on di
 
 Stable self-host v1 adapter claims are anchored by `stable-adapter-validation.json`, which maps each `stable` platform to the sanitized real-world scenarios and runtime-only fixture files that back its regression coverage.
 
-Antigravity is split across two fixture families:
+Antigravity is split across three fixture families:
 
 - `Library/Application Support/antigravity/...` and `.gemini/antigravity/brain/...` cover the offline evidence surface (`workspaceStorage`, `History`, `brain`), not the raw conversation stream.
 - `fixtures/antigravity-live/...` captures sanitized local language-server responses used to validate the live trajectory path without depending on a running app inside tests.
+- `fixtures/antigravity-sqlite/...` is synthetic history encoded against the installed
+  2.32.1 protobuf schema. It covers literal prompts, duplicate titles, repeated
+  prompts, explicit generation-to-step mapping, cached/reasoning usage, delegated
+  work and an assistant-only session. It contains no native conversation text.
 
 Gemini CLI fixture coverage now captures both companion-backed and missing-companion transcript cases under `.gemini/`:
 

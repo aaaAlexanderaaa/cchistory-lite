@@ -107,9 +107,9 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     id: "antigravity:vscode-state-sqlite:v1",
     family: DEFAULT_SOURCE_FAMILY,
     platform: "antigravity",
-    parser_version: "antigravity-parser@2026-03-18.1",
+    parser_version: "antigravity-parser@2026-11-16.1",
     description:
-      "Antigravity live trajectory steps from the local language server when available, with VS Code state.vscdb and brain artifacts retained as offline evidence rather than a guaranteed raw-conversation fallback.",
+      "Antigravity conversation SQLite databases with protobuf steps and per-generation token usage; legacy local language-server trajectories, VS Code state and brain artifacts remain readable.",
     capabilities: ["session_meta", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
   },
   gemini: {

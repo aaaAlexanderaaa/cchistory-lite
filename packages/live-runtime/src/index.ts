@@ -590,7 +590,7 @@ export class LiveHistorySnapshot {
 
   getSessionUsage(sessionRef: string): SessionUsageProjection | undefined {
     const session = this.getSession(sessionRef);
-    return session ? summarizeSessionUsage(this.sessionTurnBuckets().get(session.id) ?? []) : undefined;
+    return session ? summarizeSessionUsage(this.sessionTurnBuckets().get(session.id) ?? [], session) : undefined;
   }
 
   listProjectTurns(projectRef: string, options: LiveDirectoryScopeOptions = {}): UserTurnProjection[] {

@@ -393,7 +393,10 @@ export function buildTurnsAndContext(
       }
     }
 
-    const contextTokenUsage = summarizeAssistantReplyUsage(contextProjection.assistant_replies);
+    const independentCalls = independentUsageAtoms([...groupAtoms, ...contextAtoms]);
+    const contextTokenUsage = independentCalls.length
+      ? independentCalls.reduce<TokenUsageMetrics | undefined>((sum, atom) => mergeTokenUsageMetrics(sum, extractTokenUsageFromPayload(atom.payload)), undefined)
+      : summarizeAssistantReplyUsage(contextProjection.assistant_replies);
     const hasNoAssistantReply = contextProjection.assistant_replies.length === 0;
 
     turns.push({
@@ -456,8 +459,29 @@ export function buildTurnsAndContext(
     turn_count: turns.length,
     sync_axis: "current",
   };
+  const calls = independentUsageAtoms(atoms);
+  if (calls.length) {
+    const turnByAtom = new Map(turns.flatMap(turn => turn.lineage.atom_refs.map(ref => [ref, turn.id] as const)));
+    session.usage_events = calls.map(atom => ({
+      id: asString(atom.payload.independent_usage_event_id)!, turn_id: turnByAtom.get(atom.id) ?? null,
+      created_at: atom.time_key, model: asString(atom.payload.model),
+      token_usage: extractTokenUsageFromPayload(atom.payload)!,
+    }));
+  }
 
   return { session, turnCandidates, contextCandidates, turns, contexts };
+}
+
+function independentUsageAtoms(atoms: readonly ConversationAtom[]): ConversationAtom[] {
+  const seen = new Set<string>();
+  const result: ConversationAtom[] = [];
+  for (const atom of atoms) {
+    const id = asString(atom.payload.independent_usage_event_id);
+    if (!id || seen.has(id) || !extractTokenUsageFromPayload(atom.payload)) continue;
+    seen.add(id);
+    result.push(atom);
+  }
+  return result;
 }
 
 function canonicalizeSessionTitle(title: string | undefined): string | undefined {

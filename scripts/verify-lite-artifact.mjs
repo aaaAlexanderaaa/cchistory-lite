@@ -109,6 +109,7 @@ async function main() {
     await assertSelectiveLatest(cli, installedRoot, tempRoot);
     await assertAgentEvidence(cli, tempRoot);
     await assertGrokBotQuery(cli, tempRoot);
+    await assertAntigravityQuery(cli, tempRoot);
     const requestPath = path.join(tempRoot, 'query.json');
     await writeFile(requestPath, `${JSON.stringify({
       schema: 'cchistory-lite-query/v2',
@@ -250,6 +251,7 @@ async function assertPublishableNpmPackage(installedRoot, tempRoot, expectedVers
   await assertSelectiveLatest(npmCli, path.join(npmPrefix, 'node_modules', '@cchistory', 'lite'), tempRoot);
   await assertAgentEvidence(npmCli, tempRoot);
   await assertGrokBotQuery(npmCli, tempRoot);
+  await assertAntigravityQuery(npmCli, tempRoot);
 
   const launchedTui = await execFile(
     npmCli,
@@ -259,6 +261,26 @@ async function assertPublishableNpmPackage(installedRoot, tempRoot, expectedVers
   if (!/CC History Lite TUI/u.test(launchedTui.stdout) || !/Ephemeral live snapshot/u.test(launchedTui.stdout)) {
     throw new Error(`Prefix-installed CLI could not launch the sibling TUI: ${launchedTui.stdout}`);
   }
+}
+
+async function assertAntigravityQuery(cli, tempRoot) {
+  const sourceRoot = await mkdtemp(path.join(tempRoot, 'antigravity-'));
+  try {
+    await cp(path.join(repoRoot, 'mock_data', 'fixtures', 'antigravity-sqlite'), sourceRoot, { recursive: true });
+    const fixture = JSON.parse(await readFile(path.join(sourceRoot, 'cases.json'), 'utf8'));
+    const query = await execFile(cli, ['query', '--sql', 'SELECT id, total_tokens, is_top_level FROM sessions LIMIT 10',
+      '--source', 'antigravity', '--source-root', `antigravity=${sourceRoot}`, '--safe', '--no-dir'],
+    { cwd: tempRoot, maxBuffer: 8 * 1024 * 1024 });
+    const payload = JSON.parse(query.stdout);
+    const rows = payload.operations?.[0]?.result?.rows;
+    if (rows?.length !== 3 || rows.find(row => row.id === `sess:antigravity:${fixture.parent_id}`)?.total_tokens !== fixture.parent_tokens
+      || rows.find(row => row.id === `sess:antigravity:${fixture.child_id}`)?.is_top_level !== false
+      || rows.find(row => row.id === `sess:antigravity:${fixture.assistant_only_id}`)?.total_tokens !== fixture.assistant_only_tokens
+      || payload.projection_issues.length || payload.diagnostics.loss_audits.length) {
+      throw new Error('Installed Antigravity SQLite history, usage or delegated identity failed.');
+    }
+    console.log('[cchistory] installed Antigravity SQL reads native-shaped SQLite history and usage');
+  } finally { await rm(sourceRoot, { recursive: true, force: true }); }
 }
 
 async function assertGrokBotQuery(cli, tempRoot) {

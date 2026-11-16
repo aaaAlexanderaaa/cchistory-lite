@@ -43,7 +43,7 @@ import {
 } from "./utils.js";
 import { getDefaultSources, resolveSourceFormatProfile } from "./discovery.js";
 import { extractAntigravityLiveSeeds } from "../platforms/antigravity/live.js";
-import { isAntigravityBrainSourceFile, isAntigravityHistoryIndexFile } from "../platforms/antigravity.js";
+import { isAntigravityBrainSourceFile, isAntigravityHistoryIndexFile, isAntigravityConversationDatabase } from "../platforms/antigravity.js";
 import { extractCursorChatStoreSeed, clearCursorWorkspaceIndexCache } from "../platforms/cursor/runtime.js";
 import { getPlatformAdapter } from "../platforms/registry.js";
 import { isGrokBotStorePath, isGrokBotTranscriptPath, parseGrokBotAgentIdFromPath } from "../platforms/grok-bot.js";
@@ -267,7 +267,8 @@ async function finalizeSourcePayload(
   const deriveStartedAt = Date.now();
   const processingCore = await processCollectedSessions(
     interpretSession,
-    state.sessionsById,
+    state.source.platform === "antigravity" && options.target_session_refs?.length
+      ? selectAntigravityTargetInputs(state.sessionsById, options.target_session_refs) : state.sessionsById,
     state.orphanBlobs,
     state.lossAudits,
     { safeMode: options.safe_mode ?? false, retainRawRecords: options.retain_raw_records !== false,
@@ -496,48 +497,7 @@ async function* streamCollectedFileInputs(
   const changedSinceMs = parseChangedSinceMs(options.changed_since);
   const capturedCompanionPaths = new Set<string>();
   let remainingFileLimit = options.limit_files_per_source;
-
-  if (source.platform === "antigravity" && !options.safe_mode) {
-    emitProbeProgress(options, source, {
-      stage: "live_probe_start",
-      message: "Reading Antigravity live trajectory API",
-    });
-    const liveCollection = await extractAntigravityLiveSeeds(source.base_dir, {
-      limit: remainingFileLimit,
-      sessionRefs: options.target_session_refs,
-    });
-    if (liveCollection) {
-      for (const [index, seed] of liveCollection.seeds.entries()) {
-        const virtualPath = liveCollection.virtualPaths[index] ?? `antigravity-live://${seed.sessionId}`;
-        const adapterResult = buildSyntheticSeedAdapterResult(
-          source,
-          sourceFormatProfile,
-          host.id,
-          captureRunId,
-          virtualPath,
-          seed,
-        );
-        const sessionsById = new Map<string, SessionBuildInput>();
-        mergeAdapterBlobResult(sessionsById, adapterResult);
-        yield {
-          originPath: virtualPath,
-          sessionInputs: [...sessionsById.values()],
-          orphanBlobs: [],
-          lossAudits: [],
-          trustedBytesByBlobId: new Map(),
-        };
-      }
-      if (typeof remainingFileLimit === "number") {
-        remainingFileLimit = Math.max(remainingFileLimit - liveCollection.virtualPaths.length, 0);
-      }
-    }
-    emitProbeProgress(options, source, {
-      stage: "live_probe_done",
-      message: `Collected ${liveCollection?.virtualPaths.length ?? 0} live item(s)`,
-      count: liveCollection?.virtualPaths.length ?? 0,
-      count_unit: "files",
-    });
-  }
+  const sqliteSessionIds = new Set<string>();
 
   emitProbeProgress(options, source, {
     stage: "list_files_start",
@@ -593,8 +553,56 @@ async function* streamCollectedFileInputs(
       if (grokBotAgentId && isGrokBotStorePath(filePath) && collected.sessionInputs.some(hasGrokBotStoreConversation)) {
         preferredGrokBotAgents.add(grokBotAgentId);
       }
+      if (source.platform === "antigravity" && isAntigravityConversationDatabase(filePath)) {
+        for (const input of collected.sessionInputs) if (hasAntigravitySqliteConversation(input)) {
+          sqliteSessionIds.add(input.draft.id.replace(/^sess:antigravity:/u, ""));
+        }
+      }
       yield collected;
     }
+  }
+  if (remainingFileLimit !== undefined) remainingFileLimit = Math.max(remainingFileLimit - files.length, 0);
+  if (source.platform === "antigravity" && !options.safe_mode && remainingFileLimit !== 0) {
+    emitProbeProgress(options, source, {
+      stage: "live_probe_start",
+      message: "Reading Antigravity live trajectory API",
+    });
+    const liveCollection = await extractAntigravityLiveSeeds(source.base_dir, {
+      limit: remainingFileLimit,
+      sessionRefs: options.target_session_refs,
+      excludeCascadeIds: [...sqliteSessionIds],
+    });
+    if (liveCollection) {
+      for (const [index, seed] of liveCollection.seeds.entries()) {
+        const virtualPath = liveCollection.virtualPaths[index] ?? `antigravity-live://${seed.sessionId}`;
+        const adapterResult = buildSyntheticSeedAdapterResult(
+          source,
+          sourceFormatProfile,
+          host.id,
+          captureRunId,
+          virtualPath,
+          seed,
+        );
+        const sessionsById = new Map<string, SessionBuildInput>();
+        mergeAdapterBlobResult(sessionsById, adapterResult);
+        yield {
+          originPath: virtualPath,
+          sessionInputs: [...sessionsById.values()],
+          orphanBlobs: [],
+          lossAudits: [],
+          trustedBytesByBlobId: new Map(),
+        };
+      }
+      if (typeof remainingFileLimit === "number") {
+        remainingFileLimit = Math.max(remainingFileLimit - liveCollection.virtualPaths.length, 0);
+      }
+    }
+    emitProbeProgress(options, source, {
+      stage: "live_probe_done",
+      message: `Collected ${liveCollection?.virtualPaths.length ?? 0} live item(s)`,
+      count: liveCollection?.virtualPaths.length ?? 0,
+      count_unit: "files",
+    });
   }
 }
 
@@ -854,7 +862,7 @@ async function* streamSingleFileInputs(
             ))
       : []);
     const sessionsById = new Map<string, SessionBuildInput>();
-    const targetedResults = options.target_session_refs?.length
+    const targetedResults = source.platform !== "antigravity" && options.target_session_refs?.length
       ? adapterResults.filter((result) =>
           options.target_session_refs!.some((ref) =>
             targetRefMatchesSession(ref, result.draft.id, result.draft.source_session_id),
@@ -1023,7 +1031,8 @@ function isMultiSessionContainer(platform: SourcePlatform, filePath: string): bo
   const basename = path.basename(filePath);
   if (
     platform === "antigravity" &&
-    (isAntigravityHistoryIndexFile(filePath) || isAntigravityBrainSourceFile(filePath))
+    (isAntigravityHistoryIndexFile(filePath) || isAntigravityBrainSourceFile(filePath) ||
+      isAntigravityConversationDatabase(filePath) || basename === "conversation_summaries.db")
   ) {
     return true;
   }
@@ -1039,6 +1048,7 @@ function isMultiSessionContainer(platform: SourcePlatform, filePath: string): bo
 
 function isPathBackedSqliteSourceFile(platform: SourcePlatform, filePath: string): boolean {
   const basename = path.basename(filePath);
+  if (platform === "antigravity" && (isAntigravityConversationDatabase(filePath) || basename === "conversation_summaries.db")) return true;
   if (platform === "zcode") {
     return basename === "db.sqlite";
   }
@@ -1198,6 +1208,7 @@ function mergeSessionBuildInput(
     current.draft.updated_at = maxIso(current.draft.updated_at, sessionInput.draft.updated_at);
     suppressOverlappingCursorConversation(current);
     suppressOverlappingGrokBotConversation(current);
+    suppressOverlappingAntigravityConversation(current);
     return;
   }
 
@@ -1210,6 +1221,53 @@ function mergeSessionBuildInput(
     edges: [...sessionInput.edges],
     loss_audits: [...sessionInput.loss_audits],
   });
+}
+
+function hasAntigravitySqliteConversation(session: SessionBuildInput): boolean {
+  const databaseBlobs = new Set(session.blobs.filter(blob => isAntigravityConversationDatabase(blob.origin_path)).map(blob => blob.id));
+  const databaseRecords = new Set(session.records.filter(record => databaseBlobs.has(record.blob_id)).map(record => record.id));
+  return session.fragments.some(fragment => databaseRecords.has(fragment.record_id) && fragment.fragment_kind === "text" &&
+    (fragment.payload.actor_kind === "user" || fragment.payload.actor_kind === "assistant"));
+}
+
+function selectAntigravityTargetInputs(inputs: Map<string, SessionBuildInput>, refs: readonly string[]): Map<string, SessionBuildInput> {
+  const selected = new Set([...inputs.keys()].filter(id => refs.some(ref => targetRefMatchesSession(ref, id))));
+  // Reconcile shared summary metadata before narrowing an explicitly recorded
+  // session family. File-local filtering can discard a child's title first.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [id, input] of inputs) {
+      if (selected.has(id)) continue;
+      if (input.fragments.some(fragment => fragment.fragment_kind === "session_relation" &&
+        typeof fragment.payload.parent_uuid === "string" && selected.has(`sess:antigravity:${fragment.payload.parent_uuid}`))) {
+        selected.add(id);
+        changed = true;
+      }
+    }
+  }
+  return new Map([...inputs].filter(([id]) => selected.has(id)));
+}
+
+function suppressOverlappingAntigravityConversation(session: SessionBuildInput): void {
+  if (session.draft.source_platform !== "antigravity" || !hasAntigravitySqliteConversation(session)) return;
+  const legacyBlobs = new Set(session.blobs.filter(blob => !isAntigravityConversationDatabase(blob.origin_path)).map(blob => blob.id));
+  const legacyRecords = new Set(session.records.filter(record => legacyBlobs.has(record.blob_id)).map(record => record.id));
+  // Offline descriptions are recovered prompts. With native conversation evidence
+  // present, retain them as source context while the SQLite steps own user turns.
+  for (const fragment of session.fragments) {
+    if (legacyRecords.has(fragment.record_id) && fragment.fragment_kind === "text" && fragment.payload.actor_kind === "user") {
+      fragment.payload = { ...fragment.payload, actor_kind: "system", origin_kind: "source_instruction", display_policy: "collapse" };
+    }
+  }
+  const legacyFragments = new Set(session.fragments.filter(fragment => legacyRecords.has(fragment.record_id)).map(fragment => fragment.id));
+  for (const atom of session.atoms) {
+    if (atom.actor_kind === "user" && atom.fragment_refs.some(ref => legacyFragments.has(ref))) {
+      atom.actor_kind = "system";
+      atom.origin_kind = "source_instruction";
+      atom.display_policy = "collapse";
+    }
+  }
 }
 
 function sessionInputHasCursorTranscript(sessionInput: SessionBuildInput): boolean {
@@ -2060,7 +2118,7 @@ async function processCollectedSessions(
       });
     }
     sessionInput.atoms.sort(compareTimeThenSeq);
-    if (sessionInput.draft.source_platform === "antigravity") {
+    if (sessionInput.draft.source_platform === "antigravity" && !hasAntigravitySqliteConversation(sessionInput)) {
       sessionInput.atoms = collapseAntigravityUserTurnAtoms(sessionInput.atoms);
     }
 
@@ -2231,7 +2289,7 @@ async function tryProcessPathOpenedContainer(
   }
   const results: AdapterBlobResult[] = [];
   for (const seed of multiSessionSeeds) {
-    if (targetSessionRefs?.length && !targetSessionRefs.some(ref => targetRefMatchesSession(ref, seed.sessionId))) continue;
+    if (source.platform !== "antigravity" && targetSessionRefs?.length && !targetSessionRefs.some(ref => targetRefMatchesSession(ref, seed.sessionId))) continue;
     results.push(
       buildAdapterBlobResult(
         source,
@@ -2261,7 +2319,10 @@ async function tryProcessPathOpenedContainer(
           model: seed.model,
           working_directory: seed.workingDirectory,
         },
-        [],
+        (seed.diagnostics ?? []).map(diagnostic => createLossAudit(source.id, blobId, "unknown_fragment", diagnostic.detail, {
+          stageKind: "extract_records", diagnosticCode: diagnostic.code, severity: "warning",
+          sessionRef: seed.sessionId, blobRef: blobId, sourceFormatProfileId: sourceFormatProfile.id,
+        })),
         retainRawRecords,
       ),
     );

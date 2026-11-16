@@ -43,6 +43,7 @@ interface AntigravityLiveCollectionHelpers {
   appDataDir?: string;
   limit?: number;
   sessionRefs?: readonly string[];
+  excludeCascadeIds?: readonly string[];
   discoverLiveEndpoint?: (appDataDir: string) => Promise<AntigravityLiveEndpoint | undefined>;
   listConversationPbIds?: (conversationDir: string) => Promise<string[]>;
   callLanguageServer?: (
@@ -65,6 +66,7 @@ export async function extractAntigravityLiveSeeds(
   const roots = resolveAntigravityRoots(baseDir);
   const listConversationPbIds = helpers.listConversationPbIds ?? defaultListConversationPbIds;
   const pbIds = roots.conversationDir ? await listConversationPbIds(roots.conversationDir) : [];
+  const databaseIds = new Set(helpers.excludeCascadeIds ?? []);
 
   const discoverLiveEndpoint = helpers.discoverLiveEndpoint ?? defaultDiscoverLiveEndpoint;
   const live = await discoverLiveEndpoint(helpers.appDataDir ?? DEFAULT_APP_DATA_DIR);
@@ -94,6 +96,7 @@ export async function extractAntigravityLiveSeeds(
     (helpers.sessionRefs ?? []).map((ref) => ref.replace(/^sess:antigravity:/u, "")),
   );
   const cascadeIds = uniqueStrings([...summaries.keys(), ...pbIds])
+    .filter(cascadeId => !databaseIds.has(cascadeId))
     .filter((cascadeId) => requestedCascadeIds.size === 0 || requestedCascadeIds.has(cascadeId))
     .sort();
   const selectedCascadeIds = typeof limit === "number" ? cascadeIds.slice(0, limit) : cascadeIds;

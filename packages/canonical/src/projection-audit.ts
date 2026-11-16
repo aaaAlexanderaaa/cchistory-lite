@@ -34,6 +34,8 @@ export interface ProjectionAuditIssue {
   | "turns-not-recency-ordered"
   | "projected-unlinked-turn"
   | "turn-usage-total-mismatch"
+  | "usage-event-turn-mismatch"
+  | "usage-event-total-mismatch"
   | "project-last-activity";
   entity: "source" | "project" | "session" | "turn" | "context" | "evidence" | "snapshot";
   id: string;
@@ -157,7 +159,26 @@ export function auditProjectionConsistency(input: ProjectionAuditInput): Project
     }
   }
 
+  const usageEventIds = new Set<string>();
   for (const session of input.sessions) {
+    const ownTurns = turnsBySessionId.get(session.id) ?? [];
+    const eventTotals = new Map<string, number>();
+    for (const event of session.usage_events ?? []) {
+      if (usageEventIds.has(event.id)) issues.push({ code: "duplicate-id", entity: "session", id: session.id, detail: `usage event ${event.id} appears more than once` });
+      usageEventIds.add(event.id);
+      if (event.turn_id !== null && !ownTurns.some(turn => turn.id === event.turn_id)) {
+        issues.push({ code: "usage-event-turn-mismatch", entity: "session", id: session.id,
+          detail: `usage event ${event.id} points outside its own session: ${event.turn_id}` });
+      }
+      if (event.turn_id !== null) eventTotals.set(event.turn_id,
+        (eventTotals.get(event.turn_id) ?? 0) + (resolveStructuredTokenTotal(event.token_usage) ?? 0));
+    }
+    for (const turn of ownTurns) {
+      if (eventTotals.has(turn.id) && eventTotals.get(turn.id) !== resolveStructuredTokenTotal(turn.context_summary.token_usage)) {
+        issues.push({ code: "usage-event-total-mismatch", entity: "turn", id: turn.id,
+          detail: "independent model-call usage differs from the turn's structured token total" });
+      }
+    }
     const actualTurnCount = turnsBySessionId.get(session.id)?.length ?? 0;
     if (session.turn_count !== actualTurnCount) {
       issues.push({

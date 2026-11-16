@@ -17,7 +17,8 @@ import type {
 } from "@cchistory/domain";
 import { parseAccioRecord as parseAccioRuntimeRecord } from "../platforms/accio/runtime.js";
 import { parseAmpRecord as parseAmpRuntimeRecord } from "../platforms/amp/runtime.js";
-import { isAntigravityBrainSourceFile, isAntigravityHistoryIndexFile } from "../platforms/antigravity.js";
+import { isAntigravityBrainSourceFile, isAntigravityHistoryIndexFile, isAntigravityConversationDatabase } from "../platforms/antigravity.js";
+import { extractAntigravitySqliteSeeds, extractAntigravitySummarySeeds } from "../platforms/antigravity/sqlite.js";
 import {
   extractAntigravityBrainSeed,
   extractAntigravityHistorySeed,
@@ -530,6 +531,12 @@ export async function extractMultiSessionSeeds(
   targetSessionRefs?: readonly string[],
   budget?: SourceReadBudget,
 ): Promise<ExtractedSessionSeed[] | undefined> {
+  if (source.platform === "antigravity" && path.basename(filePath) === "conversation_summaries.db") {
+    return extractAntigravitySummarySeeds(filePath, budget);
+  }
+  if (source.platform === "antigravity" && isAntigravityConversationDatabase(filePath)) {
+    return extractAntigravitySqliteSeeds(filePath, budget);
+  }
   if (source.platform === "cursor" && path.basename(filePath) === "state.vscdb") {
     const extractVscodeStateSeeds = await loadExtractVscodeStateSeeds();
     return (await extractVscodeStateSeeds(source, filePath, {
@@ -1297,6 +1304,10 @@ export function createTokenUsageFragment(
     scope: "turn",
     ...extraPayload,
   };
+  if (context.source.platform === "antigravity" &&
+    (/^sqlite:gen_metadata\[/u.test(record.record_path_or_offset) || /^sqlite:steps\[\d+\]:usage$/u.test(record.record_path_or_offset))) {
+    payload.independent_usage_event_id = record.id;
+  }
   if (typeof usage.total_tokens === "number") {
     payload.token_count = usage.total_tokens;
   }

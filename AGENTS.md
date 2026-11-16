@@ -107,6 +107,10 @@ or a CLI/TUI view must preserve the canonical projection contract. The contract 
 - a turn cannot point at a project while claiming to be unlinked;
 - structured turn token totals agree with their legacy context-summary total when both are present;
 - every usage surface resolves option-B totals through the canonical usage projection;
+- independent native model-call usage events retain unique identities and resolve to
+  their own session and, when present, their own user turn. Session and aggregate
+  usage include calls with `turn_id: null`; user-turn counts remain based on real
+  user input, and assigned event totals agree with each turn's structured usage;
 - every resolved turn remains reachable from exactly one resolved session and one
   project/unlinked bucket;
 - a session that is the child endpoint of a `delegated_session` relation whose parent resolves

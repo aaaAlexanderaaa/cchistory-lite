@@ -28,7 +28,7 @@ const fixtureRoots = {
   factory_droid: ".factory/sessions",
   amp: ".local/share/amp/threads",
   cursor: ".cursor/chats",
-  antigravity: ".gemini/antigravity/brain",
+  antigravity: "fixtures/antigravity-sqlite",
   gemini: ".gemini",
   openclaw: ".openclaw/agents",
   opencode: ".local/share/opencode/storage",

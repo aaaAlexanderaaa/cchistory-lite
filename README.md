@@ -69,7 +69,7 @@ Each adapter is referenced by its slot id.
 | `amp` | AMP | `~/.local/share/amp/threads` | stable |
 | `cursor` | Cursor | `~/.cursor/projects`, platform Cursor `User` dir, `~/.cursor/chats` | stable |
 | `cursor_agent` | Cursor Agent | `~/.cursor/projects` | experimental |
-| `antigravity` | Antigravity | platform Antigravity `User` dir, `~/.gemini/antigravity/brain` | stable |
+| `antigravity` | Antigravity | `~/.gemini/antigravity/conversations/*.db` (history + token usage), platform Antigravity `User` dir, brain artifacts | stable |
 | `gemini` | Gemini CLI | `~/.gemini` | stable |
 | `openclaw` | OpenClaw | `~/.openclaw/agents` | stable |
 | `opencode` | OpenCode | `~/.local/share/opencode/storage` | stable |
@@ -83,6 +83,13 @@ Each adapter is referenced by its slot id.
 
 `cursor` still merges Agent CLI transcripts with composer/chat-store evidence
 when they share a native agent id.
+`antigravity` reads SQLite conversations and independent model-call usage
+directly (verified against 2.32.1). Totals include cache reads/writes and output (including reasoning).
+Assistant-only delegated work contributes usage while retaining zero user turns.
+`stats --by model` assigns those calls to their recorded models, including model
+switches within a user turn. Overview and source/project/day rollups count each
+user turn once.
+Legacy encrypted `.pb` histories use the local language server while the app runs.
 `grok_bot` reads sidebar-agent `store.db` first. After a successful parse finds
 conversation evidence, it skips that agent's duplicate `agent-transcripts` JSONL
 within the current scan. Empty, unreadable and non-conversation-only stores allow

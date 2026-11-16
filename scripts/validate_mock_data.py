@@ -17,6 +17,8 @@ ALLOWED_FILE_PATTERNS = [
     re.compile(r"stable-adapter-validation\.json"),
     re.compile(r"fixtures/antigravity-live/trajectory-summaries\.json"),
     re.compile(r"fixtures/antigravity-live/steps/[0-9a-f-]+\.json"),
+    re.compile(r"fixtures/antigravity-sqlite/(?:cases\.json|conversation_summaries\.db|conversations/[0-9a-f-]+\.db)"),
+    re.compile(r"fixtures/antigravity-sqlite/brain/[0-9a-f-]+/Conversation_fixture_History\.md(?:\.metadata\.json)?"),
     re.compile(r"fixtures/accio-multi-agent/agents/[^/]+/sessions/[^/]+\.(?:messages\.jsonl|meta\.jsonc)"),
     re.compile(r"fixtures/accio-multi-agent/conversations/dm/[^/]+\.jsonc"),
     re.compile(r"fixtures/accio-multi-agent/subagent-sessions/[^/]+\.(?:messages\.jsonl|meta\.jsonc)"),
