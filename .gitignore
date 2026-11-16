@@ -46,4 +46,4 @@ Thumbs.db
 
 # Real user archives must never be committed
 .realdata/
-tmp/
+/tmp/

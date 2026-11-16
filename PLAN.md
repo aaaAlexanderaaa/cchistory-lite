@@ -1,6 +1,30 @@
 # Project work
 
-## Current work — 2026-11-16 Antigravity SQLite history and usage
+## Current work — 2026-11-17 Maintenance fixes, Python doc governance, and 0.8.0 release prep
+
+Status: implementation and verification complete in the local working tree; owner
+authorized closeout, verification, and releasing `0.8.0`. Reused `template-project`
+doc-governance principles via a focused zero-dependency Python checker
+(`scripts/check_docs.py` + `scripts/test_check_docs.py`) and repaired identified
+repository gaps:
+
+- Closed reverse-layer import gaps by adding `@cchistory/lite-cli` and
+  `@cchistory/lite-tui` to `architecture-rules.json` and `scripts/verify-lite-boundaries.mjs`,
+  with a regression test in `scripts/verify-architecture-boundaries.test.mjs`.
+- Bounded TUI `contextOverlay` via `BoundedCache` (refreshing stale overlay entries
+  while keeping base snapshot priority) and moved unlinked bucket `lastActivityAt`
+  derivation into canonical `resolveLatestTurnActivityAt`.
+- Restored the eight missing sanitized Gemini fixture paths (`D6`) by anchoring
+  `/tmp/` in `.gitignore`, bringing `mock_data` validation to 190/190 passing files.
+- Updated `README.md` (`17` registered sources, plain-language `read_status` line),
+  `CHANGELOG.md` `[Unreleased]` (Antigravity SQLite, per-model usage, and fixes),
+  and `scripts/release-prepare.mjs` (accepting leading `--` from `pnpm run`).
+- Evaluated `origin/feat/grok-bot-default-dir` (`54442d4`): deferred merging because
+  matching cwd-less `grok_bot` sessions under every `--dir` leaks unrelated chats
+  into project-scoped queries and token stats.
+- `U1` remains owner-owned manual acceptance below.
+
+## Previous work — 2026-11-16 Antigravity SQLite history and usage
 
 Status: implementation is complete, built and verified. The owner authorized
 committing and pushing this work on 2026-11-16; the destination is `origin/main`.
@@ -452,7 +476,7 @@ counter. Timing-dependent tests use controlled clocks; native measurements are n
 | D3 | Version-bound late detail, concurrent refresh generations, cache admission/eviction | A feature needs to reuse detail across changing evidence or retain concurrent generations. Existing late-detail freshness limitations stay documented. |
 | D4 | Cross-process reuse, background service, broader query language, optimization across all sources | A concrete workload justifies a new product increment. |
 | D5 | Unanchored usage, Claude tool-result error evidence, legacy duplicate edges | A separate semantic correction is selected with independent expected results. Structural parity does not certify these behaviors as correct. |
-| D6 | Eight missing Gemini paths in the old scenario manifest | A focused fixture-maintenance task repairs those scenario claims. Current nonempty Gemini tests use independent checked-in input. Full mock-data validation remains red for this known reason. |
+| D6 | Eight missing Gemini paths in the old scenario manifest | Closed on 2026-11-17: `.gitignore` unanchored `tmp/` had dropped `mock_data/.gemini/tmp/`. Anchored `/tmp/` and restored the eight sanitized Gemini fixture paths matching `scenarios.json`; `mock-data:validate` now passes across all 190 files. |
 
 A deferred item becomes required only if it directly prevents an agreed acceptance journey or is
 a regression caused by the new work. State that dependency explicitly; do not promote every

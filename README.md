@@ -17,7 +17,7 @@ Published as [`@cchistory/lite`](https://www.npmjs.com/package/@cchistory/lite).
 | Agent `--json` | ✓ | — | ✓ |
 | Own database | **0** | 0 | SQLite index |
 | Semantic search | — | — | ✓ |
-| Sources | **16** | 29 | ~24 |
+| Sources | **17** | 29 | ~24 |
 | Search pays | every scan | GUI cache | disk index |
 
 ## Quick start
@@ -53,7 +53,7 @@ For questions about past decisions, open `cchistory-lite shell --dir /path/to/pr
 
 Conversation search includes masked user text and assistant answers. Reads return bounded
 evidence with stable citations and continuation cursors. Inspect `read_status` for known gaps;
-query success alone does not mean every native record was readable. See the
+a successful query can still have unreadable native records or unattributed directories. See the
 [agent evidence guide](docs/guide/agent-evidence.md) for paging and snapshot lifetime.
 
 ## Supported sources

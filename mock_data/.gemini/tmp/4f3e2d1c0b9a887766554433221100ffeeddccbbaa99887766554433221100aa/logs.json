@@ -1,0 +1,9 @@
+[
+  {
+    "sessionId": "gemini-missing-1",
+    "messageId": 0,
+    "type": "user",
+    "message": "/memory show",
+    "timestamp": "2026-03-31T08:58:21.000Z"
+  }
+]

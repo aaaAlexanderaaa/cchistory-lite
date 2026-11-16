@@ -398,3 +398,126 @@ test("Tab cycles the stats dimension while the stats overlay is open", async () 
     action: { type: "cycle-stats-dimension" },
   });
 });
+
+test("unlinked bucket activity uses the latest turn context activity instead of array tail", async () => {
+  const base = await buildModel();
+  const turns = base.snapshot.data.turns.filter((turn) => !turn.project_id);
+  const template = turns[0] ?? base.snapshot.data.turns[0]!;
+  const session = base.snapshot.data.sessions.find((entry) => entry.id === template.session_id) ?? base.snapshot.data.sessions[0]!;
+  const syntheticTurns = [
+    {
+      ...template,
+      id: "turn:unlinked-latest-activity",
+      turn_id: "turn:unlinked-latest-activity",
+      project_id: undefined,
+      link_state: "unlinked" as const,
+      project_link_state: "unlinked" as const,
+      submission_started_at: "2026-01-03T00:00:00.000Z",
+      last_context_activity_at: "2026-01-05T00:00:00.000Z",
+    },
+    {
+      ...template,
+      id: "turn:unlinked-older-tail",
+      turn_id: "turn:unlinked-older-tail",
+      project_id: undefined,
+      link_state: "unlinked" as const,
+      project_link_state: "unlinked" as const,
+      submission_started_at: "2026-01-01T00:00:00.000Z",
+      last_context_activity_at: "2026-01-02T00:00:00.000Z",
+    },
+  ];
+  const snapshot = new LiveHistorySnapshot({
+    ...base.snapshot.data,
+    projects: [],
+    sessions: [session],
+    turns: syntheticTurns,
+    contexts: [],
+  });
+  const model = new LiteBrowserModel(snapshot);
+  const unlinked = model.projects.find((entry) => entry.key === UNLINKED_PROJECT_KEY);
+  assert.ok(unlinked);
+  assert.equal(unlinked.lastActivityAt, "2026-01-05T00:00:00.000Z");
+});
+
+test("contextOverlay refreshes stale entries, preserves base contexts, and bounds retained entries", async () => {
+  const base = await buildModel();
+  const templateTurn = base.snapshot.data.turns[0]!;
+  const baseSnapshot = new LiveHistorySnapshot({
+    ...base.snapshot.data,
+    contexts: [
+      {
+        turn_id: templateTurn.id,
+        system_messages: [],
+        assistant_replies: [
+          {
+            id: "base-reply",
+            content: "from base snapshot",
+            canonical_text: "from base snapshot",
+            display_segments: [],
+            content_preview: "from base snapshot",
+            model: "test-model",
+            created_at: "2026-01-01T00:00:00.000Z",
+            tool_call_ids: [],
+          },
+        ],
+        tool_calls: [],
+        raw_event_refs: [],
+      },
+    ],
+  });
+  const model = new LiteBrowserModel(baseSnapshot);
+
+  // Base snapshot context cannot be overridden by an overlay put.
+  model.putContexts([
+    {
+      turn_id: templateTurn.id,
+      system_messages: [],
+      assistant_replies: [
+        {
+          id: "overlay-override",
+          content: "should not override base",
+          canonical_text: "should not override base",
+          display_segments: [],
+          content_preview: "should not override base",
+          model: "test-model",
+          created_at: "2026-01-02T00:00:00.000Z",
+          tool_call_ids: [],
+        },
+      ],
+      tool_calls: [],
+      raw_event_refs: [],
+    },
+  ]);
+  assert.equal(model.getTurnContext(templateTurn.id)?.assistant_replies[0]?.id, "base-reply");
+
+  // Non-base overlay entries update when targeted rescans bring new replies, and evict past capacity.
+  const overlayTurnId = "turn:overlay-refresh";
+  const makeContext = (turnId: string, replyId: string) => ({
+    turn_id: turnId,
+    system_messages: [],
+    assistant_replies: [
+      {
+        id: replyId,
+        content: replyId,
+        canonical_text: replyId,
+        display_segments: [],
+        content_preview: replyId,
+        model: "test-model",
+        created_at: "2026-01-02T00:00:00.000Z",
+        tool_call_ids: [],
+      },
+    ],
+    tool_calls: [],
+    raw_event_refs: [],
+  });
+  model.putContexts([makeContext(overlayTurnId, "reply-v1")]);
+  assert.equal(model.getTurnContext(overlayTurnId)?.assistant_replies[0]?.id, "reply-v1");
+  model.putContexts([makeContext(overlayTurnId, "reply-v2")]);
+  assert.equal(model.getTurnContext(overlayTurnId)?.assistant_replies[0]?.id, "reply-v2");
+
+  for (let index = 0; index < 70; index += 1) {
+    model.putContexts([makeContext(`turn:evict-${index}`, `reply-${index}`)]);
+  }
+  assert.equal(model.getTurnContext(overlayTurnId), undefined);
+  assert.equal(model.getTurnContext("turn:evict-69")?.assistant_replies[0]?.id, "reply-69");
+});

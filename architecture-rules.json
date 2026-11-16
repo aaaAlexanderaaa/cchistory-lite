@@ -8,7 +8,7 @@
       "includeRoots": ["packages/domain/src"],
       "extensions": [".ts", ".tsx", ".js", ".mjs"],
       "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
-      "forbiddenPatterns": ["@cchistory/canonical", "@cchistory/source-adapters", "@cchistory/live-runtime", "@cchistory/storage", "/canonical/", "/source-adapters/", "/live-runtime/"]
+      "forbiddenPatterns": ["@cchistory/canonical", "@cchistory/source-adapters", "@cchistory/live-runtime", "@cchistory/lite-cli", "@cchistory/lite-tui", "@cchistory/storage", "/canonical/", "/source-adapters/", "/live-runtime/", "/lite-cli/", "/lite-tui/"]
     },
     {
       "id": "canonical-stays-storage-neutral",
@@ -16,7 +16,7 @@
       "includeRoots": ["packages/canonical/src"],
       "extensions": [".ts", ".tsx", ".js", ".mjs"],
       "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
-      "forbiddenPatterns": ["@cchistory/storage", "@cchistory/source-adapters", "@cchistory/live-runtime", "/source-adapters/", "/live-runtime/"]
+      "forbiddenPatterns": ["@cchistory/storage", "@cchistory/source-adapters", "@cchistory/live-runtime", "@cchistory/lite-cli", "@cchistory/lite-tui", "/source-adapters/", "/live-runtime/", "/lite-cli/", "/lite-tui/"]
     },
     {
       "id": "source-adapters-stop-at-parse-boundary",
@@ -24,7 +24,7 @@
       "includeRoots": ["packages/source-adapters/src"],
       "extensions": [".ts", ".tsx", ".js", ".mjs"],
       "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
-      "forbiddenPatterns": ["@cchistory/storage", "@cchistory/live-runtime", "@cchistory/canonical", "/canonical/"]
+      "forbiddenPatterns": ["@cchistory/storage", "@cchistory/live-runtime", "@cchistory/canonical", "@cchistory/lite-cli", "@cchistory/lite-tui", "/canonical/", "/live-runtime/", "/lite-cli/", "/lite-tui/"]
     },
     {
       "id": "lite-materializer-stays-zero-store",
@@ -32,7 +32,7 @@
       "includeRoots": ["packages/live-runtime/src"],
       "extensions": [".ts", ".tsx", ".js", ".mjs"],
       "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
-      "forbiddenPatterns": ["@cchistory/storage", "@cchistory/api", "@cchistory/api-client"]
+      "forbiddenPatterns": ["@cchistory/storage", "@cchistory/api", "@cchistory/api-client", "@cchistory/lite-cli", "@cchistory/lite-tui", "/lite-cli/", "/lite-tui/"]
     },
     {
       "id": "lite-surfaces-do-not-reach-full",

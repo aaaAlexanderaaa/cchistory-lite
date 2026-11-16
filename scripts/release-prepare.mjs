@@ -200,6 +200,7 @@ function parseArgs(argv) {
   const parsed = { version: undefined, repo: undefined, checkOnly: false, date: undefined, help: false };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
+    if (argument === '--' && index === 0) continue;
     if (argument === '--repo' && argv[index + 1]) parsed.repo = argv[++index];
     else if (argument.startsWith('--repo=')) parsed.repo = argument.slice('--repo='.length);
     else if (argument === '--check-only') parsed.checkOnly = true;

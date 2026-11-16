@@ -67,6 +67,7 @@ import {
   installRuntimeWarningFilter,
   orderSessionsByLastMessage,
   pathMatchesDirectoryScope,
+  resolveLatestTurnActivityAt,
   searchSessionsInMemory,
   searchTurnsInMemory,
   resolveTurnUsage,
@@ -442,6 +443,10 @@ export class LiveHistorySnapshot {
   getSessionActivityAt(sessionRef: string): string | undefined {
     const session = this.getSession(sessionRef);
     return session ? this.lastMessageAtBySessionId.get(session.id) ?? session.updated_at : undefined;
+  }
+
+  getLatestTurnActivityAt(turns: readonly UserTurnProjection[]): string | undefined {
+    return resolveLatestTurnActivityAt(turns);
   }
 
   getProjectsTreeProjection(options: LiveDirectoryScopeOptions = {}) {

@@ -64,7 +64,7 @@ When looking up native history while working here, follow
 ```bash
 pnpm run build:lite
 pnpm test                      # package tests + dependency-boundary verification
-pnpm run verify:governance     # architecture rule manifest + its harness
+pnpm run verify:governance     # architecture rule manifest, doc governance, and harness tests
 pnpm run verify:lite-artifact  # release closure builds, extracts, and runs
 ```
 

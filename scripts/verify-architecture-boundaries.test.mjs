@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -87,4 +87,26 @@ test("architecture include roots reject nested symbolic links", async (t) => {
   const result = await verifyArchitectureBoundaries({ root });
   assert.equal(result.ok, false);
   assert.match(messages(result), /rule fixture-boundary cannot scan include root: symbolic link is not permitted: src\/escaped\.ts/);
+});
+
+test("repository architecture rules forbid lower packages from importing Lite surface apps", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-architecture-repo-rules-"));
+  t.after(async () => rm(root, { recursive: true, force: true }));
+  await copyFile(path.join(repositoryRoot, "architecture-rules.json"), path.join(root, "architecture-rules.json"));
+  const stubs = [
+    ["packages/domain/src/index.ts", 'import "@cchistory/lite-tui";\n'],
+    ["packages/canonical/src/index.ts", "export const ok = true;\n"],
+    ["packages/source-adapters/src/index.ts", "export const ok = true;\n"],
+    ["packages/live-runtime/src/index.ts", 'import "@cchistory/lite-cli";\n'],
+    ["apps/lite-cli/src/index.ts", "export const ok = true;\n"],
+    ["apps/lite-tui/src/index.ts", "export const ok = true;\n"],
+  ];
+  for (const [rel, contents] of stubs) {
+    await mkdir(path.dirname(path.join(root, rel)), { recursive: true });
+    await writeFile(path.join(root, rel), contents, "utf8");
+  }
+  const result = await verifyArchitectureBoundaries({ root });
+  assert.equal(result.ok, false);
+  assert.match(messages(result), /packages\/domain\/src\/index\.ts: line 1: rule domain-stays-independent forbids "@cchistory\/lite-tui"/);
+  assert.match(messages(result), /packages\/live-runtime\/src\/index\.ts: line 1: rule lite-materializer-stays-zero-store forbids "@cchistory\/lite-cli"/);
 });

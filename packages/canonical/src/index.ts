@@ -60,6 +60,7 @@ export {
   compareTurnsByChronology,
   compareTurnsByRecency,
   orderSessionsByLastMessage,
+  resolveLatestTurnActivityAt,
 } from "./read-order.js";
 export {
   buildDirectoryScopedProjectTreeProjection,

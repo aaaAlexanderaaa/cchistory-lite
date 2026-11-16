@@ -1,0 +1,21 @@
+{
+  "sessionId": "gemini-scale-b",
+  "projectHash": "8e7d6c5b4a39281716151413121110ffeeddccbbaa0099887766554433221100",
+  "startTime": "2026-03-31T11:02:10.000Z",
+  "lastUpdated": "2026-03-31T11:02:48.000Z",
+  "messages": [
+    {
+      "id": "gemini-scale-b-user",
+      "timestamp": "2026-03-31T11:02:10.000Z",
+      "type": "user",
+      "content": "List the current ready tasks and tell me which one is blocked."
+    },
+    {
+      "id": "gemini-scale-b-assistant",
+      "timestamp": "2026-03-31T11:02:48.000Z",
+      "type": "gemini",
+      "content": "Handled gemini-scale-b.",
+      "model": "gemini-2.5-pro"
+    }
+  ]
+}

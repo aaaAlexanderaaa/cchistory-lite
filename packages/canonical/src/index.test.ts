@@ -31,6 +31,7 @@ import {
   matchesSearchCandidatePlan,
   materializeSearchCandidate,
   orderSessionsByLastMessage,
+  resolveLatestTurnActivityAt,
   resolveTurnUsage,
   SEARCH_CANONICAL_TEXT_SCAN_BYTES,
   SEARCH_TRUNCATION_MARKER,
@@ -511,6 +512,15 @@ test("shared read ordering uses stable IDs to break timestamp ties", () => {
   const turnB = { ...turn, id: "turn-b", turn_id: "turn-b" };
   assert.deepEqual([turnB, turnA].sort(compareTurnsByRecency).map((entry) => entry.id), ["turn-a", "turn-b"]);
   assert.deepEqual([turnB, turnA].sort(compareTurnsByChronology).map((entry) => entry.id), ["turn-a", "turn-b"]);
+  assert.equal(resolveLatestTurnActivityAt([]), undefined);
+  assert.equal(
+    resolveLatestTurnActivityAt([
+      { ...turnA, submission_started_at: "2026-01-03T00:00:00.000Z", last_context_activity_at: "2026-01-03T00:01:00.000Z" },
+      { ...turnB, submission_started_at: "2026-01-01T00:00:00.000Z", last_context_activity_at: "2026-01-04T00:00:00.000Z" },
+      { ...turnA, id: "turn-c", turn_id: "turn-c", submission_started_at: "2026-01-02T00:00:00.000Z", last_context_activity_at: "2026-01-02T00:05:00.000Z" },
+    ]),
+    "2026-01-04T00:00:00.000Z",
+  );
 });
 
 test("shared session ordering follows real message activity instead of native update metadata", () => {

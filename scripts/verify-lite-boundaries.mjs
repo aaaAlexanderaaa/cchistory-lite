@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const liteRoots = ["@cchistory/live-runtime", "@cchistory/lite-cli", "@cchistory/lite-tui"];
+const lowerPackages = ["@cchistory/domain", "@cchistory/canonical", "@cchistory/source-adapters", "@cchistory/live-runtime"];
+const liteSurfacePackages = new Set(["@cchistory/lite-cli", "@cchistory/lite-tui"]);
 const forbidden = new Set([
   "@cchistory/storage",
   "@cchistory/api-client",
@@ -15,12 +17,20 @@ const forbidden = new Set([
 
 const packages = await readWorkspacePackages();
 for (const rootName of liteRoots) {
-  verifyProductionGraph(rootName, []);
+  verifyProductionGraph(rootName, [], forbidden);
+}
+for (const packageName of lowerPackages) {
+  verifyProductionGraph(packageName, [], liteSurfacePackages);
 }
 for (const rootName of liteRoots) {
   const workspacePackage = packages.get(rootName);
   if (!workspacePackage) throw new Error(`Missing Lite workspace package: ${rootName}`);
-  await verifySourceImports(path.join(workspacePackage.dir, "src"));
+  await verifySourceImports(path.join(workspacePackage.dir, "src"), forbidden);
+}
+for (const packageName of lowerPackages) {
+  const workspacePackage = packages.get(packageName);
+  if (!workspacePackage) throw new Error(`Missing Lite workspace package: ${packageName}`);
+  await verifySourceImports(path.join(workspacePackage.dir, "src"), liteSurfacePackages);
 }
 
 console.log("[cchistory] Lite dependency boundary verification passed");
@@ -45,7 +55,7 @@ async function readWorkspacePackages() {
   return result;
 }
 
-function verifyProductionGraph(packageName, chain) {
+function verifyProductionGraph(packageName, chain, blockedPackages) {
   if (chain.includes(packageName)) return;
   const workspacePackage = packages.get(packageName);
   if (!workspacePackage) return;
@@ -55,18 +65,18 @@ function verifyProductionGraph(packageName, chain) {
     ...(workspacePackage.manifest.optionalDependencies ?? {}),
   };
   for (const dependencyName of Object.keys(dependencies)) {
-    if (forbidden.has(dependencyName)) {
+    if (blockedPackages.has(dependencyName)) {
       throw new Error(`Forbidden Lite production dependency: ${[...nextChain, dependencyName].join(" -> ")}`);
     }
-    verifyProductionGraph(dependencyName, nextChain);
+    verifyProductionGraph(dependencyName, nextChain, blockedPackages);
   }
 }
 
-async function verifySourceImports(sourceDir) {
+async function verifySourceImports(sourceDir, blockedPackages) {
   for (const filePath of await listTypeScriptFiles(sourceDir)) {
     if (filePath.endsWith(".test.ts")) continue;
     const source = await readFile(filePath, "utf8");
-    for (const dependencyName of forbidden) {
+    for (const dependencyName of blockedPackages) {
       if (source.includes(`\"${dependencyName}`) || source.includes(`'${dependencyName}`)) {
         throw new Error(`Forbidden Lite production import ${dependencyName} in ${path.relative(repoRoot, filePath)}`);
       }

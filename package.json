@@ -28,8 +28,9 @@
     "verify:lite": "pnpm --filter @cchistory/domain test && pnpm --filter @cchistory/canonical test && pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/live-runtime test && pnpm --filter @cchistory/lite-cli test && pnpm --filter @cchistory/lite-tui test && node scripts/verify-lite-boundaries.mjs",
     "verify:lite-artifact": "node scripts/verify-lite-artifact.mjs",
     "verify:architecture-boundaries": "node scripts/verify-architecture-boundaries.mjs",
-    "test:governance": "node --test scripts/verify-architecture-boundaries.test.mjs scripts/release-prepare.test.mjs",
-    "verify:governance": "pnpm run test:governance && pnpm run verify:architecture-boundaries",
+    "verify:docs": "python3 scripts/check_docs.py",
+    "test:governance": "node --test scripts/verify-architecture-boundaries.test.mjs scripts/release-prepare.test.mjs && python3 -m unittest scripts/test_check_docs.py",
+    "verify:governance": "pnpm run test:governance && pnpm run verify:architecture-boundaries && pnpm run verify:docs",
     "mock-data:validate": "python3 scripts/validate_mock_data.py",
     "release:lite": "node scripts/release-prepare.mjs",
     "release:prepare": "node scripts/release-prepare.mjs"

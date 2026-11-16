@@ -23,6 +23,8 @@ import type { LiveHistorySnapshot } from "@cchistory/live-runtime";
 import { BoundedCache } from "@cchistory/live-runtime";
 
 export const UNLINKED_PROJECT_KEY = "__unlinked__";
+const CONTEXT_OVERLAY_MAX_ENTRIES = 64;
+const CONTEXT_OVERLAY_MAX_BYTES = 16 * 1024 * 1024;
 
 export interface LiteTurnEntry {
   turn: UserTurnProjection;
@@ -75,8 +77,14 @@ export class LiteBrowserModel {
   readonly sourceHealth: LiteSourceHealth;
 
   private readonly sessionsById: Map<string, SessionProjection>;
-  /** Additive cache for contexts fetched on demand after the initial scan. */
-  private readonly contextOverlay = new Map<string, TurnContextProjection>();
+  /** Bounded cache for contexts fetched on demand after the initial scan. */
+  private readonly contextOverlay = new BoundedCache<string, TurnContextProjection>(
+    CONTEXT_OVERLAY_MAX_ENTRIES,
+    CONTEXT_OVERLAY_MAX_BYTES,
+    estimateContextBytes,
+  );
+  /** Holds contexts from the latest targeted load that individually exceed the overlay budget. */
+  private readonly transientOversizedContexts = new Map<string, TurnContextProjection>();
   private readonly searchCache = new BoundedCache<string, LiteSearchPage>(32, 20_000,
     (page, query) => page.results.reduce((total, row) => total + 1 + row.highlights.length * 2, Math.ceil(query.length / 128)));
 
@@ -133,17 +141,27 @@ export class LiteBrowserModel {
   }
 
   getTurnContext(turnId: string): TurnContextProjection | undefined {
-    return this.contextOverlay.get(turnId) ?? this.snapshot.getTurnContext(turnId);
+    return (
+      this.snapshot.getTurnContext(turnId) ??
+      this.contextOverlay.get(turnId) ??
+      this.transientOversizedContexts.get(turnId)
+    );
   }
 
   /**
-   * Record contexts fetched by a targeted rescan. Purely additive: an overlay
-   * never replaces or hides context that the base snapshot already carries.
+   * Record contexts fetched by a targeted rescan. Never replaces context that
+   * the base snapshot already carries, while updating stale overlay entries
+   * from earlier on-demand loads within bounded memory.
    */
   putContexts(contexts: readonly TurnContextProjection[]): void {
+    if (contexts.length === 0) return;
+    this.transientOversizedContexts.clear();
     for (const context of contexts) {
-      if (!this.contextOverlay.has(context.turn_id)) {
+      if (this.snapshot.getTurnContext(context.turn_id)) continue;
+      if (estimateContextBytes(context, context.turn_id) <= CONTEXT_OVERLAY_MAX_BYTES) {
         this.contextOverlay.set(context.turn_id, context);
+      } else {
+        this.transientOversizedContexts.set(context.turn_id, context);
       }
     }
   }
@@ -207,12 +225,26 @@ function buildProjectEntries(
       linkageState: "unlinked",
       sessionCount: new Set(unlinkedTurns.map((turn) => turn.session_id)).size,
       turnCount: unlinkedTurns.length,
-      lastActivityAt: unlinkedTurns.at(-1)?.last_context_activity_at,
+      lastActivityAt: snapshot.getLatestTurnActivityAt(unlinkedTurns),
       turns: unlinkedTurns.map((turn) => ({ turn, session: sessionsById.get(turn.session_id) })),
     });
   }
 
   return entries;
+}
+
+function estimateContextBytes(context: TurnContextProjection, turnId: string): number {
+  let bytes = 64 + 2 * turnId.length;
+  for (const sys of context.system_messages) {
+    bytes += 64 + 2 * sys.content.length;
+  }
+  for (const reply of context.assistant_replies) {
+    bytes += 64 + 2 * (reply.content.length + reply.content_preview.length);
+  }
+  for (const call of context.tool_calls) {
+    bytes += 64 + 2 * (call.input_summary.length + (call.output?.length ?? 0) + (call.output_preview?.length ?? 0));
+  }
+  return bytes;
 }
 
 function buildSourceHealth(sources: SourceStatus[]): LiteSourceHealth {

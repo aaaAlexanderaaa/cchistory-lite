@@ -9,12 +9,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Direct read-only Antigravity 2.32.1 SQLite history and per-model token usage
+  (`~/.gemini/antigravity/conversations/*.db`), including cache reads/writes,
+  reasoning output, tool-only turns, and assistant-only delegated sub-sessions.
+- Independent native model-call usage events on sessions (`usage_events`) so
+  mixed-model user turns attribute token spend to each recorded model in
+  `stats --by model` and TUI model rollups while preserving unique turn counts.
 - Experimental `grok_bot` source for Grok Bot sidebar agents (`~/agent-data` /
   `~/sand-data`), with SQLite conversation evidence preferred over duplicate JSONL.
 - Grok Bot titles prefer `profile.json`, then `SAND_AGENT_PROFILE_UPDATE`, then
   the first real user message; hidden prompts remain injected evidence.
 
 ### Fixed
+
+- Lower workspace packages (`domain`, `canonical`, `source-adapters`, `live-runtime`)
+  are now explicitly blocked from importing `lite-cli` or `lite-tui` in both
+  `architecture-rules.json` and `verify-lite-boundaries.mjs`.
+- Lite TUI `contextOverlay` uses a bounded LRU cache that refreshes stale
+  overlay entries on targeted rescans, and unlinked bucket activity derives from
+  canonical `resolveLatestTurnActivityAt` instead of turn-array tail order.
+- Anchored root `tmp/` in `.gitignore` and restored the eight missing sanitized
+  Gemini CLI fixture files under `mock_data/.gemini/tmp/`.
 
 - Grok Bot canonical titles use shared masking before truncation for user, profile
   and recovered names. Fully masked titles do not fall back to raw evidence.

@@ -89,3 +89,13 @@ export function compareTurnsByChronology(left: UserTurnProjection, right: UserTu
     left.id.localeCompare(right.id)
   );
 }
+
+/** Latest context activity across turns, independent of turn array ordering. */
+export function resolveLatestTurnActivityAt(turns: readonly UserTurnProjection[]): string | undefined {
+  let latest: string | undefined;
+  for (const turn of turns) {
+    const activityAt = turn.last_context_activity_at;
+    if (!latest || activityAt > latest) latest = activityAt;
+  }
+  return latest;
+}
