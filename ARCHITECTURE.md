@@ -25,6 +25,27 @@ apps/lite-tui ─┘             │                                        ├�
 Dependencies point one way only. Nothing below depends on anything above it, and no package in
 the chain depends on a persistent store.
 
+## Runtime flow and failure paths
+
+```mermaid
+flowchart LR
+  Entry["CLI / Shell / SQL / TUI Request"] --> RootGuard{"assertLiteSourceRoot and Input Validation"}
+  RootGuard -->|"Blocked path or invalid query"| FailOut["Structured Error Response (No source write or scan)"]
+  RootGuard -->|"Permitted source root"| Plan["Scan Plan and Memory Guard (Metadata, Targeted, Selective Codex, or Full)"]
+  Plan -->|"Refused oversized unit"| PartialDiag["Record Loss Diagnostic and Continue Readable Inputs"]
+  Plan -->|"Admitted read"| Adapters["Read-Only Source Adapters (SQLite readOnly, parse boundary)"]
+  Adapters -->|"Uncertain selective evidence"| Plan
+  Adapters -->|"Parsed atoms and diagnostics"| Canonical["Canonical Interpreter and auditProjectionConsistency"]
+  PartialDiag --> Canonical
+  Canonical --> Snapshot["In-Memory LiveHistorySnapshot and read_status (Zero Store)"]
+  Snapshot --> EntryOut["Rendered CLI / JSON / TUI Output"]
+```
+
+Invalid queries, missing targets, and forbidden store roots fail before scanning. Selective or
+targeted plans fall back conservatively to ordinary reads when native evidence is uncertain or
+changes mid-scan, and unreadable or budget-refused inputs record explicit diagnostics in
+`read_status` while preserving the readable history.
+
 ### `@cchistory/domain`
 
 Canonical type definitions and projections — `SessionProjection`, `UserTurnProjection`,

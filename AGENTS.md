@@ -5,19 +5,26 @@ memory out. Everything below follows from that.
 
 ## Outcome, judgment, and execution
 
-Start consequential assessments with [purpose and authority](docs/contracts/working-discipline.md#purpose-and-authority)
-and [task context and value](docs/contracts/working-discipline.md#task-context-and-value).
-Read [causal investigation](docs/contracts/working-discipline.md#causal-investigation) for scope and evidence,
-[capacity and observability](docs/contracts/working-discipline.md#capacity-and-observability) for resource/failure work,
-and [verification and completion](docs/contracts/working-discipline.md#verification-and-completion) before claiming delivery.
-Use only applicable sections for ordinary work; the learning survey is not a startup checklist.
+Working discipline is aligned with `template-project` (`discipline_version = "2026.11"`). Core
+packages, public schemas, `stable` adapters, and CLI/TUI surfaces are at **`stable` (`1 -> N`)**
+maturity; `tier: experimental` adapters and exploratory slices stay lightweight inside the
+invariants and projection contract below.
 
-The 2026-10-13 comparison found gaps in goal/ROI judgment, example-driven scope narrowing, and
-resource/evidence claims. Their rules now live at the linked owners. The
-[learning and validation record](docs/research/2026-10-13-working-discipline.md) retains the comparison
-and verification limits; recorded rules do not yet prove improved behavior. [PLAN.md](PLAN.md)
-tracks the current authorized work. The invariants, visual approval, source-access, fixture,
-and release requirements below remain in force.
+Before non-trivial changes, run the [three-perspective check](docs/contracts/working-discipline.md#priority-order-and-pre-code-judgment)
+and apply only the sections triggered by the work:
+
+- Priority order, stage rigor, and object triggers: [working-discipline.md](docs/contracts/working-discipline.md#priority-order-and-pre-code-judgment)
+- Consequential assessments and ROI/alternatives: [task context and value](docs/contracts/working-discipline.md#task-context-and-value)
+- Plain language, verbatim owner quotes, and `PLAN.md` ownership: [plain language and verbatim lineage](docs/contracts/working-discipline.md#plain-language-and-verbatim-lineage)
+- Runtime `mermaid` flows, single-owner state, new-file responsibility comments, and anti-monolith limits: [architecture clarity and module boundaries](docs/contracts/working-discipline.md#architecture-clarity-and-module-boundaries)
+- Scope, discriminating comparisons, and fallback rules: [causal investigation](docs/contracts/working-discipline.md#causal-investigation)
+- Memory/read guards and diagnostics: [capacity and observability](docs/contracts/working-discipline.md#capacity-and-observability)
+- Bidirectional runtime checks, environment-aware review, and open closed-loop independent review: [verification and completion](docs/contracts/working-discipline.md#verification-and-completion)
+
+Ordinary local repairs need only the invariants, relevant tests, and verification gates below.
+[PLAN.md](PLAN.md) tracks current authorized work; learning comparisons and applicability audits
+live in [2026-10-13 learning and validation](docs/research/2026-10-13-working-discipline.md) and
+[2026-11-16 discipline sync](docs/research/2026-11-16-working-discipline-sync.md).
 
 ## Invariants
 
@@ -43,12 +50,14 @@ When looking up native history while working here, follow
 ## Visual changes
 
 - Do not implement a visual or interaction design before the user has reviewed and approved the
-  proposed direction.
-- Present materially different design directions as a short multiple-choice question, including
-  the recommended option and its tradeoffs. Resolve any remaining visual ambiguity with the user
-  before editing surface code.
+  proposed direction; prior unapproved drafts and existing layout code never count as implied consent.
+- Present materially different structural or interaction directions as a short multiple-choice
+  question, including the recommended option and its tradeoffs. Resolve any remaining visual
+  ambiguity with the user before editing surface code.
 - Diagnosis, read-only inspection, and low-fidelity proposals are allowed before approval; changes
   to CLI/TUI layout, hierarchy, styling, labels, or interaction behavior are not.
+- Lite currently has only CLI and ANSI TUI surfaces (zero HTML/CSS); if a web or HTML surface is
+  added later, apply explicit design-token and layout modularization rules before building it.
 
 ## Before you commit
 
