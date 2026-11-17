@@ -39,6 +39,46 @@ const fixtureRoots = {
   grok_bot: "fixtures/grok-bot",
 } as const;
 
+test("Codex accounting keeps text-less calls, compactions and call timestamps in every stats dimension", async () => {
+  const snapshot = await scanLiteHistory({
+    homeDir: path.join(mockDataRoot, "empty-home"), sourceRefs: ["codex"],
+    sourceRoots: [{ sourceRef: "codex", baseDir: path.join(mockDataRoot, "fixtures/codex-accounting") }],
+    contextMode: "none",
+  });
+  assert.deepEqual(snapshot.projectionIssues, []);
+  assert.equal(snapshot.getReadStatus().loss_warning_count, 0);
+  const breakdown = snapshot.getUsageBreakdown({ filters: { timezone: "UTC" },
+    time_dimension: "day", matrix_dimensions: ["model", "day"] });
+  assert.equal(breakdown.overview.total_turns, 1);
+  assert.equal(breakdown.overview.total_tokens, 200312);
+  assert.equal(breakdown.overview.usage_event_count, 8);
+  const reference = JSON.parse(await readFile(path.join(mockDataRoot, "fixtures/ccusage-20.0.51.json"), "utf8"));
+  assert.deepEqual({ inputTokens: breakdown.overview.total_input_tokens,
+    cacheReadTokens: breakdown.overview.total_cache_read_input_tokens,
+    outputTokens: breakdown.overview.total_output_tokens,
+    reasoningOutputTokens: breakdown.overview.total_reasoning_output_tokens,
+    totalTokens: breakdown.overview.total_tokens }, {
+    inputTokens: reference.totals.inputTokens, cacheReadTokens: reference.totals.cacheReadTokens,
+    outputTokens: reference.totals.outputTokens, reasoningOutputTokens: reference.totals.reasoningOutputTokens,
+    totalTokens: reference.totals.totalTokens,
+  });
+  assert.ok(Math.abs(breakdown.overview.cost!.list_cost_usd - reference.totals.costUSD) < 1e-10);
+  assert.deepEqual(breakdown.by_time.rows.map(row => [row.key, row.total_tokens]), [
+    ["2026-11-16", 120], ["2026-11-17", 200192],
+  ]);
+  assert.ok(Math.abs(breakdown.overview.cost!.list_cost_usd - 0.3505255) < 1e-10);
+  for (const rows of [breakdown.by_model.rows, breakdown.by_project.rows, breakdown.by_source.rows, breakdown.by_time.rows, breakdown.matrix!.rows]) {
+    assert.equal(rows.reduce((sum, row) => sum + row.total_tokens, 0), 200312);
+    assert.ok(Math.abs(rows.reduce((sum, row) => sum + row.cost!.list_cost_usd, 0) - breakdown.overview.cost!.list_cost_usd) < 1e-10);
+  }
+  assert.ok(Math.abs(breakdown.model_resolutions.reduce((sum, row) => sum + row.list_cost_usd, 0) - breakdown.overview.cost!.list_cost_usd) < 1e-10);
+  const filtered = snapshot.getUsageOverview({ timezone: "UTC", after_date: "2026-11-17" });
+  assert.equal(filtered.total_tokens, 200192);
+  const noUser = snapshot.listResolvedSessions().find(session => session.source_session_id === "codex-no-user")!;
+  assert.equal(noUser.turn_count, 0);
+  assert.deepEqual(noUser.usage_events!.map(event => event.turn_id), [null, null]);
+});
+
 test("mapPool never runs more than the requested number of tasks at once", async () => {
   assert.equal(SAMPLE_RANK_CONCURRENCY, 4);
   const releases: Array<() => void> = [];
@@ -2382,4 +2422,42 @@ test("LiveHistorySnapshot exposes cached getUsageBreakdown and getUsageMatrix ac
     directMatrix.rows.reduce((sum, row) => sum + row.total_tokens, 0),
     filtered.overview.total_tokens,
   );
+});
+
+test("Codex counter and compaction edge cases preserve runtime projections and whole-call prices", async () => {
+  const scenarios = JSON.parse(await readFile(path.join(mockDataRoot, "fixtures/codex-counter-cases.json"), "utf8")) as Array<{
+    name: string; records: unknown[]; tokens: number; list_cost_usd?: number; events?: number;
+  }>;
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-runtime-counters-"));
+  try {
+    const file = path.join(root, "rollout.jsonl");
+    for (const [index, scenario] of scenarios.entries()) {
+      await writeFile(file, scenario.records.map(record => JSON.stringify(record)).join("\n") + "\n");
+      const timestamp = new Date(Date.UTC(2030, 0, 1, 0, 0, index));
+      await utimes(file, timestamp, timestamp);
+      const snapshot = await scanLiteHistory({ homeDir: path.join(root, "empty-home"), sourceRefs: ["codex"],
+        sourceRoots: [{ sourceRef: "codex", baseDir: root }], contextMode: "none" });
+      assert.deepEqual(snapshot.projectionIssues, [], scenario.name);
+      const breakdown = snapshot.getUsageBreakdown({ filters: { timezone: "UTC" }, matrix_dimensions: ["model", "day"] });
+      assert.equal(breakdown.overview.total_tokens, scenario.tokens, scenario.name);
+      if (scenario.events !== undefined) assert.equal(breakdown.overview.usage_event_count, scenario.events, scenario.name);
+      if (scenario.list_cost_usd !== undefined) {
+        for (const cost of [breakdown.overview.cost!.list_cost_usd, breakdown.by_model.rows[0]!.cost!.list_cost_usd,
+          breakdown.matrix!.rows[0]!.cost.list_cost_usd, breakdown.model_resolutions[0]!.list_cost_usd]) {
+          assert.ok(Math.abs(cost - scenario.list_cost_usd) < 1e-10, scenario.name);
+        }
+      }
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Codex inherited embedded usage stays on the parent while child calls remain independent", async () => {
+  const snapshot = await scanLiteHistory({ homeDir: path.join(mockDataRoot, "empty-home"), sourceRefs: ["codex"],
+    sourceRoots: [{ sourceRef: "codex", baseDir: path.join(mockDataRoot, "fixtures/codex-inherited-usage") }], contextMode: "none" });
+  assert.deepEqual(snapshot.projectionIssues, []);
+  assert.equal(snapshot.getUsageOverview({ timezone: "UTC" }).total_tokens, 131);
+  assert.equal(snapshot.getUsageOverview({ timezone: "UTC" }).usage_event_count, 2);
+  const child = snapshot.listResolvedSessions().find(session => session.source_session_id === "codex-delegation-child")!;
+  assert.equal(child.turn_count, 0);
+  assert.deepEqual(child.usage_events!.map(event => [event.turn_id, event.token_usage.total_tokens]), [[null, 11]]);
 });

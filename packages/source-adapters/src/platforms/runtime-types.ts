@@ -39,8 +39,6 @@ export interface SessionDraftLike {
   resume_command?: string;
   resume_working_directory?: string;
   resume_command_confidence?: number;
-  last_cumulative_token_usage?: TokenUsageLike;
-  cumulative_token_usage_by_baseline?: Record<string, TokenUsageLike>;
   delegated_parent_session_id?: string;
   delegated_history_start_ordinal?: number;
   delegated_agent_key?: string;
@@ -142,18 +140,7 @@ export interface CommonParseRuntimeHelpers {
 export interface CodexParseRuntimeHelpers extends CommonParseRuntimeHelpers {
   safeJsonParse(value: string | undefined): unknown;
   extractCumulativeTokenUsage(value: unknown): TokenUsageLike | undefined;
-  buildTokenUsageCheckpointBaselineKey(
-    cumulative: TokenUsageLike | undefined,
-    checkpoint: TokenUsageLike | undefined,
-  ): string | undefined;
-  mergeMaxTokenUsageMetrics(
-    left: TokenUsageLike | undefined,
-    right: TokenUsageLike,
-  ): TokenUsageLike;
-  diffTokenUsageMetrics(
-    current: TokenUsageLike | undefined,
-    previous: TokenUsageLike | undefined,
-  ): TokenUsageLike | undefined;
+
 }
 
 export interface ClaudeParseRuntimeHelpers extends CommonParseRuntimeHelpers {

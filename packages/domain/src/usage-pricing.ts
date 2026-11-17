@@ -22,6 +22,17 @@ export interface ModelTokenPrices {
   cache_write?: number;
   /** USD per 1M reasoning output tokens (defaults to `output` when omitted). */
   reasoning?: number;
+  /** Whole-request rates when input (including cache) exceeds the threshold. */
+  context_tiers?: ModelContextPriceTier[];
+}
+
+export interface ModelContextPriceTier {
+  above_input_tokens: number;
+  input?: number;
+  output?: number;
+  cache_read?: number;
+  cache_write?: number;
+  reasoning?: number;
 }
 
 export interface ModelCostMultipliers {

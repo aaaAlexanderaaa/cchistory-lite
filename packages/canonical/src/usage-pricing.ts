@@ -16,7 +16,7 @@ import type {
 } from "@cchistory/domain";
 import { BUILTIN_MODEL_PRICING_CATALOG, DEFAULT_MODEL_ALIASES } from "./model-pricing-catalog.js";
 
-const PROVIDER_PREFIX_RE = /^(?:anthropic|google|openai|xai|deepseek|moonshotai|zhipuai|zai|alibaba|minimax|mistral|cohere|opencode|openrouter|google-vertex|google-vertex-anthropic|vertex_ai)\//iu;
+const PROVIDER_PREFIX_RE = /^(?:anthropic|google|openai|xai|x-ai|grok|spacexai|deepseek|moonshotai|zhipuai|zai|alibaba|minimax|mistral|cohere|opencode|openrouter|google-vertex|google-vertex-anthropic|vertex_ai)\//iu;
 const REGION_OR_TAG_SUFFIX_RE = /(?:@[a-z0-9-]+|:(?:thinking|free|exacto|beta))$/iu;
 const VARIANT_SUFFIX_RE = /-(?:xhigh|high|medium|low|minimal|max|tiered|fast|thinking|preview|latest|customtools)$/iu;
 const DATE_SUFFIX_RE = /-\d{8}$/u;
@@ -31,6 +31,8 @@ export interface ResolvedModelPricing {
 }
 
 export interface UsageTokenQuantities {
+  /** Present only for an individual native call, never a turn/model aggregate. */
+  context_input_tokens?: number;
   input_tokens: number;
   cache_read_input_tokens: number;
   cache_creation_input_tokens: number;
@@ -216,7 +218,12 @@ export function addModelUsageToCostBreakdown(
     return resolved;
   }
 
-  const prices = resolved.unit_prices;
+  let prices = resolved.unit_prices;
+  if (tokens.context_input_tokens !== undefined) {
+    const tier = prices.context_tiers?.filter(item => tokens.context_input_tokens! > item.above_input_tokens)
+      .sort((left, right) => right.above_input_tokens - left.above_input_tokens)[0];
+    if (tier) prices = { ...prices, ...tier };
+  }
   const m = resolved.multipliers;
   const cacheReadRate = prices.cache_read ?? prices.input;
   const cacheWriteRate = prices.cache_write ?? prices.input;
@@ -260,11 +267,17 @@ export function buildModelPricingResolutions(
   rowsByModel: ReadonlyMap<string, UsageTokenQuantities>,
   config?: UsagePricingConfig,
   quotaLimitUsd?: number,
+  callRows?: readonly (UsageTokenQuantities & { model: string })[],
 ): ModelPricingResolution[] {
   const resolutions: ModelPricingResolution[] = [];
   for (const [rawModel, tokens] of rowsByModel.entries()) {
     const cost = createEmptyCostBreakdown(quotaLimitUsd);
-    const resolved = addModelUsageToCostBreakdown(cost, rawModel, tokens, config, quotaLimitUsd);
+    const resolved = resolveModelPricing(rawModel, config);
+    if (callRows) {
+      for (const row of callRows) if (row.model === rawModel) {
+        addModelUsageToCostBreakdown(cost, rawModel, row, config, quotaLimitUsd);
+      }
+    } else addModelUsageToCostBreakdown(cost, rawModel, tokens, config, quotaLimitUsd);
     resolutions.push({
       raw_model: resolved.raw_model,
       resolved_model: resolved.resolved_model,

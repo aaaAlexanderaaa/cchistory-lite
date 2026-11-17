@@ -6,6 +6,7 @@
 
 import type {
   ModelCatalogEntry,
+  ModelContextPriceTier,
   ModelCostMultipliers,
   ModelPricingResolution,
   QuotaConfig,
@@ -238,6 +239,7 @@ function extractCatalogOverridesFromModelsDev(rawApi: Record<string, unknown>): 
           ...(asNonNeg(cost.cache_read) !== undefined ? { cache_read: asNonNeg(cost.cache_read) } : {}),
           ...(asNonNeg(cost.cache_write) !== undefined ? { cache_write: asNonNeg(cost.cache_write) } : {}),
           ...(asNonNeg(cost.reasoning) !== undefined ? { reasoning: asNonNeg(cost.reasoning) } : {}),
+          ...parseContextTiers(cost),
         },
       };
     }
@@ -260,8 +262,27 @@ function parseCatalogEntry(id: string, value: unknown): ModelCatalogEntry | unde
       ...(asNonNeg(priceObj.cache_read) !== undefined ? { cache_read: asNonNeg(priceObj.cache_read) } : {}),
       ...(asNonNeg(priceObj.cache_write) !== undefined ? { cache_write: asNonNeg(priceObj.cache_write) } : {}),
       ...(asNonNeg(priceObj.reasoning) !== undefined ? { reasoning: asNonNeg(priceObj.reasoning) } : {}),
+      ...parseContextTiers(priceObj),
     },
   };
+}
+
+function parseContextTiers(raw: Record<string, unknown>): { context_tiers?: ModelContextPriceTier[] } {
+  const tiers: ModelContextPriceTier[] = [];
+  const entries = Array.isArray(raw.context_tiers) ? raw.context_tiers : Array.isArray(raw.tiers) ? raw.tiers : [];
+  for (const entry of entries) {
+    if (!isPlainObject(entry)) continue;
+    const nativeTier = isPlainObject(entry.tier) && entry.tier.type === "context" ? entry.tier : undefined;
+    const threshold = asNonNeg(entry.above_input_tokens ?? nativeTier?.size);
+    if (threshold === undefined) continue;
+    const tier: ModelContextPriceTier = { above_input_tokens: threshold };
+    for (const field of ["input", "output", "cache_read", "cache_write", "reasoning"] as const) {
+      const rate = asNonNeg(entry[field]);
+      if (rate !== undefined) tier[field] = rate;
+    }
+    if (Object.keys(tier).length > 1) tiers.push(tier);
+  }
+  return tiers.length ? { context_tiers: tiers.sort((a, b) => a.above_input_tokens - b.above_input_tokens) } : {};
 }
 
 function parseMultiplierObject(raw: Record<string, unknown>): ModelCostMultipliers {

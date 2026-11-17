@@ -86,7 +86,8 @@ export async function inspectSourceFileInventory(
   }
 
   const files = [...fileSet];
-  const filtered = adapter ? files.filter((filePath) => adapter.matchesSourceFile(filePath)) : [];
+  const matched = adapter ? files.filter((filePath) => adapter.matchesSourceFile(filePath)) : [];
+  const filtered = adapter?.filterSourceFiles?.(matched, baseDir) ?? matched;
   filtered.sort((left, right) => {
     const priorityDelta = getSourceFilePriority(platform, left) - getSourceFilePriority(platform, right);
     return priorityDelta !== 0 ? priorityDelta : left.localeCompare(right);

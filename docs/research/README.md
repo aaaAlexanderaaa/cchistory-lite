@@ -9,6 +9,7 @@ recommendations describe the stage when they were written, not an ever-growing i
 
 | Report | Evidence and code stage |
 | --- | --- |
+| [ccusage pricing and Codex accounting](2026-11-17-ccusage-accounting.md) | Pinned upstream paths, offline price sources, equal-input token reconciliation and synthetic binary comparison |
 | [Working discipline sync (2026.11)](2026-11-16-working-discipline-sync.md) | 2026-11-16 sync from `template-project` (`2026.11`): repository inventory, applicability classification, updated contract/entrypoint/runtime-flow docs, and deferred tooling options |
 | [Useful history read speed](2026-10-14-read-speed.md) | Speed follow-up against the successful pre-speed delivery: 13 equal-input pairs on an actual 16 GiB host, JSON/native-query work, answer/projection parity, contrary RSS and limits |
 | [Useful history capacity and recall](2026-10-13-useful-history-capacity.md) | Integrated delivery: actual 16 GiB host, equal-input old/current fixture comparisons including a 1.4 GB database and 100 MB+ sessions, diagnostic/recall/cache contracts and release checks; no universal capacity claim |

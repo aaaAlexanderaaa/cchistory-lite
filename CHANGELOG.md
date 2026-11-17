@@ -7,6 +7,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Refreshed 2,562-model offline pricing catalog with pinned LiteLLM additions,
+  `grok-4.6-build` / `grok-4.7-build` aliases, and official Grok 4.7 Build Fast
+  rates, including its distinct long-context prices.
+
+### Fixed
+
+- Codex statistics retain calls without assistant text or a user turn, cumulative-only
+  counters, and separately billed context compactions. Counter resets, repeated
+  notifications and inherited summaries preserve independent-call totals.
+- Active Codex rollouts take precedence over matching archived copies; default
+  discovery includes archived history while explicit source roots retain their scope.
+- Usage date filters follow native call timestamps. Growing checkpoints resolve to
+  one complete call before model pricing and context-tier selection.
+
 ## [0.8.0] - 2026-11-17
 
 ### Added

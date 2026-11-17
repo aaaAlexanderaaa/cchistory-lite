@@ -25,7 +25,7 @@
     "lite:artifact": "node scripts/build-lite-artifact.mjs",
     "test": "pnpm run verify:lite",
     "test:lite": "pnpm run verify:lite",
-    "verify:lite": "pnpm --filter @cchistory/domain test && pnpm --filter @cchistory/canonical test && pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/live-runtime test && pnpm --filter @cchistory/lite-cli test && pnpm --filter @cchistory/lite-tui test && node scripts/verify-lite-boundaries.mjs",
+    "verify:lite": "pnpm --filter @cchistory/domain test && pnpm --filter @cchistory/canonical test && pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/live-runtime test && pnpm --filter @cchistory/lite-cli test && pnpm --filter @cchistory/lite-tui test && node scripts/verify-lite-boundaries.mjs && node --test scripts/refresh-models-dev-pricing.test.mjs",
     "verify:lite-artifact": "node scripts/verify-lite-artifact.mjs",
     "verify:architecture-boundaries": "node scripts/verify-architecture-boundaries.mjs",
     "verify:docs": "python3 scripts/check_docs.py",

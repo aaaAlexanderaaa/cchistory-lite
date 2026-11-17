@@ -179,8 +179,6 @@ export interface HostDiscoveryEntry {
 }
 
 export interface SessionDraft extends ParsedSessionMetadata {
-  last_cumulative_token_usage?: TokenUsageMetrics;
-  cumulative_token_usage_by_baseline?: Record<string, TokenUsageMetrics>;
 }
 
 export interface SessionBuildInput {

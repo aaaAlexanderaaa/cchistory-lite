@@ -48,6 +48,7 @@ export interface UsageFilters {
 }
 
 export interface UsageAggregationRow {
+  context_input_tokens?: number;
   turn_id: string | null;
   session_id: string;
   source_id: string;
@@ -332,12 +333,8 @@ export function extractUnfilteredUsageRows(
 
     const events = eventsByTurn.get(turn.id);
     if (!events?.length) return [baseRow];
-    const modelUsage = new Map<string, TokenUsageSummary>();
-    for (const event of events) {
-      const model = event.model ?? "unknown";
-      modelUsage.set(model, mergeTokenUsageMetrics(modelUsage.get(model), event.token_usage)!);
-    }
-    return [...modelUsage].map(([model, usage]) => ({ ...baseRow, model, ...usageAmounts(usage) }));
+    return events.map(event => ({ ...baseRow, model: event.model ?? "unknown",
+      ...bucketTime(event.created_at), ...usageAmounts(event.token_usage, true) }));
   });
 
   for (const session of sessionsById.values()) {
@@ -357,7 +354,7 @@ export function extractUnfilteredUsageRows(
         model: event.model ?? "unknown",
         ...time,
         has_token_usage: true,
-        ...usageAmounts(event.token_usage),
+        ...usageAmounts(event.token_usage, true),
       });
     }
   }
@@ -420,7 +417,7 @@ function matchesModelQueries(model: string, queries: readonly string[]): boolean
   });
 }
 
-function usageAmounts(usage: TokenUsageSummary) {
+function usageAmounts(usage: TokenUsageSummary, nativeCall = false) {
   const input_tokens = usage.input_tokens ?? 0;
   const cache_creation_input_tokens = usage.cache_creation_input_tokens ?? 0;
   const cache_read_input_tokens =
@@ -442,6 +439,7 @@ function usageAmounts(usage: TokenUsageSummary) {
   const non_reasoning_output_tokens = Math.max(0, billable_output_tokens - reasoning_for_billing_tokens);
 
   return {
+    context_input_tokens: nativeCall ? input_tokens + cacheForSum : undefined,
     input_tokens,
     cache_read_input_tokens,
     cache_creation_input_tokens,

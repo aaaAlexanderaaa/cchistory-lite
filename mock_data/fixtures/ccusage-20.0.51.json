@@ -1,0 +1,73 @@
+{
+  "daily": [
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 40,
+      "costUSD": 0.00016199999999999998,
+      "date": "2026-11-16",
+      "inputTokens": 60,
+      "models": {
+        "gpt-6.1-terra": {
+          "cacheCreationTokens": 0,
+          "cacheReadTokens": 40,
+          "inputTokens": 60,
+          "isFallback": false,
+          "outputTokens": 20,
+          "reasoningOutputTokens": 2,
+          "totalTokens": 120
+        }
+      },
+      "outputTokens": 20,
+      "reasoningOutputTokens": 2,
+      "totalTokens": 120
+    },
+    {
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 150070,
+      "costUSD": 0.3503635,
+      "date": "2026-11-17",
+      "inputTokens": 50091,
+      "models": {
+        "gpt-6.1-sol": {
+          "cacheCreationTokens": 0,
+          "cacheReadTokens": 20,
+          "inputTokens": 20,
+          "isFallback": false,
+          "outputTokens": 4,
+          "reasoningOutputTokens": 2,
+          "totalTokens": 44
+        },
+        "gpt-6.1-terra": {
+          "cacheCreationTokens": 0,
+          "cacheReadTokens": 50,
+          "inputTokens": 70,
+          "isFallback": true,
+          "outputTokens": 17,
+          "reasoningOutputTokens": 6,
+          "totalTokens": 137
+        },
+        "grok-4.6-build": {
+          "cacheCreationTokens": 0,
+          "cacheReadTokens": 150000,
+          "inputTokens": 50001,
+          "isFallback": false,
+          "outputTokens": 10,
+          "reasoningOutputTokens": 2,
+          "totalTokens": 200011
+        }
+      },
+      "outputTokens": 31,
+      "reasoningOutputTokens": 10,
+      "totalTokens": 200192
+    }
+  ],
+  "totals": {
+    "cacheCreationTokens": 0,
+    "cacheReadTokens": 150110,
+    "costUSD": 0.3505255,
+    "inputTokens": 50151,
+    "outputTokens": 51,
+    "reasoningOutputTokens": 12,
+    "totalTokens": 200312
+  }
+}

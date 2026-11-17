@@ -43,6 +43,8 @@ export interface PlatformAdapter {
   getDefaultBaseDirCandidates(options: DefaultSourceResolutionOptions): string[];
   getSourceRoots?(baseDir: string): string[];
   matchesSourceFile(filePath: string): boolean;
+  /** Select native copies after format matching, before read planning. */
+  filterSourceFiles?(files: readonly string[], baseDir: string): string[];
   /** Describes how a targeted probe narrows work before canonical projection. */
   sessionTargeting: "file" | "container" | "hybrid";
   /**

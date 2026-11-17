@@ -46,6 +46,32 @@ targeted plans fall back conservatively to ordinary reads when native evidence i
 changes mid-scan, and unreadable or budget-refused inputs record explicit diagnostics in
 `read_status` while preserving the readable history.
 
+### Usage and offline prices
+
+```mermaid
+flowchart LR
+  Native["Native counters and request identities"] --> Parse["Adapter usage fragments"]
+  Parse --> Calls["Canonical independent calls and matched compactions"]
+  Calls --> Rows["Call timestamp, model and own user turn or null"]
+  Rows --> Stats["Project / model / source / time statistics"]
+  Catalog["Bundled models.dev prices + pinned LiteLLM additions"] --> Price["Per-call context rate and local overrides"]
+  Rows --> Price
+  Price --> Stats
+  Parse -->|"Unsupported or malformed evidence"| Diagnostics["Retained evidence and read diagnostics"]
+```
+
+`codex-usage.ts` owns Codex call identity and compaction reconciliation. A normal counter
+that already includes a compaction covers that request once; a matched remote compaction
+adds its own request usage. Calls without a real user submission retain `turn_id: null` and
+contribute to session and aggregate totals. `usage.ts` buckets independent calls by their
+recorded timestamp; user-turn counts deduplicate actual turn identities across rows.
+
+`usage-pricing.ts` selects whole-request context rates using the individual call's total input,
+including cache, before aggregation. Turn-only evidence retains base-rate estimates. The manual
+refresh script owns upstream downloads; CLI/TUI execution uses bundled prices and explicit local
+configuration. Source paths, comparison evidence and remaining format coverage are recorded in
+[the ccusage accounting comparison](docs/research/2026-11-17-ccusage-accounting.md).
+
 ### `@cchistory/domain`
 
 Canonical type definitions and projections — `SessionProjection`, `UserTurnProjection`,

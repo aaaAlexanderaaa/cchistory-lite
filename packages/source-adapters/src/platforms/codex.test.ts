@@ -1100,3 +1100,64 @@ test("[codex] root history jsonl stays out of default capture when scanning the 
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("[codex] accounting preserves all independent calls through an append refresh", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-codex-accounting-"));
+  try {
+    const fixture = path.join(getRepoMockDataRoot(), "fixtures/codex-accounting/accounting.jsonl");
+    const rows = (await readFile(fixture, "utf8")).trim().split("\n");
+    const file = path.join(root, "accounting.jsonl");
+    await writeFile(file, rows.slice(0, 8).join("\n") + "\n");
+    const source = createSourceDefinition("src-codex-accounting", "codex", root);
+    const before = (await runSourceProbe({}, [source])).sources[0]!;
+    assert.equal(before.turns[0]!.context_summary.total_tokens, 180);
+    await appendFile(file, rows.slice(8).join("\n") + "\n");
+    const nextTime = new Date("2030-01-01T00:00:00Z");
+    await utimes(file, nextTime, nextTime);
+    const refreshed = (await runSourceProbe({ previous_payloads: { [source.id]: before } }, [source])).sources[0]!;
+    const fresh = (await runSourceProbe({}, [source])).sources[0]!;
+    assert.equal(refreshed.turns[0]!.context_summary.total_tokens, 200290);
+    assert.deepEqual(refreshed.sessions[0]!.usage_events, fresh.sessions[0]!.usage_events);
+    assert.equal(fresh.sessions[0]!.usage_events!.length, 6);
+    assert.equal(fresh.loss_audits.length, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("[codex] default discovery includes archived history and explicit sessions roots keep their scope", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-codex-archive-"));
+  try {
+    const { getDefaultSourcesForHost } = await import("../index.js");
+    const home = path.join(root, ".codex");
+    const active = path.join(home, "sessions");
+    const archived = path.join(home, "archived_sessions");
+    await mkdir(active, { recursive: true });
+    await mkdir(archived);
+    await writeFile(path.join(active, "a.jsonl"), await readFile(path.join(getRepoMockDataRoot(), "fixtures/codex-accounting/accounting.jsonl")));
+    await writeFile(path.join(archived, "b.jsonl"), await readFile(path.join(getRepoMockDataRoot(), "fixtures/codex-accounting/no-user.jsonl")));
+    await writeFile(path.join(archived, "a.jsonl"), await readFile(path.join(active, "a.jsonl")));
+    const source = getDefaultSourcesForHost({ homeDir: root }).find(source => source.platform === "codex")!;
+    const all = (await runSourceProbe({}, [source])).sources[0]!;
+    assert.equal(all.sessions.length, 2);
+    assert.equal(all.sessions.flatMap(session => session.usage_events ?? []).reduce((sum, event) => sum + (event.token_usage.total_tokens ?? 0), 0), 200312);
+    const scoped = (await runSourceProbe({}, [{ ...source, base_dir: active }])).sources[0]!;
+    assert.equal(scoped.sessions.length, 1);
+    assert.equal(scoped.sessions[0]!.source_session_id, "codex-accounting");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("[codex] counter resets, repeated totals and completed compactions preserve independent billing", async () => {
+  const cases = JSON.parse(await readFile(path.join(getRepoMockDataRoot(), "fixtures/codex-counter-cases.json"), "utf8")) as Array<{ name: string; records: unknown[]; tokens: number; turn_tokens?: number }>;
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-codex-counters-"));
+  try {
+    const file = path.join(root, "rollout.jsonl");
+    const source = createSourceDefinition("src-codex-counter-cases", "codex", root);
+    for (const scenario of cases) {
+      await writeFile(file, scenario.records.map(record => JSON.stringify(record)).join("\n") + "\n");
+      const payload = (await runSourceProbe({}, [source])).sources[0]!;
+      const total = payload.sessions.flatMap(session => session.usage_events ?? [])
+        .reduce((sum, event) => sum + (event.token_usage.total_tokens ?? 0), 0);
+      assert.equal(total, scenario.tokens, scenario.name);
+      assert.equal(payload.turns.reduce((sum, turn) => sum + (turn.context_summary.total_tokens ?? 0), 0), scenario.turn_tokens ?? scenario.tokens, `${scenario.name}: turn totals`);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

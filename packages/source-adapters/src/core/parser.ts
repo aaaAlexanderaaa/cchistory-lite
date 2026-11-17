@@ -87,9 +87,6 @@ import {
   extractTokenUsage,
   normalizeStopReason,
   extractCumulativeTokenUsage,
-  buildTokenUsageCheckpointBaselineKey,
-  mergeMaxTokenUsageMetrics,
-  diffTokenUsageMetrics,
   isClaudeInterruptionMarker,
   normalizeFileUri,
   buildTextChunks,
@@ -427,9 +424,6 @@ export function parseRecord(
       ...buildCommonParseRuntimeHelpers(),
       safeJsonParse,
       extractCumulativeTokenUsage,
-      buildTokenUsageCheckpointBaselineKey,
-      mergeMaxTokenUsageMetrics,
-      diffTokenUsageMetrics,
     });
   }
   if (context.source.platform === "claude_code") {
@@ -762,8 +756,6 @@ export function createAdapterBlobBuilder(
     resume_command: draftPatch.resume_command,
     resume_working_directory: draftPatch.resume_working_directory,
     resume_command_confidence: draftPatch.resume_command_confidence,
-    last_cumulative_token_usage: draftPatch.last_cumulative_token_usage,
-    cumulative_token_usage_by_baseline: draftPatch.cumulative_token_usage_by_baseline,
     delegated_parent_session_id: draftPatch.delegated_parent_session_id,
     delegated_history_start_ordinal: draftPatch.delegated_history_start_ordinal,
     delegated_agent_key: draftPatch.delegated_agent_key,

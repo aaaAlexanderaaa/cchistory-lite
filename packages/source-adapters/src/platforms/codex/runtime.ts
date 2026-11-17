@@ -120,7 +120,7 @@ export function parseCodexRecord(
               actorKind,
               text,
               localSeq,
-              { usage, stopReason, usageApplied },
+              { usage, stopReason, usageApplied, messageId: helpers.asString(payload.id), model: helpers.asString(payload.model) },
             );
             localSeq = appended.nextSeq;
             usageApplied = appended.usageApplied;
@@ -145,7 +145,10 @@ export function parseCodexRecord(
         );
       }
       if (!usageApplied && usage) {
-        fragments.push(helpers.createTokenUsageFragment(context, record, localSeq++, timeKey, usage, stopReason));
+        fragments.push(helpers.createTokenUsageFragment(context, record, localSeq++, timeKey, usage, stopReason, {
+          source_event_type: "response_item.usage", model: helpers.asString(payload.model), message_id: helpers.asString(payload.id),
+          inherited: inheritedRecord,
+        }));
       }
       return { fragments, lossAudits };
     }
@@ -216,6 +219,21 @@ export function parseCodexRecord(
     }
   }
 
+  if (type === "token_usage_record" && helpers.isObject(parsed.payload)) {
+    const payload = parsed.payload;
+    const usage = helpers.extractTokenUsage(payload.usage);
+    fragments.push(helpers.createFragment(context, record, 0, "unknown", timeKey, {
+      signal_kind: "codex_request_usage",
+      source_event_type: type,
+      response_id: helpers.asString(payload.response_id),
+      token_usage: usage,
+      thread_token_usage: helpers.extractTokenUsage(payload.thread_token_usage),
+      model: helpers.asString(payload.model),
+      inherited: isInheritedCodexRecord(record, draft),
+    }));
+    return { fragments, lossAudits };
+  }
+
   if (type === "compacted" && helpers.isObject(parsed.payload)) {
     const payload = parsed.payload;
     fragments.push(
@@ -248,25 +266,15 @@ export function parseCodexRecord(
     if (eventType === "token_count") {
       const usage = helpers.extractTokenUsage(payload.info ?? payload);
       const cumulativeUsage = helpers.extractCumulativeTokenUsage(payload.info ?? payload);
-      const baselineKey = helpers.buildTokenUsageCheckpointBaselineKey(cumulativeUsage, usage);
-      let deltaUsage: typeof usage;
-      if (baselineKey && usage) {
-        const checkpoints = draft.cumulative_token_usage_by_baseline ??= {};
-        const previousCheckpoint = checkpoints[baselineKey];
-        deltaUsage = helpers.diffTokenUsageMetrics(usage, previousCheckpoint) ?? undefined;
-        checkpoints[baselineKey] = helpers.mergeMaxTokenUsageMetrics(previousCheckpoint, usage);
-      } else {
-        deltaUsage = helpers.diffTokenUsageMetrics(cumulativeUsage, draft.last_cumulative_token_usage) ?? undefined;
-      }
-      draft.last_cumulative_token_usage = cumulativeUsage ?? draft.last_cumulative_token_usage;
-      if (usage) {
+      if (usage || cumulativeUsage) {
         fragments.push(
-          helpers.createTokenUsageFragment(context, record, 0, timeKey, usage, undefined, {
+          helpers.createTokenUsageFragment(context, record, 0, timeKey, usage ?? cumulativeUsage!, undefined, {
             scope: "turn",
             source_event_type: "token_count",
-            delta_token_usage: deltaUsage,
             cumulative_token_usage: cumulativeUsage,
-            cumulative_token_usage_baseline_key: baselineKey,
+            checkpoint_usage_present: usage !== undefined,
+            model: helpers.asString(payload.model) ?? (helpers.isObject(payload.info) ? helpers.asString(payload.info.model) : undefined),
+            inherited: isInheritedCodexRecord(record, draft),
           }),
         );
         return { fragments, lossAudits };
@@ -469,6 +477,7 @@ function createCodexLifecycleEventFragment(
   return helpers.createFragment(context, record, seqNo, "unknown", timeKey, {
     signal_kind: eventType,
     source_event_type: eventType,
+    compaction_response_id: helpers.asString(payload.compaction_response_id),
     turn_id: helpers.asString(payload.turn_id) ?? helpers.asString(payload.turnId),
     status: helpers.asString(payload.status),
     reason: helpers.asString(payload.reason),

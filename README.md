@@ -63,7 +63,7 @@ Each adapter is referenced by its slot id.
 
 | Slot | Tool | Default root | Tier |
 | --- | --- | --- | --- |
-| `codex` | Codex | `~/.codex/sessions` | stable |
+| `codex` | Codex | `~/.codex/sessions`, `~/.codex/archived_sessions` | stable |
 | `claude_code` | Claude Code | `~/.claude/projects` | stable |
 | `factory_droid` | Factory Droid | `~/.factory/sessions` | stable |
 | `amp` | AMP | `~/.local/share/amp/threads` | stable |

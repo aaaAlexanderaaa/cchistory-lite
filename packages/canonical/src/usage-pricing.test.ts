@@ -404,3 +404,80 @@ test("parseUsagePricingInput handles raw models.dev/api.json dumps and timezone 
   assert.equal(relative7d.preset, "7d");
   assert.ok((relative7d.after_ts ?? 0) < nowMs);
 });
+
+test("Grok Build alias uses the current xAI catalog with explicit long-context rates", () => {
+  for (const name of ["grok-4.6-build", "xai/grok-4.6-build", "x-ai/grok-4.6-build", "grok-4.7-build", "xai/grok-4.7-build", "x-ai/grok-4.7-build"]) {
+    const pricing = resolveModelPricing(name);
+    assert.equal(pricing.resolved_model, name.includes("4.7") ? "grok-4.7" : "grok-4.6");
+    assert.equal(pricing.unit_prices!.input, 2);
+    assert.equal(pricing.unit_prices!.output, 6);
+    assert.equal(pricing.unit_prices!.cache_read, 0.5);
+    assert.deepEqual(pricing.unit_prices!.context_tiers, [{ above_input_tokens: 200000, input: 4, output: 12, cache_read: 1 }]);
+  }
+  const custom = resolveModelPricing("grok-4.6-build", parseUsagePricingInput({
+    prices: { "grok-4.6-build": { input: 3, output: 9 } },
+  }));
+  assert.equal(custom.match_kind, "custom");
+  assert.equal(custom.unit_prices!.input, 3);
+});
+
+test("context pricing is selected per call and costs agree across grouped statistics", () => {
+  const source = createSource({ slot_id: "codex", platform: "codex" });
+  const session = createSession(source, { model: "grok-4.6-build" });
+  const small = { input_tokens: 100000, cache_read_input_tokens: 100000, output_tokens: 10, total_tokens: 200010 };
+  const large = { input_tokens: 100001, cache_read_input_tokens: 100000, output_tokens: 10, total_tokens: 200011 };
+  const turn = createTurn(source, session);
+  turn.context_summary.token_usage = { input_tokens: 300001, cache_read_input_tokens: 300000, output_tokens: 30, total_tokens: 600031 };
+  session.usage_events = [small, small, large].map((token_usage, i) => ({ id: `call-${i}`, turn_id: turn.id,
+    model: session.model, created_at: turn.created_at, token_usage }));
+  const result = computeUsageBreakdown({ filters: { timezone: "UTC" },
+    listResolvedSessions: () => [session], listResolvedTurns: () => [turn],
+    listSources: () => [source], listProjects: () => [], matrix_dimensions: ["model", "day"] });
+  // Two calls at exactly 200K use base rates; only the 200001-input call uses the tier.
+  const expected = 2 * 0.25006 + 0.500124;
+  assert.ok(Math.abs(result.overview.cost!.list_cost_usd - expected) < 1e-12);
+  assert.equal(result.overview.total_turns, 1);
+  assert.equal(result.overview.usage_event_count, 3);
+  assert.ok(Math.abs(result.model_resolutions[0]!.list_cost_usd - expected) < 1e-12);
+  assert.ok(Math.abs(result.matrix!.rows[0]!.cost.list_cost_usd - expected) < 1e-12);
+});
+
+test("models.dev and local pricing configs preserve validated context tiers", () => {
+  const prices = { input: 1, output: 2, tiers: [
+    { tier: { type: "context", size: 1000 }, input: 3, cache_read: 0.3, output: 4 },
+    { tier: { type: "context", size: -1 }, input: 999 },
+    { tier: { type: "output", size: 2000 }, output: 999 },
+  ] };
+  const config = parseUsagePricingInput({ xai: { models: { "fixture-model": { cost: prices } } } });
+  const entry = config.catalog_overrides!["fixture-model"]!;
+  assert.deepEqual(entry.prices.context_tiers, [{ above_input_tokens: 1000, input: 3, output: 4, cache_read: 0.3 }]);
+  const roundTrip = parseUsagePricingInput({ catalog_overrides: { "fixture-model": entry } });
+  assert.deepEqual(roundTrip.catalog_overrides, config.catalog_overrides);
+});
+
+test("Grok Build Fast keeps its own whole-request rates across aliases and context tiers", () => {
+  for (const name of ["grok-4.7-build-fast", "xai/grok-4.7-build-fast", "x-ai/grok-4.7-build-fast", "grok-4.7-fast"]) {
+    const resolved = resolveModelPricing(name);
+    assert.equal(resolved.resolved_model, "grok-4.7-build-fast");
+    assert.deepEqual(resolved.unit_prices, { input: 4, output: 12, cache_read: 1,
+      context_tiers: [{ above_input_tokens: 200000, input: 6, output: 18, cache_read: 1.5 }] });
+  }
+  const source = createSource({ slot_id: "grok", platform: "grok" });
+  const session = createSession(source, { model: "grok-4.7-build-fast" });
+  const turn = createTurn(source, session);
+  turn.context_summary.token_usage = { input_tokens: 200001, cache_read_input_tokens: 200000, output_tokens: 20, total_tokens: 400021 };
+  session.usage_events = [
+    { input_tokens: 100000, cache_read_input_tokens: 100000, output_tokens: 10, total_tokens: 200010 },
+    { input_tokens: 100001, cache_read_input_tokens: 100000, output_tokens: 10, total_tokens: 200011 },
+  ].map((token_usage, index) => ({ id: `fast-${index}`, turn_id: turn.id, model: session.model, created_at: turn.created_at, token_usage }));
+  const result = computeUsageBreakdown({ filters: { timezone: "UTC" }, listResolvedSessions: () => [session],
+    listResolvedTurns: () => [turn], listSources: () => [source], listProjects: () => [], matrix_dimensions: ["model"] });
+  const expected = 0.50012 + 0.750186;
+  assert.ok(Math.abs(result.overview.cost!.list_cost_usd - expected) < 1e-12);
+  assert.ok(Math.abs(result.model_resolutions[0]!.list_cost_usd - expected) < 1e-12);
+  const custom = resolveModelPricing("grok-4.7-build-fast", parseUsagePricingInput({
+    prices: { "grok-4.7-build-fast": { input: 8, output: 24 } },
+  }));
+  assert.equal(custom.match_kind, "custom");
+  assert.equal(custom.unit_prices!.input, 8);
+});

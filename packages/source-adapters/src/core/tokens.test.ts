@@ -102,7 +102,7 @@ test("runSourceProbe keeps per-turn models when Claude switches models mid-sessi
   }
 });
 
-test("runSourceProbe keeps the final token checkpoint per turn and sums token usage across turns", async () => {
+test("runSourceProbe sums independent last-only Codex calls across turns", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
 
   try {
@@ -113,17 +113,17 @@ test("runSourceProbe keeps the final token checkpoint per turn and sums token us
     assert.equal(payload.turns.length, 2);
     assert.equal(payload.sessions[0]?.turn_count, 2);
 
-    assert.equal(payload.turns[0]?.context_summary.total_tokens, 135);
-    assert.equal(payload.turns[0]?.context_summary.token_usage?.input_tokens, 30);
-    assert.equal(payload.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 90);
-    assert.equal(payload.turns[0]?.context_summary.token_usage?.output_tokens, 15);
-    assert.equal(payload.contexts[0]?.assistant_replies[0]?.token_count, 135);
+    assert.equal(payload.turns[0]?.context_summary.total_tokens, 180);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.input_tokens, 50);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 110);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.output_tokens, 20);
+    assert.equal(payload.contexts[0]?.assistant_replies[0]?.token_count, 180);
 
-    assert.equal(payload.turns[1]?.context_summary.total_tokens, 235);
-    assert.equal(payload.turns[1]?.context_summary.token_usage?.input_tokens, 60);
-    assert.equal(payload.turns[1]?.context_summary.token_usage?.cache_read_input_tokens, 150);
-    assert.equal(payload.turns[1]?.context_summary.token_usage?.output_tokens, 25);
-    assert.equal(payload.contexts[1]?.assistant_replies[0]?.token_count, 235);
+    assert.equal(payload.turns[1]?.context_summary.total_tokens, 313);
+    assert.equal(payload.turns[1]?.context_summary.token_usage?.input_tokens, 100);
+    assert.equal(payload.turns[1]?.context_summary.token_usage?.cache_read_input_tokens, 180);
+    assert.equal(payload.turns[1]?.context_summary.token_usage?.output_tokens, 33);
+    assert.equal(payload.contexts[1]?.assistant_replies[0]?.token_count, 313);
 
     const sessionTotals = payload.turns.reduce(
       (totals, turn) => {
@@ -137,10 +137,10 @@ test("runSourceProbe keeps the final token checkpoint per turn and sums token us
     );
 
     assert.deepEqual(sessionTotals, {
-      input: 90,
-      cache: 240,
-      output: 40,
-      total: 370,
+      input: 150,
+      cache: 290,
+      output: 53,
+      total: 493,
     });
   } finally {
     await rm(tempRoot, { recursive: true, force: true });

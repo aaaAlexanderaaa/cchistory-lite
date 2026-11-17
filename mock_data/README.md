@@ -17,6 +17,15 @@ The scenarios are intentionally framed around what a user actually notices on di
 
 Stable self-host v1 adapter claims are anchored by `stable-adapter-validation.json`, which maps each `stable` platform to the sanitized real-world scenarios and runtime-only fixture files that back its regression coverage.
 
+`fixtures/codex-accounting/` contains synthetic native counters, repeated notifications,
+text-less calls, a session without user input, remote and locally covered compactions,
+reversed compaction markers, mixed models and a midnight boundary. Its ccusage 20.0.51
+golden JSON (`fixtures/ccusage-20.0.51.json`) comes from running the published binary on those same synthetic inputs.
+`fixtures/codex-counter-cases.json` and `fixtures/codex-inherited-usage/` cover resets, embedded
+usage, whole-call context prices and inherited summaries found by independent reviews.
+`fixtures/pricing-catalog/refresh.json` covers direct-provider precedence, LiteLLM unit
+conversion and context-rate retention. Neither family contains native user history.
+
 Antigravity is split across three fixture families:
 
 - `Library/Application Support/antigravity/...` and `.gemini/antigravity/brain/...` cover the offline evidence surface (`workspaceStorage`, `History`, `brain`), not the raw conversation stream.

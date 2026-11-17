@@ -1,4 +1,5 @@
 import path from "node:path";
+import { resolveCodexUsageAtoms } from "./codex-usage.js";
 import type {
   AtomEdge, CapturedBlob, ConversationAtom, DerivedCandidate, RawRecord, SourceFragment,
   SessionProjection, UserTurnProjection, TurnContextProjection, ToolCallProjection,
@@ -19,7 +20,8 @@ const normalizePathSeparators = (value: string): string => value.replace(/\\/g, 
  * callers discarding detail may omit tool/system display formatting. */
 export function interpretSessionEvidence(evidence: ParsedSessionEvidence,
   options: { formatContextBodies?: boolean } = {}): SessionInterpretation {
-  const { draft, atoms, fragments, records, blobs } = evidence;
+  const { draft, fragments, records, blobs } = evidence;
+  const atoms = resolveCodexUsageAtoms(draft, evidence.atoms, fragments);
   const projectCandidates = buildProjectObservationCandidates(draft, atoms, evidence.gitProjectEvidence);
   const submission = buildSubmissionGroups(draft, atoms, evidence.edges);
   const result = buildTurnsAndContext(draft, fragments, records, blobs, atoms, submission.groups, submission.edges, options.formatContextBodies);
@@ -394,9 +396,10 @@ export function buildTurnsAndContext(
     }
 
     const independentCalls = independentUsageAtoms([...groupAtoms, ...contextAtoms]);
+    const hasCoveredCodexCounter = draft.source_platform === "codex" && contextAtoms.some(atom => atom.payload.codex_usage_owner_id);
     const contextTokenUsage = independentCalls.length
       ? independentCalls.reduce<TokenUsageMetrics | undefined>((sum, atom) => mergeTokenUsageMetrics(sum, extractTokenUsageFromPayload(atom.payload)), undefined)
-      : summarizeAssistantReplyUsage(contextProjection.assistant_replies);
+      : hasCoveredCodexCounter ? undefined : summarizeAssistantReplyUsage(contextProjection.assistant_replies);
     const hasNoAssistantReply = contextProjection.assistant_replies.length === 0;
 
     turns.push({

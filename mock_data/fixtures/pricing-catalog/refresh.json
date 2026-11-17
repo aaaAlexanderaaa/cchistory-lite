@@ -1,0 +1,12 @@
+{
+  "models_dev": {
+    "xai": { "models": { "fixture-official": { "cost": { "input": 2, "output": 6, "cache_read": 0.5, "tiers": [{ "tier": { "type": "context", "size": 200000 }, "input": 4, "output": 12, "cache_read": 1 }] } } } },
+    "fixture-provider": { "models": { "fixture-unique": { "cost": { "input": 1, "output": 2 } }, "fixture-invalid": { "cost": { "input": -1, "output": 2 } } } }
+  },
+  "litellm": {
+    "xai/fixture-official": { "litellm_provider": "xai", "mode": "chat", "input_cost_per_token": 0.000003, "output_cost_per_token": 0.000009 },
+    "openai/fixture-new": { "litellm_provider": "openai", "mode": "chat", "input_cost_per_token": 0.000002, "output_cost_per_token": 0.000010, "cache_read_input_token_cost": 0.0000001, "input_cost_per_token_above_200k_tokens": 0.000004 },
+    "reseller/fixture-reseller": { "litellm_provider": "reseller", "mode": "chat", "input_cost_per_token": 0, "output_cost_per_token": 0 },
+    "openai/fixture-asset": { "litellm_provider": "openai", "mode": "image_generation", "input_cost_per_token": 1, "output_cost_per_token": 2 }
+  }
+}

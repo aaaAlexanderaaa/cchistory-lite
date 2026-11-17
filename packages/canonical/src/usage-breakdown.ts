@@ -209,9 +209,8 @@ export function computeCostForRows(rows: readonly UsageAggregationRow[], filters
     filters.quota_limit_usd,
   );
   const cost = createEmptyCostBreakdown(quotaLimitUsd);
-  const byModel = aggregateTokensByModel(rows);
-  for (const [model, quantities] of byModel.entries()) {
-    addModelUsageToCostBreakdown(cost, model, quantities, filters.pricing, quotaLimitUsd);
+  for (const row of rows) {
+    addModelUsageToCostBreakdown(cost, row.model, row, filters.pricing, quotaLimitUsd);
   }
   return cost;
 }
@@ -271,6 +270,7 @@ export function computeUsageBreakdown(
     aggregateTokensByModel(rows),
     params.filters.pricing,
     quotaLimitUsd,
+    rows,
   );
 
   return {

@@ -130,7 +130,7 @@ test("Lite CLI searches, reports stats, and writes one-way export", async () => 
 
     const humanStats = captureIo(tempHome);
     assert.equal(await runLiteCli(["stats", ...sourceArgs, "--no-dir"], humanStats.io), 0);
-    assert.match(humanStats.stdout.join(""), /Excluded zero-token turns:/);
+    assert.match(humanStats.stdout.join(""), /Total: 448,063/);
 
     const rollup = captureIo(tempHome);
     assert.equal(await runLiteCli(["stats", "--by", "source", ...unscopedArgs], rollup.io), 0);

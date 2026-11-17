@@ -1,6 +1,45 @@
 # Project work
 
-## Current work — 2026-11-17 Multi-dimensional token stats, cross-filtering, pricing, and quota reconciliation
+## Current work — 2026-11-17 Model pricing refresh and Codex accounting comparison
+
+Status: implementation and verification complete in the local working tree.
+
+Owner request (verbatim):
+> 更新一下模型，比如，grok-4.6-build之类的。从 [https://github.com/ccusage/ccusage](https://github.com/ccusage/ccusage) 进行学习和理解，获取它的数据源或沉淀的价格映射记录、代码路径和解析方式。纳入现有的统计模块。
+>
+> 另外，我注意到，现有的codex统计存在不准的情况，我大致算了一下，在另一台服务器上，比真实统计少了约10%计量 不知道是从哪里少的，你可以和ccusage做对比
+
+Owner clarification (verbatim):
+> token总量吧，因为我走API网关的，它没有阶梯计费，但是它统计的总量就是比我们多了一些些，它甚至还有按每次请求的token来对账的，所以我认为这里应该是我们这个项目的一些问题
+
+Pre-code judgment:
+- Executor: retain read-only sources, zero-store, existing CLI/TUI layout, canonical semantics, and compatible public projections.
+- Collaborator: refresh model coverage and reproduce accounting gaps on sanitized fixtures; preserve server reconciliation as a separately observed outcome.
+- Architect: adapters retain native usage and identity; canonical owns independent calls, compaction reconciliation, time attribution and cost; offline prices have reproducible upstream provenance.
+
+Reference: ccusage `58866ba681343634ab6e5add61f18f3b70aa98f7` (2026-11-17), including its pinned LiteLLM revision and models.dev snapshot/rules. Initial local findings: cumulative-only Codex usage is discarded; reply-dependent accounting loses calls without text; last-only events are treated as checkpoints; per-turn time bucketing shifts calls across date filters. Inspect compaction records and archived roots as additional candidates. The owner clarified that the comparison concerns token totals from a flat-price API gateway with per-request accounting. The server's exact request ledger and time range remain external inputs.
+
+Implementation: [ccusage accounting comparison](docs/research/2026-11-17-ccusage-accounting.md) records pinned source paths, 2,562 offline model prices, Grok Build alias and per-call context rates, Codex independent calls/compactions/counter resets, active/archive copy preference, and equal-input observations. The first independent reviewer's initial findings and closed-loop results remain in that record; a fresh second pass and both reviewers' closed-loop re-verifications are complete. All reported root flaws are resolved in their exact reproductions.
+
+Acceptance: focused counterexamples and fixture projection audit, built CLI stats with matching filters, required build/test/governance/artifact gates, documented upstream paths and remaining scope. Runtime pricing stays offline; local config overrides retain priority.
+
+Verification completed 2026-11-18 (Node 22.23.5, pnpm 10.30.3): `build:lite`, `pnpm test` (734 package tests + 3 catalog-refresh tests), `verify:governance`, and `verify:lite-artifact` all passed on the final implementation. Fixture layout/sanitization passed for 197 files; `git diff --check` passed. The artifact's initial npm-cache `EPERM` was resolved by using a temporary npm cache, then the complete extracted/installable artifact verification passed.
+
+Built CLI and ccusage 20.0.51 agree on the synthetic corpus: 200,312 tokens, all token components and UTC dates, $0.3505255. Runtime counter/inheritance fixtures have zero projection issues, including whole-request checkpoint tier pricing. Equal-input native observation against prior HEAD `03d5752` covered 66 sessions / 102 real user turns: 603,577,610 prior tokens versus 681,222,584 corrected, recovering 77,644,974 (11.40% of corrected total). Source diagnostics retain 83 unsupported response-item warnings and zero projection issues. The owner's remote gateway ledger remains the input for exact server reconciliation. Source safety and the existing CLI/TUI layout are preserved.
+
+Follow-up — 2026-11-18 commit and 0.8.1 preparation (verified; commit and push authorized):
+
+Owner request (verbatim):
+> grok-4.7-build呢，也有的话，就commit and push，我会去github发一个小版本，现在应该要发0.8.1了
+
+Synchronized the published `v0.8.0` / `bed229c` release commit from `origin/main`, preserving
+all accounting work. Added `grok-4.7-build` and distinct official Fast prices and updated
+Unreleased notes. The combined tree passes `build:lite`, 735 package tests + 4 catalog tests,
+`verify:governance`, `verify:lite-artifact`, 197-fixture validation, and the read-only
+`release:prepare -- 0.8.1 --check-only` preflight. Delivery is authorized to `origin/main`. The owner will
+run the GitHub Release workflow with `0.8.1`; that workflow owns the version bump and tag.
+
+## Previous work — 2026-11-17 Multi-dimensional token stats, cross-filtering, pricing, and quota reconciliation
 
 Status: implementation and verification complete in the local working tree.
 

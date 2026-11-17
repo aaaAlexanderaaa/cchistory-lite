@@ -340,12 +340,18 @@ cross-filters (`c` clears), `t`/`b`/`w`/`o` to cycle time window, bucket, week
 reset mode, or sort order, `v` to open the full-width matrix table, `m` to
 calibrate per-model/per-component multipliers and aliases in memory (`+`/`-`,
 `0`/`1`/`u`, `a` alias, `e` value, `R` reset), and `$` to set a period USD quota.
-Both CLI `stats` and TUI use the bundled offline `models.dev/api.json` snapshot
+Both CLI `stats` and TUI use the bundled offline `models.dev/api.json` snapshot,
+supplemented with missing direct-provider models from a pinned LiteLLM snapshot
 (plus local `--pricing` / `CCHISTORY_PRICING_CONFIG` overrides, see
 [pricing.example.json](pricing.example.json)) and never access the network at
-runtime. For Antigravity SQLite history, model totals use each recorded model
-call and include `turn_id: null` usage events; overview and source/project/day
-rollups retain unique user-turn counts.
+runtime. `grok-4.6-build` and `grok-4.7-build` map to their matching public API reference prices;
+`grok-4.7-build-fast` retains the official Grok Build Fast rates and context tiers;
+local aliases and price overrides can select gateway-specific rates. Native independent
+calls use their own model and timestamp, including Codex compaction requests and calls
+with `turn_id: null`. Overview and source/project/day rollups retain unique user-turn
+counts. Context price tiers apply to individual recorded calls; turn-only evidence uses
+base rates. See [pricing sources and accounting comparisons](../research/2026-11-17-ccusage-accounting.md)
+for the manual catalog refresh and reproducible ccusage comparison.
 
 The interactive TUI uses the alternate screen and raw keyboard input. Search
 queries of one to three characters wait for Enter; queries of four or more

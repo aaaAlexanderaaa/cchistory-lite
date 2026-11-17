@@ -94,6 +94,9 @@ test("projection audit binds independent usage events to their own turn and chec
   assert.ok(codes.has("duplicate-id"));
   assert.ok(codes.has("usage-event-turn-mismatch"));
   assert.ok(codes.has("usage-event-total-mismatch"));
+  const missing = { ...session, usage_events: [session.usage_events[1]!] };
+  assert.ok(auditProjectionConsistency({ ...input, sessions: [missing] })
+    .some(issue => issue.code === "usage-event-total-mismatch"));
 });
 
 test("usage rollups preserve recorded call models and unique user-turn counts", () => {

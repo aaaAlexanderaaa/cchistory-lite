@@ -174,7 +174,9 @@ export function auditProjectionConsistency(input: ProjectionAuditInput): Project
         (eventTotals.get(event.turn_id) ?? 0) + (resolveStructuredTokenTotal(event.token_usage) ?? 0));
     }
     for (const turn of ownTurns) {
-      if (eventTotals.has(turn.id) && eventTotals.get(turn.id) !== resolveStructuredTokenTotal(turn.context_summary.token_usage)) {
+      const turnTotal = resolveStructuredTokenTotal(turn.context_summary.token_usage) ?? turn.context_summary.total_tokens;
+      const checkEvents = eventTotals.has(turn.id) || Boolean(session.usage_events?.length && turnTotal !== undefined);
+      if (checkEvents && (eventTotals.get(turn.id) ?? 0) !== turnTotal) {
         issues.push({ code: "usage-event-total-mismatch", entity: "turn", id: turn.id,
           detail: "independent model-call usage differs from the turn's structured token total" });
       }
