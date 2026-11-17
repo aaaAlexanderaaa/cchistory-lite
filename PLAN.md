@@ -1,6 +1,26 @@
 # Project work
 
-## Current work — 2026-11-17 Maintenance fixes, Python doc governance, and 0.8.0 release prep
+## Current work — 2026-11-17 Multi-dimensional token stats, cross-filtering, pricing, and quota reconciliation
+
+Status: implementation and verification complete in the local working tree.
+
+Owner request (verbatim):
+> 我需要优化一下token统计在CLI/TUI的展示，一方面是现在的布局和展示效果和用户体验，好像不能同时看到按项目*模型*工具*时间的统计，也不支持以上几个维度的filter，这是一个用户体验问题，需要你的思考。用户故事是，我想知道我烧的token值多少钱，我想知道我这个时间段大约用了多少额度（因为正好我的周限、月限用了xx%，我想对个帐），还要支持不同的模型用不同的模型倍率，因为如果我对不上帐，那有可能是某个模型的某种计价（比如缓存）是有额外的倍率的，模型价格参考models.dev/api.json ; gemini-pro那个现在是carbon，flash是hydrogen
+
+Approved choices (2026-11-17):
+- TUI layout & interaction: 2×2 four-dimension interactive dashboard (`Project`, `Model`, `Source`, `Time`) with `Space`/`Enter` cross-filtering, `v` full-width matrix breakdown view, and `m` in-memory multiplier/alias/quota calibration drawer.
+- Pricing & multipliers: bundled offline `models.dev/api.json` snapshot + built-in aliases (`gemini-pro-orchestrator` → `gemini-4-carbon`, `gemini-flash-worker-agy` → `gemini-4-hydrogen`) + explicit local JSON overrides (`--pricing`, `CCHISTORY_PRICING_CONFIG`) and inline CLI flags; zero runtime network calls or persistent store writes; manual local catalog refresh script (`scripts/refresh-models-dev-pricing.mjs`) + `--export-pricing` config helper.
+- Dual-layer cost & quota model: preserve raw `models.dev` list USD cost (`list_cost_usd`) alongside multiplier-adjusted cost (`adjusted_cost_usd` = `model_multiplier × component_multiplier`) and period quota percentage (`quota_percent`).
+- Time & scope defaults: local timezone day/week/month bucketing, `rolling_7d` default week mode (switchable to `iso_week` / `custom_reset`), CLI `stats` preserves `--dir=$PWD` default with explicit scope notice and `--no-dir` hint.
+
+Scope & module ownership:
+- `packages/domain/src/usage-pricing.ts` & `packages/domain/src/index.ts`: pure usage, pricing, multiplier, matrix, and breakdown contracts.
+- `packages/canonical/src/model-pricing-catalog.ts`, `packages/canonical/src/usage-pricing-config.ts`, `packages/canonical/src/usage-pricing.ts`, `packages/canonical/src/usage-time.ts`, `packages/canonical/src/usage.ts`, `packages/canonical/src/usage-breakdown.ts`: separated `cache_read` / `cache_write`, reasoning double-count reconciliation, timezone-aware bucketing, cross-filtering, matrix aggregation, and dual-layer cost/quota computation.
+- `packages/live-runtime/src/index.ts`: snapshot APIs `getUsageMatrix` and `getUsageBreakdown` (with row caching) and re-exported canonical pricing/time helpers.
+- `apps/lite-cli/src/stats-command.ts`, `apps/lite-cli/src/stats-render.ts`, `apps/lite-cli/src/json-v2.ts`, `apps/lite-cli/src/index.ts`, `apps/lite-cli/src/agent-contract.ts`: multi-dimension `--by`, `--model`, `--from`/`--to`/`--since`, `--tz`, `--week-mode`, `--sort`, `--pricing`, `--alias`, `--multiplier`, `--cache-read-multiplier`, `--cache-write-multiplier`, `--quota`, `--explain-pricing`, `--export-pricing`, tabular CLI output, and additive JSON output.
+- `apps/lite-tui/src/stats-state.ts`, `apps/lite-tui/src/stats-query.ts`, `apps/lite-tui/src/stats-render.ts`, `apps/lite-tui/src/model.ts`, `apps/lite-tui/src/state.ts`, `apps/lite-tui/src/render.ts`, `apps/lite-tui/src/input.ts`, `apps/lite-tui/src/index.ts`: 2×2 interactive dashboard, full-column matrix view, and multiplier/alias/quota calibration drawer.
+
+## Previous work — 2026-11-17 Maintenance fixes, Python doc governance, and 0.8.0 release prep
 
 Status: implementation and verification complete in the local working tree; owner
 authorized closeout, verification, and releasing `0.8.0`. Reused `template-project`

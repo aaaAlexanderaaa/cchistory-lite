@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 
 import { realpathSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+import type { UsagePricingConfig } from "@cchistory/domain";
 import {
   formatScanGuardWarning,
+  mergeUsagePricingConfigs,
+  parseUsagePricingInput,
   scanLiteHistory,
   type LiteSourceRoot,
   type LiveHistorySnapshot,
@@ -62,6 +67,8 @@ interface ParsedArgs {
   sourceRefs: string[];
   safeMode: boolean;
   limitFiles?: number;
+  pricingFiles: string[];
+  quotaUsd?: number;
   projectRef?: string;
   sessionRef?: string;
   turnRef?: string;
@@ -72,6 +79,37 @@ interface ParsedArgs {
 }
 
 class TuiUsageError extends Error {}
+
+async function loadTuiPricingConfig(
+  pricingFiles: readonly string[],
+  cwd: string,
+  homeDir: string | undefined,
+): Promise<UsagePricingConfig | undefined> {
+  const paths: string[] = [];
+  const envFile = process.env.CCHISTORY_PRICING_CONFIG?.trim();
+  if (envFile) paths.push(envFile);
+  for (const entry of pricingFiles) paths.push(entry);
+  if (paths.length === 0) return undefined;
+
+  const home = homeDir ?? os.homedir();
+  const layers: UsagePricingConfig[] = [];
+  for (const rawPath of paths) {
+    const expanded = rawPath === "~" ? home : rawPath.startsWith("~/") || rawPath.startsWith("~\\") ? path.join(home, rawPath.slice(2)) : rawPath;
+    const resolved = path.resolve(cwd, expanded);
+    let content: string;
+    try {
+      content = await readFile(resolved, "utf8");
+    } catch (error) {
+      throw new TuiUsageError(`Cannot read pricing file ${resolved}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
+      layers.push(parseUsagePricingInput(JSON.parse(content)));
+    } catch (error) {
+      throw new TuiUsageError(`Invalid pricing JSON in ${resolved}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return mergeUsagePricingConfigs(...layers);
+}
 
 export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): Promise<number> {
   let parsed: ParsedArgs;
@@ -96,6 +134,7 @@ export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): P
   configureColorPolicy({ color: parsed.color ?? io.isInteractiveTerminal });
 
   try {
+    const pricingConfig = await loadTuiPricingConfig(parsed.pricingFiles, io.cwd, io.homeDir);
     const scan = io.scan ?? scanLiteHistory;
     const scanOptions: ScanLiteHistoryOptions = {
       homeDir: io.homeDir,
@@ -118,7 +157,11 @@ export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): P
 
     const snapshot = await scan(scanOptions);
     const includeSessionRefs = parsed.sessionRef ? [parsed.sessionRef] : undefined;
-    const model = new LiteBrowserModel(snapshot, { includeSessionRefs });
+    const model = new LiteBrowserModel(snapshot, {
+      includeSessionRefs,
+      pricingConfig,
+      quotaLimitUsd: parsed.quotaUsd,
+    });
     const state = applyEntryPoints(model, createLiteBrowserState(model), parsed);
 
     if (!io.isInteractiveTerminal) {
@@ -126,7 +169,16 @@ export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): P
       return 0;
     }
 
-    return await runInteractive({ io, scan, scanOptions, model, state, includeSessionRefs });
+    return await runInteractive({
+      io,
+      scan,
+      scanOptions,
+      model,
+      state,
+      includeSessionRefs,
+      pricingConfig,
+      quotaLimitUsd: parsed.quotaUsd,
+    });
   } catch (error) {
     io.stderr(`${errorMessage(error)}\n`);
     return error instanceof TuiUsageError ? 2 : 1;
@@ -142,6 +194,8 @@ interface InteractiveOptions {
   model: LiteBrowserModel;
   state: LiteBrowserState;
   includeSessionRefs?: readonly string[];
+  pricingConfig?: UsagePricingConfig;
+  quotaLimitUsd?: number;
 }
 
 async function runInteractive(options: InteractiveOptions): Promise<number> {
@@ -225,7 +279,11 @@ async function runInteractive(options: InteractiveOptions): Promise<number> {
       // Assign only after the rescan resolves: a failed refresh must leave the
       // previous complete snapshot in place. A scan-guard refusal rejects the
       // same way, so it keeps the previous snapshot too.
-      model = new LiteBrowserModel(replacement, { includeSessionRefs: options.includeSessionRefs });
+      model = new LiteBrowserModel(replacement, {
+        includeSessionRefs: options.includeSessionRefs,
+        pricingConfig: options.pricingConfig,
+        quotaLimitUsd: options.quotaLimitUsd,
+      });
       state = createLiteBrowserState(model);
       dispatch({
         type: "set-status",
@@ -444,6 +502,7 @@ function parseArgs(argv: string[], cwd: string): ParsedArgs {
   const parsed: ParsedArgs = {
     sourceRoots: [],
     sourceRefs: [],
+    pricingFiles: [],
     safeMode: false,
     help: false,
     version: false,
@@ -492,6 +551,20 @@ function parseArgs(argv: string[], cwd: string): ParsedArgs {
       const value = Number(raw);
       if (!Number.isSafeInteger(value) || value < 1) throw new TuiUsageError("--limit-files must be an integer >= 1.");
       parsed.limitFiles = value;
+      continue;
+    }
+    if (argument === "--pricing" || argument.startsWith("--pricing=")) {
+      const raw = readOptionValue(argv, index, argument, "pricing");
+      if (argument === "--pricing") index += 1;
+      parsed.pricingFiles.push(raw);
+      continue;
+    }
+    if (argument === "--quota" || argument.startsWith("--quota=")) {
+      const raw = readOptionValue(argv, index, argument, "quota");
+      if (argument === "--quota") index += 1;
+      const value = Number(raw);
+      if (!Number.isFinite(value) || value <= 0) throw new TuiUsageError("--quota must be a positive USD number.");
+      parsed.quotaUsd = value;
       continue;
     }
     const refFlag = matchRefFlag(argument);
@@ -556,6 +629,8 @@ Source options:
   --source <slot-or-id>              Scan only the named adapters; repeatable
   --limit-files <n>                  Limit source files scanned per adapter
   --safe                             Enable adapter safe mode
+  --pricing <file>                   Local JSON pricing/multiplier/quota file; repeatable
+  --quota <usd>                      Initial period quota limit in USD for stats
 
 Entry points (at most one of --project/--session/--turn):
   --project <ref>                    Open focused on a project's turns
@@ -575,6 +650,7 @@ Keys:
   p / S        browse by project / by session
   t / d        focus turns / detail pane
   /            search        i  stats    s  sources    ? help
+  Stats (i):   Tab/1-4 quadrant · Space filter · v matrix · m calibrate · t/b window · $ quota
   r            refresh the snapshot from disk
   q            quit and release the snapshot
 

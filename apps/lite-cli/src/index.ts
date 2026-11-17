@@ -17,7 +17,6 @@ import type {
   SessionContributionStats,
   SourceStatus,
   TurnContextProjection,
-  UsageStatsDimension,
   UserTurnProjection,
 } from "@cchistory/domain";
 import {
@@ -53,6 +52,7 @@ import {
 import { resourceError } from "./resource-errors.js";
 import { runLiteShell } from "./shell.js";
 import { buildAgentContract, type AgentCommandContract } from "./agent-contract.js";
+import { runStatsCommand } from "./stats-command.js";
 import { VERSION } from "./version.js";
 
 export { VERSION } from "./version.js";
@@ -77,12 +77,26 @@ const VALUE_FLAGS = new Set([
   "offset",
   "project",
   "by",
+  "model",
+  "from",
+  "to",
+  "since",
+  "tz",
+  "week-mode",
+  "sort",
+  "pricing",
+  "alias",
+  "multiplier",
+  "cache-read-multiplier",
+  "cache-write-multiplier",
+  "quota",
+  "export-pricing",
   "format",
   "out",
   "dir",
   "request", "sql", "sql-file", "params", "idle-timeout",
 ]);
-const BOOLEAN_FLAGS = new Set(["safe", "json", "help", "version", "all", "no-dir", "complete", "diagnostics"]);
+const BOOLEAN_FLAGS = new Set(["safe", "json", "help", "version", "all", "no-dir", "complete", "diagnostics", "explain-pricing"]);
 const FORBIDDEN_COMMANDS = new Set([
   "sync",
   "import",
@@ -228,7 +242,7 @@ export async function runLiteCli(argv: string[], io: LiteCliIo = defaultIo()): P
         runShow(parsed, snapshot, io, jsonMode);
         return 0;
       case "stats":
-        runStats(parsed, snapshot, io, jsonMode);
+        await runStats(parsed, snapshot, io, jsonMode);
         return 0;
       case "export":
         await runExport(parsed, snapshot, io);
@@ -667,25 +681,24 @@ function runShow(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
   throw new UsageError(`show target must be project, session, turn, or source; received ${JSON.stringify(kind)}.`);
 }
 
-function runStats(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliIo, jsonMode: JsonOutputMode): void {
-  const projectRef = value(parsed, "project");
-  const sourceIds = values(parsed, "source").map((ref) => requireSource(snapshot, ref).id);
-  const filters = {
-    project_id: projectRef ? requireProject(snapshot, projectRef).project_id : undefined,
-    source_ids: sourceIds.length > 0 ? sourceIds : undefined,
-    directory_scope: resolveDirectoryScope(parsed, io),
-  };
-  const overview = snapshot.getUsageOverview(filters);
-  const by = value(parsed, "by");
-  const dimension = by ? parseStatsDimension(by) : undefined;
-  const rollup = dimension ? snapshot.getUsageRollup(dimension, filters) : undefined;
-  output(
+async function runStats(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliIo, jsonMode: JsonOutputMode): Promise<void> {
+  await runStatsCommand({
+    parsed,
+    snapshot,
     io,
     jsonMode,
-    { schema: JSON_SCHEMA, kind: "stats", overview, rollup },
-    renderStats(overview, rollup),
-    snapshot, resolveDirectoryScope(parsed, io),
-  );
+    directoryScope: resolveDirectoryScope(parsed, io),
+    deps: {
+      UsageError,
+      requireSource,
+      requireProject,
+      assertSafeExportDestination,
+      renderMeta: styleMeta,
+      renderDashRow: styleDashRow,
+      emitOutput: output,
+      jsonSchema: JSON_SCHEMA,
+    },
+  });
 }
 
 function requiresFullContextSnapshot(parsed: ParsedArgs): boolean {
@@ -1422,32 +1435,6 @@ function renderSearch(
   return `${lines.join("\n")}\n`;
 }
 
-function renderStats(
-  overview: ReturnType<LiveHistorySnapshot["getUsageOverview"]>,
-  rollup: ReturnType<LiveHistorySnapshot["getUsageRollup"]> | undefined,
-): string {
-  const lines = [
-    styleMeta("Stats"),
-    styleDashRow(`- Turns: ${overview.total_turns}`),
-    styleDashRow(`- Turns with token usage: ${overview.turns_with_token_usage} (${formatPercent(overview.turn_coverage_ratio)})`),
-    styleDashRow(`- Input tokens: ${formatNumber(overview.total_input_tokens)}`),
-    styleDashRow(`- Cached input tokens: ${formatNumber(overview.total_cached_input_tokens)}`),
-    styleDashRow(`- Output tokens: ${formatNumber(overview.total_output_tokens)}`),
-    styleDashRow(`- Reasoning output tokens: ${formatNumber(overview.total_reasoning_output_tokens)}`),
-    styleDashRow(`- Total tokens: ${formatNumber(overview.total_tokens)}`),
-  ];
-  if (overview.excluded_zero_token_turns) {
-    lines.push(styleDashRow(`- Excluded zero-token turns: ${overview.excluded_zero_token_turns} (no usage data)`));
-  }
-  if (rollup) {
-    lines.push("", `By ${rollup.dimension}`);
-    for (const row of rollup.rows) {
-      lines.push(styleDashRow(`- ${row.label}: ${row.turn_count} turns · ${formatNumber(row.total_tokens)} tokens`));
-    }
-  }
-  return `${lines.join("\n")}\n`;
-}
-
 function renderProjectTree(tree: ReturnType<typeof buildProjectsTree>): string {
   const lines = [styleMeta("Project tree")];
   for (const node of tree.projects) {
@@ -1773,7 +1760,27 @@ function validateCommandOptions(parsed: ParsedArgs): void {
   } else if (parsed.command === "search") {
     for (const name of ["limit", "offset", "project", "dir"]) allowedValues.add(name);
   } else if (parsed.command === "stats") {
-    for (const name of ["project", "by", "dir"]) allowedValues.add(name);
+    for (const name of [
+      "project",
+      "by",
+      "dir",
+      "model",
+      "from",
+      "to",
+      "since",
+      "tz",
+      "week-mode",
+      "sort",
+      "pricing",
+      "alias",
+      "multiplier",
+      "cache-read-multiplier",
+      "cache-write-multiplier",
+      "quota",
+      "export-pricing",
+    ]) allowedValues.add(name);
+  } else if (parsed.command === "tui") {
+    for (const name of ["pricing", "quota"]) allowedValues.add(name);
   } else if (parsed.command === "export") {
     for (const name of ["format", "out"]) allowedValues.add(name);
   } else if (parsed.command === "query" || parsed.command === "shell") {
@@ -1786,6 +1793,9 @@ function validateCommandOptions(parsed: ParsedArgs): void {
       if (name === "dir") throw invalidDirectoryScopeFlag("--dir", parsed.command, parsed.positionals[0]);
       throw new UsageError(`--${name} is not valid for ${parsed.command}.`);
     }
+  }
+  if (parsed.booleans.has("explain-pricing") && parsed.command !== "stats") {
+    throw new UsageError(`--explain-pricing is only valid for stats.`);
   }
   if (parsed.booleans.has("complete") && parsed.command !== "query" && parsed.command !== "sources" && !(parsed.command === "ls" && parsed.positionals[0] === "sources")) throw new UsageError("--complete is only valid for query SQL input or sources.");
   if (parsed.booleans.has("all") && parsed.command !== "ls") {
@@ -1932,17 +1942,21 @@ function resolveDirectoryScope(parsed: ParsedArgs, io: LiteCliIo): string | unde
   return path.resolve(io.cwd, expanded);
 }
 
-function parseStatsDimension(value: string): UsageStatsDimension {
-  if (value === "source" || value === "project" || value === "model" || value === "day") return value;
-  throw new UsageError(`--by must be source, project, model, or day; received ${JSON.stringify(value)}.`);
-}
-
 async function launchTui(parsed: ParsedArgs, io: LiteCliIo): Promise<number> {
+  const quota = value(parsed, "quota");
+  if (quota !== undefined) {
+    const num = Number(quota);
+    if (!Number.isFinite(num) || num <= 0) {
+      throw new UsageError(`--quota must be a positive USD number; received ${JSON.stringify(quota)}.`);
+    }
+  }
   const args = [
     ...values(parsed, "source-root").flatMap((entry) => ["--source-root", entry]),
     ...values(parsed, "source").flatMap((entry) => ["--source", entry]),
     ...(value(parsed, "limit-files") ? ["--limit-files", value(parsed, "limit-files")!] : []),
     ...(parsed.booleans.has("safe") ? ["--safe"] : []),
+    ...values(parsed, "pricing").flatMap((entry) => ["--pricing", path.resolve(io.cwd, entry)]),
+    ...(quota !== undefined ? ["--quota", quota] : []),
   ];
   if (io.spawnTui) return io.spawnTui(args);
   return new Promise<number>((resolve, reject) => {
@@ -2009,8 +2023,23 @@ Browsing options:
   --limit <n>                        Show at most n rows (ls defaults to 20; search counts sessions)
   --all                              Show every ls row; cannot be combined with --limit
   --offset <n>                       Skip the first n search sessions (default 0)
-  --project <ref>                    Scope search and stats to one project
-  --by <dimension>                   Roll up usage by source, project, model, or day (stats only)
+  --project <ref>                    Scope search and stats to one project (repeatable on stats; supports unassigned)
+  --by <dimension>                   Roll up or matrix-group stats by source, project, model, day, week, month (comma-separated or repeatable)
+  --model <pattern>                  Filter stats to matching model names (repeatable)
+  --since <window>                   Stats time preset (all, today, 24h, 7d, 30d, week, month, Nd, Nh)
+  --from <time>                      Stats start boundary (YYYY-MM-DD, ISO timestamp, or preset)
+  --to <time>                        Stats end boundary (YYYY-MM-DD inclusive, or ISO timestamp)
+  --tz <zone>                        Timezone for stats day/week/month buckets (default local)
+  --week-mode <mode>                 Weekly bucket mode: rolling_7d, iso_week, or custom_reset
+  --sort <field>                     Matrix row sort: adjusted_cost, list_cost, tokens, turns, or label
+  --pricing <file>                   Local JSON pricing/multiplier/quota file (repeatable; stats and tui)
+  --alias <raw=target>               Map local model name to catalog model (stats only; repeatable)
+  --multiplier <[model=]factor>      Model cost multiplier (stats only; repeatable)
+  --cache-read-multiplier <[m=]k>    Cache-read cost multiplier (stats only; repeatable)
+  --cache-write-multiplier <[m=]k>   Cache-write cost multiplier (stats only; repeatable)
+  --quota <usd>                      Period quota limit in USD for quota % comparison (stats and tui)
+  --explain-pricing                  Show per-model catalog match, $/1M prices, and multipliers (stats only)
+  --export-pricing <file|->          Write editable cchistory-lite-pricing/v1 JSON template with observed models
 
 latest defaults to the 20 newest sessions. latest sessions is one record per session and
 shows aggregate turn count, models, and total tokens; sessions with 0 turns are omitted.
@@ -2309,10 +2338,6 @@ function isWide(code: number): boolean {
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
-}
-
-function formatPercent(value: number): string {
-  return `${Math.round(value * 1000) / 10}%`;
 }
 
 function isPathWithin(parentPath: string, childPath: string): boolean {

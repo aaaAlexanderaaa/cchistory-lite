@@ -29,8 +29,8 @@ import {
   yellow,
 } from "./colors.js";
 import type { LiteBrowserModel, LiteSessionEntry, LiteTurnEntry } from "./model.js";
+import { renderStatsDashboard } from "./stats-render.js";
 import {
-  STATS_DIMENSIONS,
   getSearchGroups,
   getSearchTotal,
   getSelectedProject,
@@ -49,7 +49,6 @@ import {
   displayWidth,
   formatCompactCount,
   formatNumber,
-  formatPercent,
   formatRelativeTime,
   formatShortDate,
   padLine,
@@ -134,7 +133,9 @@ function renderBody(
 ): string[] {
   if (state.overlay === "help") return renderHelpOverlay(options.width, options.contentHeight);
   if (state.overlay === "sources") return renderSourcesOverlay(model, options, state, scroll);
-  if (state.overlay === "stats") return renderStatsOverlay(model, state, options, scroll);
+  if (state.overlay === "stats") {
+    return renderStatsDashboard(model, state, options.width, options.contentHeight, options.now);
+  }
   if (state.focusPane === "conversation") return renderConversation(model, state, options, scroll);
   return renderTwoColumn(model, state, options, scroll);
 }
@@ -168,6 +169,22 @@ function renderStatusMessageLine(state: LiteBrowserState, width: number): string
 }
 
 function renderStatusBar(model: LiteBrowserModel, state: LiteBrowserState): string {
+  if (state.overlay === "stats") {
+    return dim(
+      [
+        `stats/${state.stats.view}`,
+        "Tab quadrant",
+        "Space filter",
+        "v matrix",
+        "m calibrate",
+        "t window",
+        "b bucket",
+        "c clear",
+        "i/Esc close",
+        "q quit",
+      ].join(" │ "),
+    );
+  }
   const parts: string[] = [];
   if (state.overlay !== "none") parts.push(`overlay: ${state.overlay}`);
   else if (state.mode === "browse") parts.push(`${state.browseScope}/${focusPaneLabel(state.focusPane)}`);
@@ -667,7 +684,7 @@ function renderHelpOverlay(width: number, contentHeight: number): string[] {
     bold("  Actions"),
     `    ${bold("/")} search      ${bold("i")} stats    ${bold("s")} sources   ${bold("?")} help`,
     `    ${bold("r")} refresh the snapshot from disk   ${bold("q")} quit`,
-    `    ${bold("Tab")} in the stats overlay cycles source/project/model/day`,
+    `    ${bold("Stats (i)")}: ${bold("Tab/1-4")} quadrant · ${bold("Space")} filter · ${bold("v")} matrix · ${bold("m")} calibrate · ${bold("t/b/w")} window · ${bold("$")} quota · ${bold("c")} clear`,
     "",
     bold("  Lite guarantees"),
     muted("    Reads native tool history only. Never opens or creates ~/.cchistory."),
@@ -726,66 +743,6 @@ function renderSourceRows(source: SourceStatus, width: number): string[] {
   ];
   if (source.error_message) rows.push(`    ${danger(compact(source.error_message, Math.max(20, width - 6)))}`);
   return rows;
-}
-
-function renderStatsOverlay(
-  model: LiteBrowserModel,
-  state: LiteBrowserState,
-  options: BodyOptions,
-  scroll?: LiteScrollReconciliation,
-): string[] {
-  const innerWidth = Math.max(options.width - 4, 36);
-  const dimensionRow = STATS_DIMENSIONS.map((entry) =>
-    entry === state.statsDimension ? bold(cyan(entry)) : dim(entry),
-  ).join(dim(" · "));
-  const overview = model.getUsageOverview();
-  const lines = [
-    `${activeSectionTitle("▸ Statistics")}  ${dimensionRow}  ${dim("(Tab cycle · i close)")}`,
-    dim("─".repeat(Math.max(10, Math.min(innerWidth, options.width)))),
-    "",
-    bold("  Overview"),
-  ];
-  const leftWidth = Math.max(20, Math.floor(innerWidth / 2) - 2);
-  const rightWidth = Math.max(20, innerWidth - leftWidth - 4);
-  const overviewRows: [string, string][] = [
-    [`Turns: ${cyan(formatNumber(overview.total_turns))}`, `Total tokens: ${cyan(formatNumber(overview.total_tokens))}`],
-    [
-      `With usage: ${cyan(formatNumber(overview.turns_with_token_usage))} (${formatPercent(overview.turn_coverage_ratio)})`,
-      `Input: ${cyan(formatNumber(overview.total_input_tokens))}`,
-    ],
-    [
-      `Cached input: ${cyan(formatNumber(overview.total_cached_input_tokens))}`,
-      `Output: ${cyan(formatNumber(overview.total_output_tokens))}`,
-    ],
-    ["", `Reasoning: ${cyan(formatNumber(overview.total_reasoning_output_tokens))}`],
-  ];
-  for (const [left, right] of overviewRows) {
-    lines.push(`  ${padLine(left, leftWidth)}  ${padLine(right, rightWidth)}`);
-  }
-
-  const rollup = model.getUsageRollup(state.statsDimension);
-  lines.push("");
-  lines.push(`${bold(`  By ${state.statsDimension}`)} ${dim(`(${rollup.rows.length} rows)`)}`);
-  if (rollup.rows.length === 0) {
-    lines.push(emptyRow("No usage rows for this dimension"));
-    return scrollWindow(lines, state.overlayScrollOffset, options.contentHeight, scroll);
-  }
-
-  const sorted = [...rollup.rows].sort((left, right) => right.total_tokens - left.total_tokens);
-  const totalTokens = sorted.reduce((sum, row) => sum + row.total_tokens, 0) || 1;
-  const nameWidth = Math.min(34, Math.max(18, Math.floor(innerWidth * 0.3)));
-  const barWidth = Math.min(20, Math.max(6, Math.floor((innerWidth - nameWidth - 32) * 0.5)));
-  lines.push(dim(`  ${"Name".padEnd(nameWidth)} ${"Turns".padStart(7)} ${"Tokens".padStart(11)} ${"%".padStart(6)}  Share`));
-  for (const row of sorted) {
-    const share = (row.total_tokens / totalTokens) * 100;
-    const bar = dim("▪".repeat(Math.max(1, Math.round((share / 100) * barWidth))));
-    lines.push(
-      `  ${cyan(padLine(compact(row.label, nameWidth), nameWidth))} ${formatNumber(row.turn_count).padStart(7)} ${formatNumber(
-        row.total_tokens,
-      ).padStart(11)} ${`${share.toFixed(1)}%`.padStart(6)}  ${bar}`,
-    );
-  }
-  return scrollWindow(lines, state.overlayScrollOffset, options.contentHeight, scroll);
 }
 
 /**

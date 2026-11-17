@@ -102,7 +102,10 @@ sample [N] [--dir <path>] [--no-dir]
 tree [projects|project <ref>|session <ref>] [--dir <path>]
 search <query> [--project <ref>] [--source <ref>] [--dir <path>] [--no-dir] [--limit <n>] [--offset <n>]
 show project|session|turn|source <ref>
-stats [--by source|project|model|day] [--project <ref>] [--dir <path>] [--no-dir]
+stats [--by source|project|model|day|week|month[,...]] [--project <ref>] [--model <pattern>]
+      [--since <window>] [--from <time>] [--to <time>] [--tz <zone>]
+      [--week-mode rolling_7d|iso_week|custom_reset] [--pricing <file>] [--quota <usd>]
+      [--explain-pricing] [--export-pricing <file|->] [--dir <path>] [--no-dir]
 query --request <file|-> | --sql <text> | --sql-file <file|-> [--params <JSON-array>] [--complete]
       [--dir <path>] [--no-dir]
 shell [--dir <path>] [--no-dir] [--idle-timeout <seconds>]
@@ -304,14 +307,15 @@ do not automatically retry with broader filters or a disabled guard.
 
 `cchistory-lite-tui` is a full-screen, keyboard-driven browser over one
 context-light snapshot held for the process lifetime. It accepts
-`--source-root`, `--source`, `--limit-files`, and `--safe`, and can open directly
-at one focused object or search query:
+`--source-root`, `--source`, `--limit-files`, `--safe`, `--pricing`, and
+`--quota`, and can open directly at one focused object or search query:
 
 ```bash
 cchistory-lite-tui --project <ref>
 cchistory-lite-tui --session <ref>
 cchistory-lite-tui --turn <ref>
 cchistory-lite-tui --search "parser regression"
+cchistory-lite-tui --pricing docs/guide/pricing.example.json --quota 100
 ```
 
 Only one of `--project`, `--session`, and `--turn` may be supplied. References
@@ -323,15 +327,25 @@ Up/Down or j/k   move cursor          Tab / Shift+Tab   next / previous pane
 PgUp/PgDn        page                 Enter             drill into the focused pane
 g / G             first / last         Esc               back or close an overlay
 p / S             projects / sessions  t / d             turns / detail pane
-/                 search              i                 usage stats
+/                 search              i                 usage & cost stats
 s                 source status       ?                 help
 r                 refresh from disk    q                 quit and release snapshot
 ```
 
-In the usage overlay, press `Tab` to cycle source → project → model → day.
-For Antigravity SQLite history, model totals use each recorded model call. A
-user turn using several models can appear under each model; the overview and
-source/project/day rollups retain unique user-turn counts.
+In the usage stats dashboard (`i`), four panels (`By project`, `By model`,
+`By source`, and `By day`/`week`/`month`) show tokens, `models.dev` reference list
+USD cost, multiplier-adjusted USD cost, and period quota usage together:
+press `Tab`/`1-4` to focus a panel, `Space`/`Enter` to toggle multi-dimensional
+cross-filters (`c` clears), `t`/`b`/`w`/`o` to cycle time window, bucket, week
+reset mode, or sort order, `v` to open the full-width matrix table, `m` to
+calibrate per-model/per-component multipliers and aliases in memory (`+`/`-`,
+`0`/`1`/`u`, `a` alias, `e` value, `R` reset), and `$` to set a period USD quota.
+Both CLI `stats` and TUI use the bundled offline `models.dev/api.json` snapshot
+(plus local `--pricing` / `CCHISTORY_PRICING_CONFIG` overrides, see
+[pricing.example.json](pricing.example.json)) and never access the network at
+runtime. For Antigravity SQLite history, model totals use each recorded model
+call and include `turn_id: null` usage events; overview and source/project/day
+rollups retain unique user-turn counts.
 
 The interactive TUI uses the alternate screen and raw keyboard input. Search
 queries of one to three characters wait for Enter; queries of four or more

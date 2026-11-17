@@ -1,0 +1,38 @@
+{
+  "schema": "cchistory-lite-pricing/v1",
+  "timezone": "local",
+  "aliases": {
+    "gemini-pro-orchestrator": "gemini-4-carbon",
+    "gemini-flash-worker-agy": "gemini-4-hydrogen"
+  },
+  "default_multipliers": {
+    "model": 1,
+    "input": 1,
+    "cache_read": 1,
+    "cache_write": 1,
+    "output": 1,
+    "reasoning": 1
+  },
+  "multipliers": {
+    "gemini-4-carbon": {
+      "model": 1,
+      "cache_read": 1
+    },
+    "gemini-4-hydrogen": {
+      "model": 1,
+      "cache_read": 1
+    },
+    "claude-opus-5-5": {
+      "model": 1,
+      "cache_read": 1,
+      "cache_write": 1
+    }
+  },
+  "quota": {
+    "weekly_usd": 100,
+    "monthly_usd": 400,
+    "week_mode": "rolling_7d",
+    "week_start_day": 1,
+    "week_reset_hour": 0
+  }
+}

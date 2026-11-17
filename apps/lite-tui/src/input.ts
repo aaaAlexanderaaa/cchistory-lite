@@ -19,6 +19,10 @@ export type LiteInputEffect =
 export function resolveLiteInputEffect(state: LiteBrowserState, key: LiteKey): LiteInputEffect {
   if (key.ctrl && (key.input === "c" || key.input === "d")) return { type: "exit" };
 
+  if (state.overlay === "stats") {
+    return resolveStatsInputEffect(state, key);
+  }
+
   if (key.name === "escape") {
     if (state.overlay !== "none") return action({ type: "close-overlay" });
     return action({ type: "retreat" });
@@ -63,9 +67,6 @@ export function resolveLiteInputEffect(state: LiteBrowserState, key: LiteKey): L
     }
   }
 
-  if (state.overlay === "stats" && key.name === "tab" && !key.shift) {
-    return action({ type: "cycle-stats-dimension" });
-  }
   if (key.name === "tab") {
     return action({ type: key.shift ? "focus-previous" : "focus-next" });
   }
@@ -85,6 +86,115 @@ export function resolveLiteInputEffect(state: LiteBrowserState, key: LiteKey): L
   }
 
   return { type: "none" };
+}
+
+function resolveStatsInputEffect(state: LiteBrowserState, key: LiteKey): LiteInputEffect {
+  const stats = state.stats;
+  if (stats.editing) {
+    if (key.name === "escape") return action({ type: "stats-edit-cancel" });
+    if (key.name === "return") return action({ type: "stats-edit-commit" });
+    if (key.name === "backspace" || key.name === "delete") return action({ type: "stats-edit-backspace" });
+    if (isPrintable(key)) return action({ type: "stats-edit-char", char: key.input });
+    return { type: "none" };
+  }
+
+  if (key.name === "escape") {
+    if (stats.view !== "quad") return action({ type: "stats-set-view", view: "quad" });
+    return action({ type: "close-overlay" });
+  }
+  if (key.name === "tab") {
+    if (stats.view === "quad") {
+      return action(key.shift ? { type: "stats-cycle-quadrant", reverse: true } : { type: "cycle-stats-dimension" });
+    }
+    if (stats.view === "multipliers") {
+      return action({ type: "stats-multiplier-col", delta: key.shift ? -1 : 1 });
+    }
+    return action({ type: "stats-cycle-sort" });
+  }
+  if (key.name === "up" || key.input === "k") return action({ type: "stats-move", delta: -1 });
+  if (key.name === "down" || key.input === "j") return action({ type: "stats-move", delta: 1 });
+  if (key.name === "pageup") return action({ type: "stats-move", delta: -10 });
+  if (key.name === "pagedown") return action({ type: "stats-move", delta: 10 });
+  if (key.name === "home" || key.input === "g") return action({ type: "stats-jump", edge: "first" });
+  if (key.name === "end" || key.input === "G") return action({ type: "stats-jump", edge: "last" });
+
+  if (stats.view === "multipliers") {
+    if (key.name === "left" || key.input === "h") return action({ type: "stats-multiplier-col", delta: -1 });
+    if (key.name === "right" || key.input === "l") return action({ type: "stats-multiplier-col", delta: 1 });
+    switch (key.input) {
+      case "+":
+      case "=":
+      case "]":
+        return action({ type: "stats-multiplier-step", delta: 0.1 });
+      case "-":
+      case "_":
+      case "[":
+        return action({ type: "stats-multiplier-step", delta: -0.1 });
+      case "0":
+        return action({ type: "stats-multiplier-set", value: 0 });
+      case "1":
+        return action({ type: "stats-multiplier-set", value: 1 });
+      case "u":
+        return action({ type: "stats-multiplier-toggle-zero" });
+      case "a":
+        return action({ type: "stats-start-edit", target: "alias" });
+      case "e":
+        return action({ type: "stats-start-edit", target: "multiplier" });
+      case "R":
+        return action({ type: "stats-reset-overrides" });
+      default:
+        break;
+    }
+  } else {
+    if (key.name === "left" || key.input === "h") return action({ type: "stats-cycle-quadrant", reverse: true });
+    if (key.name === "right" || key.input === "l") return action({ type: "cycle-stats-dimension" });
+    if ((key.input === " " || key.name === "return") && stats.view === "quad") {
+      return action({ type: "stats-toggle-selection" });
+    }
+    switch (key.input) {
+      case "1":
+        return action({ type: "stats-focus-quadrant", quadrant: "project" });
+      case "2":
+        return action({ type: "stats-focus-quadrant", quadrant: "model" });
+      case "3":
+        return action({ type: "stats-focus-quadrant", quadrant: "source" });
+      case "4":
+        return action({ type: "stats-focus-quadrant", quadrant: "day" });
+      default:
+        break;
+    }
+  }
+
+  switch (key.input) {
+    case "q":
+      return { type: "exit" };
+    case "i":
+      return action({ type: "toggle-stats" });
+    case "s":
+      return action({ type: "toggle-sources" });
+    case "?":
+      return action({ type: "toggle-help" });
+    case "r":
+      return { type: "refresh" };
+    case "v":
+      return action({ type: "stats-toggle-view", view: "matrix" });
+    case "m":
+      return action({ type: "stats-toggle-view", view: "multipliers" });
+    case "t":
+      return action({ type: "stats-cycle-time-preset" });
+    case "b":
+      return action({ type: "stats-cycle-time-bucket" });
+    case "w":
+      return action({ type: "stats-cycle-week-mode" });
+    case "o":
+      return action({ type: "stats-cycle-sort" });
+    case "c":
+      return action({ type: "stats-clear-filters" });
+    case "$":
+      return action({ type: "stats-start-edit", target: "quota" });
+    default:
+      return { type: "none" };
+  }
 }
 
 function action(value: LiteBrowserAction): LiteInputEffect {

@@ -110,7 +110,14 @@ export function compactPayload(
         loss_audits: records(payload.loss_audits).map(lossAuditSummary),
       };
     case "stats":
-      return { ...base, overview: payload.overview, rollup: payload.rollup ?? null };
+      return {
+        ...base,
+        overview: payload.overview,
+        rollup: payload.rollup ?? null,
+        ...(payload.matrix !== undefined ? { matrix: payload.matrix } : {}),
+        ...(payload.breakdown !== undefined ? { breakdown: payload.breakdown } : {}),
+        ...(payload.model_resolutions !== undefined ? { model_resolutions: payload.model_resolutions } : {}),
+      };
     default:
       return { ...base };
   }

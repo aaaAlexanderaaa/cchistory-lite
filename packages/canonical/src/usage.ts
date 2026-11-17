@@ -1,26 +1,50 @@
+/**
+ * Role: Canonical usage row extraction, multi-dimension filtering, and single-dimension
+ * overview/rollup aggregation with separated cache read/write and cost totals.
+ * Excludes multi-dimension matrix breakdowns (usage-breakdown.ts) and pricing lookup (usage-pricing.ts).
+ */
+
 import type {
   ProjectIdentity,
   SessionProjection,
   SessionUsageEvent,
   SourceStatus,
   TokenUsageSummary,
+  UsagePricingConfig,
   UsageStatsDimension,
-  UsageStatsOverview,
-  UsageStatsRollup,
   UsageStatsRollupRow,
+  UsageTimeBucket,
+  UsageTimePreset,
+  UsageWeekMode,
   UserTurnProjection,
 } from "@cchistory/domain";
-import { nowIso, mergeTokenUsageMetrics } from "@cchistory/domain";
+import { mergeTokenUsageMetrics } from "@cchistory/domain";
 import { sessionMatchesDirectoryScope } from "./directory-scope.js";
+import { extractLocalTimeParts, resolveUsageTimezone, resolveWeekBucket } from "./usage-time.js";
 
 export interface UsageFilters {
   project_id?: string;
   project_ids?: string[];
   source_ids?: string[];
   host_ids?: string[];
-  after_date?: string; // YYYY-MM-DD — only include turns on or after this date
+  models?: string[];
+  model_queries?: string[];
+  time_keys?: string[];
+  time_dimension?: UsageTimeBucket;
+  after_date?: string; // YYYY-MM-DD (inclusive in selected timezone)
+  before_date?: string; // YYYY-MM-DD (inclusive in selected timezone)
+  after_ts?: number; // epoch ms inclusive
+  before_ts?: number; // epoch ms inclusive
   include_known_zero_token?: boolean;
   directory_scope?: string;
+  timezone?: string;
+  week_mode?: UsageWeekMode;
+  week_start_day?: number;
+  week_reset_hour?: number;
+  now_ms?: number;
+  pricing?: UsagePricingConfig;
+  quota_limit_usd?: number;
+  time_preset?: UsageTimePreset;
 }
 
 export interface UsageAggregationRow {
@@ -32,20 +56,30 @@ export interface UsageAggregationRow {
   project_id?: string;
   project_label: string;
   model: string;
+  timestamp_ms: number;
   day: string;
+  week: string;
+  week_label: string;
   month: string;
   has_token_usage: boolean;
   zero_token_reason?: string;
   input_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
   cached_input_tokens: number;
   output_tokens: number;
   reasoning_output_tokens: number;
+  non_reasoning_output_tokens: number;
+  reasoning_for_billing_tokens: number;
+  billable_output_tokens: number;
   total_tokens: number;
 }
 
 export interface TurnUsageProjection {
   has_token_usage: boolean;
   input_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
   cached_input_tokens?: number;
   output_tokens?: number;
   reasoning_output_tokens?: number;
@@ -56,6 +90,15 @@ export interface SessionUsageProjection {
   turns_with_token_usage: number;
   total_tokens?: number;
 }
+
+export interface UsageSourceData {
+  listResolvedTurns: () => readonly UserTurnProjection[];
+  listResolvedSessions: () => readonly SessionProjection[];
+  listSources: () => readonly SourceStatus[];
+  listProjects: () => readonly ProjectIdentity[];
+}
+
+export const UNASSIGNED_PROJECT_KEY = "unassigned";
 
 /** Resolve the approved option-B total from structured usage when possible. */
 export function resolveStructuredTokenTotal(usage: TokenUsageSummary | undefined): number | undefined {
@@ -97,6 +140,8 @@ export function resolveTurnUsage(turn: UserTurnProjection): TurnUsageProjection 
       values.some((value) => typeof value === "number") ||
       typeof turn.context_summary.total_tokens === "number",
     input_tokens: usage?.input_tokens,
+    cache_read_input_tokens: usage?.cache_read_input_tokens,
+    cache_creation_input_tokens: usage?.cache_creation_input_tokens,
     cached_input_tokens: cachedInputTokens,
     output_tokens: usage?.output_tokens,
     reasoning_output_tokens: usage?.reasoning_output_tokens,
@@ -105,10 +150,16 @@ export function resolveTurnUsage(turn: UserTurnProjection): TurnUsageProjection 
 }
 
 export function resolveSessionUsageMetrics(session: SessionProjection | undefined): TokenUsageSummary | undefined {
-  return session?.usage_events?.reduce<TokenUsageSummary | undefined>((sum, event) => mergeTokenUsageMetrics(sum, event.token_usage), undefined);
+  return session?.usage_events?.reduce<TokenUsageSummary | undefined>(
+    (sum, event) => mergeTokenUsageMetrics(sum, event.token_usage),
+    undefined,
+  );
 }
 
-export function summarizeSessionUsage(turns: readonly UserTurnProjection[], session?: SessionProjection): SessionUsageProjection {
+export function summarizeSessionUsage(
+  turns: readonly UserTurnProjection[],
+  session?: SessionProjection,
+): SessionUsageProjection {
   let turnsWithTokenUsage = 0;
   let totalTokens = 0;
   let hasTotal = false;
@@ -130,10 +181,17 @@ export function hasAnyTokenUsage(turn: UserTurnProjection): boolean {
 }
 
 export function sumUsageRows(
-  rows: UsageAggregationRow[],
+  rows: readonly UsageAggregationRow[],
   key: keyof Pick<
     UsageAggregationRow,
-    "input_tokens" | "cached_input_tokens" | "output_tokens" | "reasoning_output_tokens" | "total_tokens"
+    | "input_tokens"
+    | "cache_read_input_tokens"
+    | "cache_creation_input_tokens"
+    | "cached_input_tokens"
+    | "output_tokens"
+    | "reasoning_output_tokens"
+    | "billable_output_tokens"
+    | "total_tokens"
   >,
 ): number {
   return rows.reduce((total, row) => total + row[key], 0);
@@ -144,13 +202,15 @@ export function usageDimensionKey(row: UsageAggregationRow, dimension: UsageStat
     case "model":
       return row.model;
     case "project":
-      return row.project_id ?? "unassigned";
+      return row.project_id ?? UNASSIGNED_PROJECT_KEY;
     case "source":
       return row.source_id;
     case "host":
       return row.host_id;
     case "day":
       return row.day;
+    case "week":
+      return row.week;
     case "month":
       return row.month;
   }
@@ -168,6 +228,8 @@ export function usageDimensionLabel(row: UsageAggregationRow, dimension: UsageSt
       return row.host_id;
     case "day":
       return row.day;
+    case "week":
+      return row.week_label;
     case "month":
       return row.month;
   }
@@ -178,7 +240,7 @@ export function compareUsageRollupRows(
   left: UsageStatsRollupRow,
   right: UsageStatsRollupRow,
 ): number {
-  if (dimension === "day" || dimension === "month") {
+  if (dimension === "day" || dimension === "week" || dimension === "month") {
     return left.key.localeCompare(right.key);
   }
   if (left.total_tokens !== right.total_tokens) {
@@ -190,14 +252,23 @@ export function compareUsageRollupRows(
   return left.label.localeCompare(right.label);
 }
 
-export function buildUsageRows(params: {
-  filters: UsageFilters;
-  listResolvedTurns: () => UserTurnProjection[];
-  listResolvedSessions: () => SessionProjection[];
-  listSources: () => SourceStatus[];
-  listProjects: () => ProjectIdentity[];
-}): UsageAggregationRow[] {
-  const { filters, listResolvedTurns, listResolvedSessions, listSources, listProjects } = params;
+export function buildUsageRows(params: UsageSourceData & { filters: UsageFilters }): UsageAggregationRow[] {
+  const sessionsById = new Map(params.listResolvedSessions().map((session) => [session.id, session]));
+  const baseRows = extractUnfilteredUsageRows(params, params.filters);
+  return filterUsageRows(baseRows, params.filters, sessionsById);
+}
+
+export function extractUnfilteredUsageRows(
+  params: UsageSourceData,
+  timeOptions: Pick<UsageFilters, "timezone" | "week_mode" | "week_start_day" | "week_reset_hour" | "now_ms" | "pricing"> = {},
+): UsageAggregationRow[] {
+  const { listResolvedTurns, listResolvedSessions, listSources, listProjects } = params;
+  const timeZone = resolveUsageTimezone(timeOptions.timezone ?? timeOptions.pricing?.timezone);
+  const weekMode = timeOptions.week_mode ?? timeOptions.pricing?.quota?.week_mode ?? "rolling_7d";
+  const weekStartDay = timeOptions.week_start_day ?? timeOptions.pricing?.quota?.week_start_day;
+  const weekResetHour = timeOptions.week_reset_hour ?? timeOptions.pricing?.quota?.week_reset_hour;
+  const nowMs = timeOptions.now_ms ?? Date.now();
+
   const turns = listResolvedTurns();
   const sessionsById = new Map(listResolvedSessions().map((session) => [session.id, session]));
   const sourcesById = new Map(listSources().map((source) => [source.id, source]));
@@ -212,193 +283,174 @@ export function buildUsageRows(params: {
     }
   }
 
-  const rows: UsageAggregationRow[] = turns
-    .filter((turn) =>
-      filters.directory_scope
-        ? sessionMatchesDirectoryScope(sessionsById.get(turn.session_id), filters.directory_scope)
-        : true,
-    )
-    .filter((turn) => (filters.project_id ? turn.project_id === filters.project_id : true))
-    .filter((turn) =>
-      filters.project_ids && filters.project_ids.length > 0
-        ? turn.project_id
-          ? filters.project_ids.includes(turn.project_id)
-          : false
-        : true,
-    )
-    .filter((turn) =>
-      filters.source_ids && filters.source_ids.length > 0 ? filters.source_ids.includes(turn.source_id) : true,
-    )
-    .flatMap((turn): UsageAggregationRow[] => {
-      const session = sessionsById.get(turn.session_id);
-      const source = sourcesById.get(turn.source_id);
-      const project = turn.project_id ? projectsById.get(turn.project_id) : undefined;
-      const usage = resolveTurnUsage(turn);
-      const hasTokUsage = usage.has_token_usage;
-      const zeroTokenReason =
-        turn.context_summary.zero_token_reason ??
-        (turn.context_summary.assistant_reply_count === 0 && !hasTokUsage ? "no_assistant_reply" : undefined);
-      const row: UsageAggregationRow = {
-        turn_id: turn.id,
-        session_id: turn.session_id,
-        source_id: turn.source_id,
-        source_label: source ? `${source.display_name} (${source.slot_id})` : turn.source_id,
-        host_id: session?.host_id ?? source?.host_id ?? "unknown",
-        project_id: turn.project_id,
-        project_label: project?.display_name ?? "Unassigned",
-        model: turn.context_summary.primary_model ?? session?.model ?? "unknown",
-        day: turn.submission_started_at.slice(0, 10),
-        month: turn.submission_started_at.slice(0, 7),
-        has_token_usage: hasTokUsage,
-        zero_token_reason: zeroTokenReason,
-        input_tokens: usage.input_tokens ?? 0,
-        cached_input_tokens: usage.cached_input_tokens ?? 0,
-        output_tokens: usage.output_tokens ?? 0,
-        reasoning_output_tokens: usage.reasoning_output_tokens ?? 0,
-        total_tokens: usage.total_tokens ?? 0,
-      };
-      const events = eventsByTurn.get(turn.id);
-      if (!events?.length) return [row];
-      const modelUsage = new Map<string, TokenUsageSummary>();
-      for (const event of events) {
-        const model = event.model ?? "unknown";
-        modelUsage.set(model, mergeTokenUsageMetrics(modelUsage.get(model), event.token_usage)!);
-      }
-      return [...modelUsage].map(([model, usage]) => ({ ...row, model, ...usageAmounts(usage) }));
-    });
+  const bucketTime = (isoTimestamp: string) => {
+    const parsedMs = Date.parse(isoTimestamp);
+    if (!Number.isFinite(parsedMs)) {
+      const fallbackDay = isoTimestamp.slice(0, 10) || "1970-01-01";
+      const fallbackMonth = isoTimestamp.slice(0, 7) || "1970-01";
+      return { timestamp_ms: Number.NaN, day: fallbackDay, week: fallbackDay, week_label: fallbackDay, month: fallbackMonth };
+    }
+    const local = extractLocalTimeParts(parsedMs, timeZone);
+    const week = resolveWeekBucket(parsedMs, { timeZone, weekMode, weekStartDay, weekResetHour, nowMs });
+    return { timestamp_ms: parsedMs, day: local.dayKey, week: week.key, week_label: week.label, month: local.monthKey };
+  };
+
+  const rows: UsageAggregationRow[] = turns.flatMap((turn): UsageAggregationRow[] => {
+    const session = sessionsById.get(turn.session_id);
+    const source = sourcesById.get(turn.source_id);
+    const project = turn.project_id ? projectsById.get(turn.project_id) : undefined;
+    const turnUsage = resolveTurnUsage(turn);
+    const hasTokUsage = turnUsage.has_token_usage;
+    const zeroTokenReason =
+      turn.context_summary.zero_token_reason ??
+      (turn.context_summary.assistant_reply_count === 0 && !hasTokUsage ? "no_assistant_reply" : undefined);
+    const time = bucketTime(turn.submission_started_at);
+    const fallbackSummary: TokenUsageSummary = turn.context_summary.token_usage ?? {
+      input_tokens: turnUsage.input_tokens,
+      cache_read_input_tokens: turnUsage.cache_read_input_tokens,
+      cache_creation_input_tokens: turnUsage.cache_creation_input_tokens,
+      cached_input_tokens: turnUsage.cached_input_tokens,
+      output_tokens: turnUsage.output_tokens,
+      reasoning_output_tokens: turnUsage.reasoning_output_tokens,
+      total_tokens: turnUsage.total_tokens,
+    };
+
+    const baseRow: UsageAggregationRow = {
+      turn_id: turn.id,
+      session_id: turn.session_id,
+      source_id: turn.source_id,
+      source_label: source ? `${source.display_name} (${source.slot_id})` : turn.source_id,
+      host_id: session?.host_id ?? source?.host_id ?? "unknown",
+      project_id: turn.project_id,
+      project_label: project?.display_name ?? "Unassigned",
+      model: turn.context_summary.primary_model ?? session?.model ?? "unknown",
+      ...time,
+      has_token_usage: hasTokUsage,
+      zero_token_reason: zeroTokenReason,
+      ...usageAmounts(fallbackSummary),
+    };
+
+    const events = eventsByTurn.get(turn.id);
+    if (!events?.length) return [baseRow];
+    const modelUsage = new Map<string, TokenUsageSummary>();
+    for (const event of events) {
+      const model = event.model ?? "unknown";
+      modelUsage.set(model, mergeTokenUsageMetrics(modelUsage.get(model), event.token_usage)!);
+    }
+    return [...modelUsage].map(([model, usage]) => ({ ...baseRow, model, ...usageAmounts(usage) }));
+  });
+
   for (const session of sessionsById.values()) {
-    if (filters.directory_scope && !sessionMatchesDirectoryScope(session, filters.directory_scope)) continue;
-    if (filters.project_id && session.primary_project_id !== filters.project_id) continue;
-    if (filters.project_ids?.length && (!session.primary_project_id || !filters.project_ids.includes(session.primary_project_id))) continue;
-    if (filters.source_ids?.length && !filters.source_ids.includes(session.source_id)) continue;
     const source = sourcesById.get(session.source_id);
     const project = session.primary_project_id ? projectsById.get(session.primary_project_id) : undefined;
     for (const event of session.usage_events ?? []) {
       if (event.turn_id !== null) continue;
-      const usage = event.token_usage;
-      rows.push({ turn_id: null, session_id: session.id, source_id: session.source_id,
+      const time = bucketTime(event.created_at);
+      rows.push({
+        turn_id: null,
+        session_id: session.id,
+        source_id: session.source_id,
         source_label: source ? `${source.display_name} (${source.slot_id})` : session.source_id,
-        host_id: session.host_id, project_id: session.primary_project_id, project_label: project?.display_name ?? "Unassigned",
-        model: event.model ?? "unknown", day: event.created_at.slice(0, 10), month: event.created_at.slice(0, 7),
-        has_token_usage: true, ...usageAmounts(usage) });
+        host_id: session.host_id,
+        project_id: session.primary_project_id,
+        project_label: project?.display_name ?? "Unassigned",
+        model: event.model ?? "unknown",
+        ...time,
+        has_token_usage: true,
+        ...usageAmounts(event.token_usage),
+      });
     }
   }
-  return rows.filter((row) => (filters.host_ids && filters.host_ids.length > 0 ? filters.host_ids.includes(row.host_id) : true))
-    .filter((row) => (filters.after_date ? row.day >= filters.after_date : true))
-    .filter((row) => (filters.include_known_zero_token ? true : !row.zero_token_reason || row.has_token_usage));
+
+  return rows;
+}
+
+export function filterUsageRows(
+  rows: readonly UsageAggregationRow[],
+  filters: UsageFilters,
+  sessionsById?: ReadonlyMap<string, SessionProjection>,
+): UsageAggregationRow[] {
+  const projectFilterSet = buildProjectFilterSet(filters);
+  const modelExactSet = filters.models?.length
+    ? new Set(filters.models.map((entry) => entry.trim().toLowerCase()).filter(Boolean))
+    : undefined;
+  const modelQueries = filters.model_queries?.map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+  const timeKeySet = filters.time_keys?.length ? new Set(filters.time_keys) : undefined;
+  const timeDimension = filters.time_dimension ?? "day";
+
+  return rows.filter((row) => {
+    if (filters.directory_scope && sessionsById && !sessionMatchesDirectoryScope(sessionsById.get(row.session_id), filters.directory_scope)) {
+      return false;
+    }
+    if (projectFilterSet) {
+      const rowKey = row.project_id ?? UNASSIGNED_PROJECT_KEY;
+      if (!projectFilterSet.has(rowKey) && !(rowKey === UNASSIGNED_PROJECT_KEY && projectFilterSet.has("__unassigned__"))) {
+        return false;
+      }
+    }
+    if (filters.source_ids?.length && !filters.source_ids.includes(row.source_id)) return false;
+    if (filters.host_ids?.length && !filters.host_ids.includes(row.host_id)) return false;
+    if (modelExactSet && modelExactSet.size > 0 && !modelExactSet.has(row.model.toLowerCase())) return false;
+    if (modelQueries && modelQueries.length > 0 && !matchesModelQueries(row.model, modelQueries)) return false;
+    if (timeKeySet && timeKeySet.size > 0 && !timeKeySet.has(usageDimensionKey(row, timeDimension))) return false;
+    if (filters.after_date && row.day < filters.after_date) return false;
+    if (filters.before_date && row.day > filters.before_date) return false;
+    if (filters.after_ts !== undefined && Number.isFinite(row.timestamp_ms) && row.timestamp_ms < filters.after_ts) return false;
+    if (filters.before_ts !== undefined && Number.isFinite(row.timestamp_ms) && row.timestamp_ms > filters.before_ts) return false;
+    if (!filters.include_known_zero_token && row.zero_token_reason && !row.has_token_usage) return false;
+    return true;
+  });
+}
+
+function buildProjectFilterSet(filters: UsageFilters): Set<string> | undefined {
+  const keys: string[] = [];
+  if (filters.project_id) keys.push(filters.project_id);
+  if (filters.project_ids?.length) keys.push(...filters.project_ids);
+  return keys.length === 0 ? undefined : new Set(keys);
+}
+
+function matchesModelQueries(model: string, queries: readonly string[]): boolean {
+  const lower = model.toLowerCase();
+  return queries.some((query) => {
+    if (query.includes("*")) {
+      const escaped = query.replace(/[.+?^${}()|[\]\\]/gu, "\\$&").replace(/\*/gu, ".*");
+      return new RegExp(`^${escaped}$`, "iu").test(lower);
+    }
+    return lower === query || lower.includes(query);
+  });
 }
 
 function usageAmounts(usage: TokenUsageSummary) {
-  return { input_tokens: usage.input_tokens ?? 0,
-    cached_input_tokens: usage.cached_input_tokens ?? (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
-    output_tokens: usage.output_tokens ?? 0, reasoning_output_tokens: usage.reasoning_output_tokens ?? 0,
-    total_tokens: resolveStructuredTokenTotal(usage) ?? 0 };
-}
+  const input_tokens = usage.input_tokens ?? 0;
+  const cache_creation_input_tokens = usage.cache_creation_input_tokens ?? 0;
+  const cache_read_input_tokens =
+    usage.cache_read_input_tokens ??
+    (usage.cache_creation_input_tokens === undefined
+      ? (usage.cached_input_tokens ?? 0)
+      : Math.max(0, (usage.cached_input_tokens ?? 0) - cache_creation_input_tokens));
+  const cached_input_tokens = usage.cached_input_tokens ?? cache_read_input_tokens + cache_creation_input_tokens;
+  const output_tokens = usage.output_tokens ?? 0;
+  const reasoning_output_tokens = usage.reasoning_output_tokens ?? 0;
+  const total_tokens = resolveStructuredTokenTotal(usage) ?? 0;
 
-function countUsageTurns(rows: readonly UsageAggregationRow[], predicate: (row: UsageAggregationRow) => boolean = () => true): number {
-  const ids = new Set<string>();
-  for (const row of rows) if (row.turn_id !== null && predicate(row)) ids.add(row.turn_id);
-  return ids.size;
-}
-
-export function countExcludedZeroTokenTurns(params: {
-  filters: UsageFilters;
-  listResolvedTurns: () => UserTurnProjection[];
-  listResolvedSessions: () => SessionProjection[];
-  listSources: () => SourceStatus[];
-  listProjects: () => ProjectIdentity[];
-}): number {
-  const allRows = buildUsageRows({ ...params, filters: { ...params.filters, include_known_zero_token: true } });
-  return allRows.filter((row) => row.zero_token_reason && !row.has_token_usage).length;
-}
-
-export function computeUsageOverview(params: {
-  filters: UsageFilters;
-  listResolvedTurns: () => UserTurnProjection[];
-  listResolvedSessions: () => SessionProjection[];
-  listSources: () => SourceStatus[];
-  listProjects: () => ProjectIdentity[];
-}): UsageStatsOverview {
-  const rows = buildUsageRows(params);
-  const turnCount = countUsageTurns(rows);
-  const turnsWithTokenUsage = countUsageTurns(rows, row => row.has_token_usage);
-  const turnsWithPrimaryModel = countUsageTurns(rows, row => row.model !== "unknown");
-
-  const excludedCount = params.filters.include_known_zero_token ? 0 : countExcludedZeroTokenTurns(params);
+  const cacheForSum = Math.max(cached_input_tokens, cache_read_input_tokens + cache_creation_input_tokens);
+  const baseSum = input_tokens + cacheForSum + output_tokens;
+  const separateReasoning =
+    reasoning_output_tokens > 0 && total_tokens > baseSum && total_tokens === baseSum + reasoning_output_tokens;
+  const billable_output_tokens = separateReasoning ? output_tokens + reasoning_output_tokens : output_tokens;
+  const reasoning_for_billing_tokens = Math.min(billable_output_tokens, reasoning_output_tokens);
+  const non_reasoning_output_tokens = Math.max(0, billable_output_tokens - reasoning_for_billing_tokens);
 
   return {
-    generated_at: nowIso(),
-    total_turns: turnCount,
-    turns_with_token_usage: turnsWithTokenUsage,
-    turn_coverage_ratio: turnCount === 0 ? 0 : turnsWithTokenUsage / turnCount,
-    turns_with_primary_model: turnsWithPrimaryModel,
-    total_input_tokens: sumUsageRows(rows, "input_tokens"),
-    total_cached_input_tokens: sumUsageRows(rows, "cached_input_tokens"),
-    total_output_tokens: sumUsageRows(rows, "output_tokens"),
-    total_reasoning_output_tokens: sumUsageRows(rows, "reasoning_output_tokens"),
-    total_tokens: sumUsageRows(rows, "total_tokens"),
-    excluded_zero_token_turns: excludedCount > 0 ? excludedCount : undefined,
-  };
-}
-
-export function computeUsageRollup(params: {
-  dimension: UsageStatsDimension;
-  filters: UsageFilters;
-  listResolvedTurns: () => UserTurnProjection[];
-  listResolvedSessions: () => SessionProjection[];
-  listSources: () => SourceStatus[];
-  listProjects: () => ProjectIdentity[];
-}): UsageStatsRollup {
-  const { dimension, filters } = params;
-  const rows = buildUsageRows(params);
-  const groups = new Map<string, UsageStatsRollupRow>();
-  const groupRows = new Map<string, UsageAggregationRow[]>();
-
-  for (const row of rows) {
-    const key = usageDimensionKey(row, dimension);
-    const label = usageDimensionLabel(row, dimension);
-    const current = groups.get(key) ?? {
-      key,
-      label,
-      dimension,
-      turn_count: 0,
-      turns_with_token_usage: 0,
-      turn_coverage_ratio: 0,
-      turns_with_primary_model: 0,
-      total_input_tokens: 0,
-      total_cached_input_tokens: 0,
-      total_output_tokens: 0,
-      total_reasoning_output_tokens: 0,
-      total_tokens: 0,
-    };
-    const members = groupRows.get(key) ?? [];
-    members.push(row);
-    groupRows.set(key, members);
-    current.total_input_tokens += row.input_tokens;
-    current.total_cached_input_tokens += row.cached_input_tokens;
-    current.total_output_tokens += row.output_tokens;
-    current.total_reasoning_output_tokens += row.reasoning_output_tokens;
-    current.total_tokens += row.total_tokens;
-    groups.set(key, current);
-  }
-
-  const rollupRows = [...groups.values()]
-    .map((row) => {
-      const members = groupRows.get(row.key)!;
-      const turnCount = countUsageTurns(members);
-      const withUsage = countUsageTurns(members, member => member.has_token_usage);
-      return { ...row, turn_count: turnCount, turns_with_token_usage: withUsage,
-        turns_with_primary_model: countUsageTurns(members, member => member.model !== "unknown"),
-        turn_coverage_ratio: turnCount === 0 ? 0 : withUsage / turnCount };
-    })
-    .sort((left, right) => compareUsageRollupRows(dimension, left, right));
-
-  const excludedCount = filters.include_known_zero_token ? 0 : countExcludedZeroTokenTurns(params);
-
-  return {
-    generated_at: nowIso(),
-    dimension,
-    rows: rollupRows,
-    excluded_zero_token_turns: excludedCount > 0 ? excludedCount : undefined,
+    input_tokens,
+    cache_read_input_tokens,
+    cache_creation_input_tokens,
+    cached_input_tokens,
+    output_tokens,
+    reasoning_output_tokens,
+    non_reasoning_output_tokens,
+    reasoning_for_billing_tokens,
+    billable_output_tokens,
+    total_tokens,
   };
 }

@@ -2341,3 +2341,45 @@ function seedCursorComposerDb(
 function jsonNormalize<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
+
+test("LiveHistorySnapshot exposes cached getUsageBreakdown and getUsageMatrix across fixture sources", async () => {
+  const snapshot = await scanLiteHistory({
+    homeDir: path.join(mockDataRoot, "empty-home"),
+    hostname: "cchistory-lite-usage-breakdown-test",
+    sourceRefs: ["codex", "claude_code", "antigravity"],
+    contextMode: "none",
+    sourceRoots: [
+      { sourceRef: "codex", baseDir: path.join(mockDataRoot, fixtureRoots.codex) },
+      { sourceRef: "claude_code", baseDir: path.join(mockDataRoot, fixtureRoots.claude_code) },
+      { sourceRef: "antigravity", baseDir: path.join(mockDataRoot, fixtureRoots.antigravity) },
+    ],
+  });
+
+  const fullBreakdown = snapshot.getUsageBreakdown({
+    filters: { timezone: "UTC" },
+    time_dimension: "day",
+    matrix_dimensions: ["project", "model", "source", "day"],
+  });
+  assert.ok(fullBreakdown.overview.total_tokens > 0);
+  assert.ok(fullBreakdown.by_project.rows.length > 0);
+  assert.ok(fullBreakdown.by_model.rows.length > 0);
+  assert.ok(fullBreakdown.by_source.rows.length > 0);
+  assert.ok(fullBreakdown.by_time.rows.length > 0);
+  assert.ok((fullBreakdown.matrix?.rows.length ?? 0) > 0);
+
+  const firstSourceKey = fullBreakdown.by_source.rows[0]!.key;
+  const filtered = snapshot.getUsageBreakdown({
+    filters: { timezone: "UTC", source_ids: [firstSourceKey] },
+    time_dimension: "week",
+    matrix_dimensions: ["project", "model", "source", "week"],
+  });
+  assert.equal(filtered.by_source.rows.length, 1);
+  assert.equal(filtered.by_source.rows[0]?.key, firstSourceKey);
+  assert.equal(filtered.time_dimension, "week");
+
+  const directMatrix = snapshot.getUsageMatrix(["project", "model"], { timezone: "UTC", source_ids: [firstSourceKey] });
+  assert.equal(
+    directMatrix.rows.reduce((sum, row) => sum + row.total_tokens, 0),
+    filtered.overview.total_tokens,
+  );
+});

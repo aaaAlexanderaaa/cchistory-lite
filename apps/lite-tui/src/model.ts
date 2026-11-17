@@ -8,19 +8,32 @@
  */
 
 import type {
+  ModelCostMultipliers,
   ProjectIdentity,
   SessionProjection,
   SessionRelatedWorkProjection,
   SourceStatus,
   TurnContextProjection,
   TurnSearchResult,
+  UsageBreakdownSnapshot,
+  UsageMatrixSort,
+  UsagePricingConfig,
   UsageStatsDimension,
   UsageStatsOverview,
   UsageStatsRollup,
+  UsageTimeBucket,
+  UsageTimePreset,
+  UsageWeekMode,
   UserTurnProjection,
 } from "@cchistory/domain";
-import type { LiveHistorySnapshot } from "@cchistory/live-runtime";
-import { BoundedCache } from "@cchistory/live-runtime";
+import type { LiveHistorySnapshot, UsageFilters } from "@cchistory/live-runtime";
+import {
+  BoundedCache,
+  mergeUsagePricingConfigs,
+  resolveEffectiveQuotaLimitUsd,
+  resolveTimeWindowBounds,
+  resolveUsageTimezone,
+} from "@cchistory/live-runtime";
 
 export const UNLINKED_PROJECT_KEY = "__unlinked__";
 const CONTEXT_OVERLAY_MAX_ENTRIES = 64;
@@ -75,6 +88,9 @@ export class LiteBrowserModel {
   readonly sessions: LiteSessionEntry[];
   readonly counts: LiteCounts;
   readonly sourceHealth: LiteSourceHealth;
+  readonly pricingConfig?: UsagePricingConfig;
+  readonly quotaLimitUsd?: number;
+  readonly defaultTimezone: string;
 
   private readonly sessionsById: Map<string, SessionProjection>;
   /** Bounded cache for contexts fetched on demand after the initial scan. */
@@ -88,8 +104,19 @@ export class LiteBrowserModel {
   private readonly searchCache = new BoundedCache<string, LiteSearchPage>(32, 20_000,
     (page, query) => page.results.reduce((total, row) => total + 1 + row.highlights.length * 2, Math.ceil(query.length / 128)));
 
-  constructor(snapshot: LiveHistorySnapshot, options: { includeSessionRefs?: readonly string[] } = {}) {
+  constructor(
+    snapshot: LiveHistorySnapshot,
+    options: {
+      includeSessionRefs?: readonly string[];
+      pricingConfig?: UsagePricingConfig;
+      quotaLimitUsd?: number;
+      timezone?: string;
+    } = {},
+  ) {
     this.snapshot = snapshot;
+    this.pricingConfig = options.pricingConfig;
+    this.quotaLimitUsd = options.quotaLimitUsd;
+    this.defaultTimezone = resolveUsageTimezone(options.timezone ?? options.pricingConfig?.timezone);
     const resolvedSessions = snapshot.listResolvedSessions();
     const sessions = snapshot.listTopLevelSessions();
     const includedIds = new Set(sessions.map((session) => session.id));
@@ -191,6 +218,70 @@ export class LiteBrowserModel {
 
   getUsageRollup(dimension: UsageStatsDimension): UsageStatsRollup {
     return this.snapshot.getUsageRollup(dimension);
+  }
+
+  getUsageBreakdown(options: {
+    timePreset?: UsageTimePreset;
+    timeBucket?: UsageTimeBucket;
+    weekMode?: UsageWeekMode;
+    timezone?: string;
+    nowMs?: number;
+    projectIds?: readonly string[];
+    models?: readonly string[];
+    sourceIds?: readonly string[];
+    timeKeys?: readonly string[];
+    matrixDimensions?: readonly UsageStatsDimension[];
+    sortBy?: UsageMatrixSort;
+    customAliases?: Readonly<Record<string, string>>;
+    multiplierOverrides?: Readonly<Record<string, ModelCostMultipliers>>;
+    quotaUsdOverride?: number;
+  } = {}): UsageBreakdownSnapshot {
+    const timeZone = resolveUsageTimezone(options.timezone ?? this.defaultTimezone);
+    const weekMode = options.weekMode ?? this.pricingConfig?.quota?.week_mode ?? "rolling_7d";
+    const timePreset = options.timePreset ?? "all";
+    const timeBucket = options.timeBucket ?? "day";
+    const nowMs = options.nowMs ?? Date.now();
+    const bounds = resolveTimeWindowBounds(timePreset, {
+      timezone: timeZone,
+      week_mode: weekMode,
+      week_start_day: this.pricingConfig?.quota?.week_start_day,
+      week_reset_hour: this.pricingConfig?.quota?.week_reset_hour,
+      now_ms: nowMs,
+    });
+    const effectiveQuotaUsd = options.quotaUsdOverride ?? this.quotaLimitUsd;
+    const effectivePricing = mergeUsagePricingConfigs(this.pricingConfig, {
+      schema: "cchistory-lite-pricing/v1",
+      timezone: timeZone,
+      aliases: options.customAliases ? { ...options.customAliases } : undefined,
+      multipliers: options.multiplierOverrides ? { ...options.multiplierOverrides } : undefined,
+      quota: {
+        week_mode: weekMode,
+        ...(effectiveQuotaUsd !== undefined ? { custom_usd: effectiveQuotaUsd } : {}),
+      },
+    });
+    const filters: UsageFilters = {
+      project_ids: options.projectIds?.length ? [...options.projectIds] : undefined,
+      models: options.models?.length ? [...options.models] : undefined,
+      source_ids: options.sourceIds?.length ? [...options.sourceIds] : undefined,
+      time_keys: options.timeKeys?.length ? [...options.timeKeys] : undefined,
+      time_dimension: timeBucket,
+      time_preset: timePreset,
+      timezone: timeZone,
+      week_mode: weekMode,
+      now_ms: nowMs,
+      after_ts: bounds.after_ts,
+      before_ts: bounds.before_ts,
+      after_date: bounds.after_date,
+      before_date: bounds.before_date,
+      pricing: effectivePricing,
+      quota_limit_usd: resolveEffectiveQuotaLimitUsd(effectivePricing, timePreset, effectiveQuotaUsd),
+    };
+    return this.snapshot.getUsageBreakdown({
+      filters,
+      time_dimension: timeBucket,
+      matrix_dimensions: options.matrixDimensions ?? ["project", "model", "source", timeBucket],
+      sort_by: options.sortBy ?? "adjusted_cost",
+    });
   }
 }
 

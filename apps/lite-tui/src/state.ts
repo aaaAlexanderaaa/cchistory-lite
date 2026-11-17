@@ -14,6 +14,12 @@ import {
   type LiteSessionEntry,
   type LiteTurnEntry,
 } from "./model.js";
+import {
+  createLiteStatsState,
+  reduceLiteStatsState,
+  type LiteStatsAction,
+  type LiteStatsState,
+} from "./stats-state.js";
 
 export type LiteFocusPane = "projects" | "turns" | "detail" | "conversation";
 /** What the left pane lists: linked projects, or top-level sessions. */
@@ -39,6 +45,7 @@ export interface LiteBrowserState {
   focusPane: LiteFocusPane;
   overlay: LiteOverlay;
   statsDimension: LiteStatsDimension;
+  stats: LiteStatsState;
   selectedProjectIndex: number;
   selectedSessionIndex: number;
   selectedTurnIndex: number;
@@ -82,7 +89,8 @@ export type LiteBrowserAction =
   | { type: "open-project-ref"; ref: string }
   | { type: "open-session-ref"; ref: string }
   | { type: "open-turn-ref"; ref: string }
-  | { type: "open-search"; query: string };
+  | { type: "open-search"; query: string }
+  | LiteStatsAction;
 
 export interface LiteSearchGroup {
   projectKey: string;
@@ -98,6 +106,7 @@ export function createLiteBrowserState(model: LiteBrowserModel): LiteBrowserStat
       focusPane: "projects",
       overlay: "none",
       statsDimension: "source",
+      stats: createLiteStatsState(model),
       selectedProjectIndex: 0,
       selectedSessionIndex: 0,
       selectedTurnIndex: 0,
@@ -120,25 +129,35 @@ export function reduceLiteBrowserState(
   state: LiteBrowserState,
   action: LiteBrowserAction,
 ): LiteBrowserState {
-  switch (action.type) {
+  if (action.type.startsWith("stats-")) {
+    const nextStats = reduceLiteStatsState(model, state.stats, action as LiteStatsAction);
+    return {
+      ...state,
+      stats: nextStats,
+      statsDimension: nextStats.activeQuadrant,
+      overlayScrollOffset: 0,
+    };
+  }
+  const coreAction = action as Exclude<LiteBrowserAction, LiteStatsAction>;
+  switch (coreAction.type) {
     case "focus-next":
     case "focus-previous": {
       if (state.focusPane === "conversation") return state;
-      const delta = action.type === "focus-next" ? 1 : FOCUS_ORDER.length - 1;
+      const delta = coreAction.type === "focus-next" ? 1 : FOCUS_ORDER.length - 1;
       const index = (FOCUS_ORDER.indexOf(state.focusPane) + delta) % FOCUS_ORDER.length;
       return { ...state, focusPane: FOCUS_ORDER[index] ?? "projects" };
     }
     case "focus-projects":
       return { ...state, focusPane: "projects" };
     case "set-browse-scope":
-      if (state.browseScope === action.scope && state.mode === "browse") {
+      if (state.browseScope === coreAction.scope && state.mode === "browse") {
         return { ...state, focusPane: "projects" };
       }
       return clampState(
         {
           ...state,
           mode: "browse",
-          browseScope: action.scope,
+          browseScope: coreAction.scope,
           focusPane: "projects",
           overlay: "none",
           selectedTurnIndex: 0,
@@ -191,11 +210,11 @@ export function reduceLiteBrowserState(
     case "commit-search":
       return clampState({ ...state, ...resetSearchSelection(state), searchCommitted: true }, model);
     case "append-search-char":
-      return applySearchQuery(model, state, `${state.searchQuery}${action.value}`);
+      return applySearchQuery(model, state, `${state.searchQuery}${coreAction.value}`);
     case "backspace-search":
       return applySearchQuery(model, state, state.searchQuery.slice(0, Math.max(state.searchQuery.length - 1, 0)));
     case "open-search":
-      return applySearchQuery(model, { ...state, mode: "search", focusPane: "projects" }, action.query, true);
+      return applySearchQuery(model, { ...state, mode: "search", focusPane: "projects" }, coreAction.query, true);
 
     case "toggle-help":
       return toggleOverlay(state, "help");
@@ -204,27 +223,33 @@ export function reduceLiteBrowserState(
     case "toggle-sources":
       return toggleOverlay(state, "sources");
     case "close-overlay":
-      return { ...state, overlay: "none", overlayScrollOffset: 0 };
-    case "cycle-stats-dimension": {
-      const index = STATS_DIMENSIONS.indexOf(state.statsDimension);
       return {
         ...state,
-        statsDimension: STATS_DIMENSIONS[(index + 1) % STATS_DIMENSIONS.length] ?? "source",
+        overlay: "none",
+        overlayScrollOffset: 0,
+        stats: state.stats.editing ? { ...state.stats, editing: undefined } : state.stats,
+      };
+    case "cycle-stats-dimension": {
+      const nextStats = reduceLiteStatsState(model, state.stats, { type: "stats-cycle-quadrant" });
+      return {
+        ...state,
+        stats: nextStats,
+        statsDimension: nextStats.activeQuadrant,
         overlayScrollOffset: 0,
       };
     }
 
     case "set-status":
-      return { ...state, status: action.status };
+      return { ...state, status: coreAction.status };
     case "clear-status":
       return { ...state, status: undefined };
 
     case "open-project-ref":
-      return openProjectRef(model, state, action.ref);
+      return openProjectRef(model, state, coreAction.ref);
     case "open-session-ref":
-      return openSessionRef(model, state, action.ref);
+      return openSessionRef(model, state, coreAction.ref);
     case "open-turn-ref":
-      return openTurnRef(model, state, action.ref);
+      return openTurnRef(model, state, coreAction.ref);
   }
 }
 

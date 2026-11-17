@@ -1093,7 +1093,7 @@ export interface AskUserQuestionTurn {
   answers: AskUserAnswer[];
 }
 
-export type UsageStatsDimension = "model" | "project" | "source" | "host" | "day" | "month";
+export type UsageStatsDimension = "model" | "project" | "source" | "host" | "day" | "week" | "month";
 
 export interface UsageStatsOverview {
   generated_at: string;
@@ -1102,11 +1102,16 @@ export interface UsageStatsOverview {
   turn_coverage_ratio: number;
   turns_with_primary_model: number;
   total_input_tokens: number;
+  total_cache_read_input_tokens?: number;
+  total_cache_creation_input_tokens?: number;
   total_cached_input_tokens: number;
   total_output_tokens: number;
   total_reasoning_output_tokens: number;
+  total_billable_output_tokens?: number;
   total_tokens: number;
+  usage_event_count?: number;
   excluded_zero_token_turns?: number;
+  cost?: import("./usage-pricing.js").UsageCostBreakdown;
 }
 
 export interface UsageStatsRollupRow {
@@ -1118,10 +1123,15 @@ export interface UsageStatsRollupRow {
   turn_coverage_ratio: number;
   turns_with_primary_model: number;
   total_input_tokens: number;
+  total_cache_read_input_tokens?: number;
+  total_cache_creation_input_tokens?: number;
   total_cached_input_tokens: number;
   total_output_tokens: number;
   total_reasoning_output_tokens: number;
+  total_billable_output_tokens?: number;
   total_tokens: number;
+  usage_event_count?: number;
+  cost?: import("./usage-pricing.js").UsageCostBreakdown;
 }
 
 export interface UsageStatsRollup {
@@ -1390,6 +1400,7 @@ export * from "./evidence-values.js";
 export * from "./token-evidence.js";
 export * from "./evidence-atoms.js";
 export * from "./masks.js";
+export * from "./usage-pricing.js";
 
 export type { QueryCollection, QueryValue, QueryValueType, QueryColumn, QueryPredicate, LogicalQuery, CanonicalQueryResult } from "./query.js";
 export type { ConversationEvidence, EvidenceReadOptions, ReadStatus } from "./conversation-evidence.js";

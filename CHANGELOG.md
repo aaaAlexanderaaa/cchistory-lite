@@ -9,6 +9,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Multi-dimensional token, cost, multiplier, and quota statistics across CLI `stats`
+  and TUI (`i` overlay), correlating Project × Model × Source × Time (`day`/`week`/`month`)
+  with separated cache read/write totals, reasoning double-count reconciliation, and
+  `turn_id: null` usage event attribution.
+- Bundled offline `models.dev/api.json` pricing catalog snapshot with built-in Gemini
+  aliases (`gemini-pro-orchestrator` → `gemini-4-carbon`, `gemini-flash-worker-agy` →
+  `gemini-4-hydrogen`), model-name suffix normalization, dual-layer cost output
+  (`list_cost_usd` vs multiplier-adjusted `adjusted_cost_usd`), period `quota_percent`,
+  and `scripts/refresh-models-dev-pricing.mjs` for manual offline catalog updates.
+- CLI `stats` multi-axis `--by` matrix output (`--by project,model,source,day`),
+  `--model`, `--since`/`--from`/`--to`, `--tz`, `--week-mode`, `--sort`, repeatable
+  `--pricing` / `CCHISTORY_PRICING_CONFIG`, inline `--alias`, `--multiplier`,
+  `--cache-read-multiplier`, `--cache-write-multiplier`, `--quota`, `--explain-pricing`,
+  `--export-pricing`, explicit working-directory scope notices, and additive `--json` v2
+  `matrix`/`breakdown`/`model_resolutions` payloads.
+- Lite TUI Plan A interactive `2×2` stats dashboard (`Space`/`Enter` cross-filtering,
+  `v` full-width matrix breakdown, `m` live in-memory multiplier/alias calibration
+  drawer, `$` inline quota editor, `t`/`b`/`w`/`o` window/bucket/week/sort toggles,
+  and `--pricing` / `--quota` startup flags forwarded from `cchistory-lite tui`).
 - Direct read-only Antigravity 2.32.1 SQLite history and per-model token usage
   (`~/.gemini/antigravity/conversations/*.db`), including cache reads/writes,
   reasoning output, tool-only turns, and assistant-only delegated sub-sessions.

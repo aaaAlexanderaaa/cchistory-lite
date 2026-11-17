@@ -28,9 +28,13 @@ import {
   type TurnContextProjection,
   type SessionSearchResult,
   type TurnSearchResult,
+  type UsageBreakdownSnapshot,
+  type UsageMatrixResult,
+  type UsageMatrixSort,
   type UsageStatsDimension,
   type UsageStatsOverview,
   type UsageStatsRollup,
+  type UsageTimeBucket,
   type UserTurnProjection,
 } from "@cchistory/domain";
 import {
@@ -50,9 +54,12 @@ import {
   buildSessionRelatedWorkIndex,
   compareTurnsByChronology,
   compareTurnsByRecency,
+  computeUsageBreakdown,
+  computeUsageMatrix,
   computeUsageOverview,
   computeUsageRollup,
   deriveProjectLinkSnapshot,
+  extractUnfilteredUsageRows,
   filterProjectsByDirectoryScope,
   selectSampleSessions,
   summarizeDirectoryScope,
@@ -68,6 +75,7 @@ import {
   orderSessionsByLastMessage,
   pathMatchesDirectoryScope,
   resolveLatestTurnActivityAt,
+  resolveUsageTimezone,
   searchSessionsInMemory,
   searchTurnsInMemory,
   resolveTurnUsage,
@@ -75,6 +83,7 @@ import {
   type ProjectionAuditIssue,
   type SessionUsageProjection,
   type TurnUsageProjection,
+  type UsageAggregationRow,
   type UsageFilters,
 } from "@cchistory/canonical";
 import { SourceReadBudgetExceededError, type SourceReadBudget, applyMaskTemplates, type SourceProbeProgressEvent, type SourceFileReadPlan } from "@cchistory/source-adapters";
@@ -322,6 +331,8 @@ export class LiveHistorySnapshot {
     (rows, key) => rows.reduce((total, row) => total + 1 + row.highlights.length * 2, Math.ceil(key.length / 128)));
   private readonly evidencePages = new BoundedCache<string, ReturnType<typeof prepareConversationEvidence>>(32, 100_000,
     (entry, key) => entry.messageCount + Math.ceil(key.length / 128));
+  private readonly usageBaseRowsCache = new BoundedCache<string, readonly UsageAggregationRow[]>(8, 50_000,
+    (rows, key) => rows.length + Math.ceil(key.length / 128));
 
   constructor(data: LiveSnapshotInputData, searchCandidates: readonly DerivedCandidate[] = [], readonly limitedScan = false) {
     this.data = {
@@ -713,6 +724,77 @@ export class LiveHistorySnapshot {
     return computeUsageRollup({
       dimension,
       filters,
+      listResolvedTurns: () => this.data.turns,
+      listResolvedSessions: () => this.data.sessions,
+      listSources: () => this.data.sources,
+      listProjects: () => this.data.projects,
+    });
+  }
+
+  private getCachedUsageBaseRows(filters: UsageFilters = {}): readonly UsageAggregationRow[] {
+    const timeZone = resolveUsageTimezone(filters.timezone ?? filters.pricing?.timezone);
+    const weekMode = filters.week_mode ?? filters.pricing?.quota?.week_mode ?? "rolling_7d";
+    const weekStartDay = filters.week_start_day ?? filters.pricing?.quota?.week_start_day;
+    const weekResetHour = filters.week_reset_hour ?? filters.pricing?.quota?.week_reset_hour;
+    const nowMs = filters.now_ms ?? Date.now();
+    const rollingBucket =
+      weekMode === "rolling_7d"
+        ? String(filters.now_ms ?? Math.floor(nowMs / 60_000))
+        : "";
+    const cacheKey = `${timeZone}|${weekMode}|${weekStartDay ?? ""}|${weekResetHour ?? ""}|${rollingBucket}`;
+    const cached = this.usageBaseRowsCache.get(cacheKey);
+    if (cached) return cached;
+    const extracted = extractUnfilteredUsageRows(
+      {
+        listResolvedTurns: () => this.data.turns,
+        listResolvedSessions: () => this.data.sessions,
+        listSources: () => this.data.sources,
+        listProjects: () => this.data.projects,
+      },
+      {
+        timezone: timeZone,
+        week_mode: weekMode,
+        week_start_day: weekStartDay,
+        week_reset_hour: weekResetHour,
+        now_ms: nowMs,
+        pricing: filters.pricing,
+      },
+    );
+    this.usageBaseRowsCache.set(cacheKey, extracted);
+    return extracted;
+  }
+
+  getUsageMatrix(
+    dimensions: readonly UsageStatsDimension[],
+    filters: UsageFilters = {},
+    sortBy: UsageMatrixSort = "adjusted_cost",
+  ): UsageMatrixResult {
+    return computeUsageMatrix({
+      dimensions,
+      filters,
+      sortBy,
+      listResolvedTurns: () => this.data.turns,
+      listResolvedSessions: () => this.data.sessions,
+      listSources: () => this.data.sources,
+      listProjects: () => this.data.projects,
+    });
+  }
+
+  getUsageBreakdown(
+    options: {
+      filters?: UsageFilters;
+      time_dimension?: UsageTimeBucket;
+      matrix_dimensions?: readonly UsageStatsDimension[];
+      sort_by?: UsageMatrixSort;
+    } = {},
+  ): UsageBreakdownSnapshot {
+    const filters = options.filters ?? {};
+    return computeUsageBreakdown({
+      filters,
+      time_dimension: options.time_dimension,
+      matrix_dimensions: options.matrix_dimensions,
+      sort_by: options.sort_by,
+      cached_base_rows: this.getCachedUsageBaseRows(filters),
       listResolvedTurns: () => this.data.turns,
       listResolvedSessions: () => this.data.sessions,
       listSources: () => this.data.sources,
@@ -2108,4 +2190,29 @@ export type { LiveQueryRead, QueryReadWork } from "./selective-query.js";
 export { BoundedCache } from "./bounded-cache.js";
 export type { ReadDiagnostic, ReadDiagnosticSink } from "./diagnostics.js";
 export { LiveHistoryReader } from "./history-reader.js";
-export { EvidenceCursorError, validateEvidenceBudget, DEFAULT_EVIDENCE_CHARS, MAX_EVIDENCE_CHARS } from "@cchistory/canonical";
+export {
+  EvidenceCursorError,
+  validateEvidenceBudget,
+  DEFAULT_EVIDENCE_CHARS,
+  MAX_EVIDENCE_CHARS,
+  UNASSIGNED_PROJECT_KEY,
+  BUILTIN_MODEL_PRICING_CATALOG,
+  DEFAULT_MODEL_ALIASES,
+  MODEL_PRICING_CATALOG_SNAPSHOT_DATE,
+  buildPricingConfigTemplate,
+  mergeUsagePricingConfigs,
+  parseUsagePricingInput,
+  resolveEffectiveQuotaLimitUsd,
+  resolveModelPricing,
+  normalizeMultipliers,
+  parseDateEnd,
+  parseDateOrRelativeStart,
+  resolveTimeWindowBounds,
+  resolveUsageTimezone,
+  resolveWeekBucket,
+} from "@cchistory/canonical";
+export type {
+  UsageFilters,
+  ResolvedModelPricing,
+  UsageTimeOptions,
+} from "@cchistory/canonical";

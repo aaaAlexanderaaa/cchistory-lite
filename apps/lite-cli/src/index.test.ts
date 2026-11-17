@@ -1202,6 +1202,21 @@ test("Lite CLI help documents latest, limits, and directory scope", async () => 
     "offset",
     "project",
     "by",
+    "model",
+    "from",
+    "to",
+    "since",
+    "tz",
+    "week-mode",
+    "sort",
+    "pricing",
+    "alias",
+    "multiplier",
+    "cache-read-multiplier",
+    "cache-write-multiplier",
+    "quota",
+    "export-pricing",
+    "explain-pricing",
     "format",
     "out",
     "dir",
@@ -1912,6 +1927,9 @@ test("Lite CLI agent contract flags match the parser in both directions", async 
   // here must be reflected in the contract before this audit can pass.
   const parserFlags = [
     "--source-root", "--source", "--limit-files", "--limit", "--offset", "--project", "--by",
+    "--model", "--from", "--to", "--since", "--tz", "--week-mode", "--sort",
+    "--pricing", "--alias", "--multiplier", "--cache-read-multiplier", "--cache-write-multiplier",
+    "--quota", "--export-pricing", "--explain-pricing",
     "--format", "--out", "--dir", "--request", "--safe", "--json", "--all", "--no-dir",
     "--help", "--version", "--sql", "--sql-file", "--params", "--complete", "--idle-timeout", "--diagnostics",
   ];
@@ -1942,6 +1960,20 @@ test("Lite CLI agent contract flags match the parser in both directions", async 
       case "--offset": return [name, "0"];
       case "--project": return [name, project.project_id];
       case "--by": return [name, "source"];
+      case "--model": return [name, "gpt"];
+      case "--from": return [name, "2026-01-01"];
+      case "--to": return [name, "2026-12-31"];
+      case "--since": return [name, "all"];
+      case "--tz": return [name, "UTC"];
+      case "--week-mode": return [name, "rolling_7d"];
+      case "--sort": return [name, "adjusted_cost"];
+      case "--pricing": return [name, path.join(repoRoot, "docs/guide/pricing.example.json")];
+      case "--alias": return [name, "gemini-pro=gemini-4-carbon"];
+      case "--multiplier": return [name, "gpt-5=1"];
+      case "--cache-read-multiplier": return [name, "gpt-5=1"];
+      case "--cache-write-multiplier": return [name, "gpt-5=1"];
+      case "--quota": return [name, "100"];
+      case "--export-pricing": return [name, "-"];
       case "--format": return [name, "jsonl"];
       case "--out": return [name, "-"];
       case "--dir": return [name, repoRoot];

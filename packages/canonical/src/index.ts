@@ -10,11 +10,11 @@ export {
   listBlobOriginsBySession,
 } from "./fallback-projects.js";
 export {
+  UNASSIGNED_PROJECT_KEY,
   buildUsageRows,
   compareUsageRollupRows,
-  computeUsageOverview,
-  computeUsageRollup,
-  countExcludedZeroTokenTurns,
+  extractUnfilteredUsageRows,
+  filterUsageRows,
   hasAnyTokenUsage,
   resolveStructuredTokenTotal,
   resolveTurnUsage,
@@ -24,9 +24,48 @@ export {
   usageDimensionLabel,
   type UsageAggregationRow,
   type UsageFilters,
+  type UsageSourceData,
   type SessionUsageProjection,
   type TurnUsageProjection,
 } from "./usage.js";
+export {
+  computeUsageBreakdown,
+  computeUsageMatrix,
+  computeUsageOverview,
+  computeUsageRollup,
+  countExcludedZeroTokenTurns,
+} from "./usage-breakdown.js";
+export {
+  BUILTIN_MODEL_PRICING_CATALOG,
+  DEFAULT_MODEL_ALIASES,
+  MODEL_PRICING_CATALOG_SNAPSHOT_DATE,
+} from "./model-pricing-catalog.js";
+export {
+  addModelUsageToCostBreakdown,
+  buildModelPricingResolutions,
+  createEmptyCostBreakdown,
+  normalizeMultipliers,
+  resolveModelPricing,
+  type ResolvedModelPricing,
+  type UsageTokenQuantities,
+} from "./usage-pricing.js";
+export {
+  buildPricingConfigTemplate,
+  mergeUsagePricingConfigs,
+  parseUsagePricingInput,
+  resolveEffectiveQuotaLimitUsd,
+} from "./usage-pricing-config.js";
+export {
+  extractLocalTimeParts,
+  localWallTimeToEpochMs,
+  parseDateEnd,
+  parseDateOrRelativeStart,
+  resolveTimeWindowBounds,
+  resolveUsageTimezone,
+  resolveWeekBucket,
+  type LocalTimeParts,
+  type UsageTimeOptions,
+} from "./usage-time.js";
 export {
   boundSearchCanonicalText,
   buildSearchPlan,
