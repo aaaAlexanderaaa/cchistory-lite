@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-18
+
 ### Added
 
 - Refreshed 2,562-model offline pricing catalog with pinned LiteLLM additions
