@@ -172,9 +172,6 @@ export const DEFAULT_MODEL_ALIASES: Readonly<Record<string, string>> = {
   "gemini-pro-low": "gemini-4-carbon",
   "gemini-3-pro": "gemini-3.1-pro-preview",
   "gemini-3-flash": "gemini-3-flash-preview",
-  "grok-4.6-build": "grok-4.6",
-  "grok-4.7-build": "grok-4.7",
-  "grok-4.7-fast": "grok-4.7-build-fast",
 };
 
 const RAW_CATALOG: Record<string, ModelCatalogEntry> = {

@@ -24,7 +24,9 @@ golden JSON (`fixtures/ccusage-20.0.51.json`) comes from running the published b
 `fixtures/codex-counter-cases.json` and `fixtures/codex-inherited-usage/` cover resets, embedded
 usage, whole-call context prices and inherited summaries found by independent reviews.
 `fixtures/pricing-catalog/refresh.json` covers direct-provider precedence, LiteLLM unit
-conversion and context-rate retention. Neither family contains native user history.
+conversion and context-rate retention. `model-names.json` covers generic names, aliases,
+numeric boundaries, separate rate variants, mutable overrides and a captured ccusage 20.0.51
+comparison on synthetic per-model calls. These fixtures contain synthetic usage only.
 
 Antigravity is split across three fixture families:
 

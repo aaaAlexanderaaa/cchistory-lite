@@ -44,19 +44,20 @@ providers are filled from the exact
 models.dev prices take precedence. Provider-prefixed model names and local overrides retain
 the existing resolution order. CLI/TUI execution reads the bundled catalog entirely offline.
 
-`grok-4.6-build` and `grok-4.7-build` are explicit local aliases to their matching public API
-models, expressing API-equivalent estimates.
+`grok-4.6-build` and `grok-4.7-build` resolve to their matching public API models,
+expressing API-equivalent estimates. The initial implementation used explicit aliases;
+the generic matcher described below now owns those name variants.
 The [official xAI model page](https://docs.x.ai/developers/models/grok-4.6) lists $2 input,
 $0.50 cached input and $6 output per million tokens; its
 [release notes](https://docs.x.ai/developers/release-notes) document $4 / $1 / $12 above 200k
-prompt tokens. Local price overrides express gateway-specific rates. The alias is a maintained
-interpretation of the tool-facing name; models.dev and LiteLLM list the base model.
+prompt tokens. Local price overrides express gateway-specific rates. The generic suffix match
+uses the catalog's base-model entry; models.dev and LiteLLM list that base model.
 
 The 2026-11-18 follow-up verified [Grok 4.7](https://docs.x.ai/developers/models/grok-4.7)
-and added its Build alias. `grok-4.7-build-fast` has its own official-price supplement from
+and its Build name. `grok-4.7-build-fast` has its own official-price supplement from
 [xAI pricing](https://docs.x.ai/developers/pricing): $4 / $1 / $12 per million input/cache/output
 below the context threshold, and $6 / $1.50 / $18 above 200k prompt tokens. `grok-4.7-fast`
-aliases that Fast entry. The generator records this third source and preserves any matching
+matches that Fast entry through generic tool-label handling. The generator records this third source and preserves any matching
 upstream entry; local overrides keep their priority. A cost regression exercises both sides of
 the threshold to keep the standard and Fast variants distinct.
 
@@ -66,7 +67,57 @@ summing rows. A daily or model aggregate never triggers a context tier. Turn-onl
 retains base-rate estimates because its individual request sizes are unavailable. Native
 service-tier prices and historical price schedules remain explicit local calibration inputs.
 
-Manual refresh:
+### Generic model names (2026-11-18)
+
+The pricing path now uses `packages/canonical/src/model-name-matching.ts` rather than individual
+Grok Build aliases. Its reference is ccusage's
+[`pricing.rs`](https://github.com/ccusage/ccusage/blob/58866ba681343634ab6e5add61f18f3b70aa98f7/rust/crates/ccusage-core/src/pricing.rs):
+`find_with_fallbacks`, `find_entry_with_fallback`, `pricing_key_matches`, `contains_pricing_key`,
+numeric suffix checks and exact-only catalog entries. Configured alias suffix inheritance follows
+[`model_aliases.rs`](https://github.com/ccusage/ccusage/blob/58866ba681343634ab6e5add61f18f3b70aa98f7/rust/crates/ccusage-core/src/model_aliases.rs).
+
+Resolution preserves explicit user aliases and exact catalog prices first. Provider prefixes,
+tool labels, effort/date suffixes and equivalent separators then resolve to catalog names;
+remaining matches use punctuation boundaries and the longest compatible catalog key.
+Numeric extensions remain separate versions (`4.7` / `4.70` / `4.8`). Independent rate qualifiers
+such as Fast, Flex, Priority and Mini survive automatic fallbacks and alias chains. Exact
+per-variant aliases and custom prices can express deliberate gateway routing.
+
+Three deliberate guards refine the upstream fallback for this catalog: authored separator spelling
+wins before normalized spelling (the bundled `grok-4.7` and `grok-4-7` carry different prices);
+equally specific normalized names with conflicting prices stay unpriced; and a missing rate
+variant stays unpriced. Reverse matching selects dated releases while other model/tier extensions
+stay explicit. The original model and its token totals remain visible in every case.
+Opaque Gemini routing aliases continue to describe actual tool codenames. The refresh generator
+now emits zero per-version Grok Build aliases while retaining the separate official Fast rates.
+
+`mock_data/fixtures/pricing-catalog/model-names.json` records synthetic catalog cases, grouped
+standard/Fast calls, and a 13-model replay through the published ccusage 20.0.51 binary. The replay
+uses temporary Pi JSONL sessions, an explicit empty config, UTC, `--offline`, and the configured
+alias `private-xai=grok-4.7`. Each call has 1,000 uncached input, 1,000 cached input and 1,000
+output tokens. Captured costs are:
+
+| Model shape | ccusage USD | Lite USD |
+| --- | ---: | ---: |
+| Grok 4.6 / 4.7 base, Build and provider-prefixed Build (6 cases) | 0.0085 each | 0.0085 each |
+| Grok 4.7 Build High, date suffix, configured alias (3 cases) | 0.0085 each | 0.0085 each |
+| `grok-4.70-build` | missing pricing | unpriced |
+| `grok-4.7-build-fast`, `private-xai-fast` | 0.0085 each | 0.017 each |
+| `grok-4.6-build-fast` | 0.0085 | unpriced |
+
+The Fast differences expose the upstream snapshot's ordinary-rate fallback. Lite uses the official
+4.7 Fast supplement and preserves missing 4.6 Fast rates for local calibration. A separate cost
+regression combines standard/Fast names and alias suffixes on both sides of the 200K context
+threshold; overview, model resolutions and the model/day matrix agree while retaining unpriced
+tokens. Mutable calibration is exercised with the same config object across aggregations.
+The upstream JSON also flags the two configured alias names as `missingPricing` while reporting
+the nonzero costs above; the fixture retains both fields from that output.
+
+The matcher shares fixed catalog metadata. Cost aggregation resolves each raw model once per
+synchronous operation and selects context tiers separately for every native call. No history or
+per-model resolution cache persists between operations.
+
+### Manual refresh
 
 ```sh
 node scripts/refresh-models-dev-pricing.mjs --update-builtin

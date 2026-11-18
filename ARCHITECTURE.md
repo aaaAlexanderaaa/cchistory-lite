@@ -54,8 +54,11 @@ flowchart LR
   Parse --> Calls["Canonical independent calls and matched compactions"]
   Calls --> Rows["Call timestamp, model and own user turn or null"]
   Rows --> Stats["Project / model / source / time statistics"]
-  Catalog["Bundled models.dev prices + pinned LiteLLM additions"] --> Price["Per-call context rate and local overrides"]
-  Rows --> Price
+  Catalog["Bundled prices, official Fast supplements and local overrides"] --> Names["Canonical exact / alias / bounded longest-name match"]
+  Rows --> Names
+  Names -->|"Matching version and rate variant"| Price["Per-call context rate"]
+  Names -->|"Unknown or ambiguous price"| Unpriced["Retained tokens and unpriced model"]
+  Unpriced --> Stats
   Price --> Stats
   Parse -->|"Unsupported or malformed evidence"| Diagnostics["Retained evidence and read diagnostics"]
 ```
@@ -66,6 +69,11 @@ adds its own request usage. Calls without a real user submission retain `turn_id
 contribute to session and aggregate totals. `usage.ts` buckets independent calls by their
 recorded timestamp; user-turn counts deduplicate actual turn identities across rows.
 
+`model-name-matching.ts` owns generic model-name resolution, separator spellings, alias chains,
+numeric-version boundaries and independent rate qualifiers such as Fast/Flex. Authored spelling
+wins before separator fallback; equal-length conflicting prices remain unpriced. Opaque routing
+aliases and explicit price overrides remain configurable. Each synchronous aggregation reuses one
+resolution per raw model; later calibration reads the current config without a persistent cache.
 `usage-pricing.ts` selects whole-request context rates using the individual call's total input,
 including cache, before aggregation. Turn-only evidence retains base-rate estimates. The manual
 refresh script owns upstream downloads; CLI/TUI execution uses bundled prices and explicit local

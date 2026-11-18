@@ -9,9 +9,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- Refreshed 2,562-model offline pricing catalog with pinned LiteLLM additions,
-  `grok-4.6-build` / `grok-4.7-build` aliases, and official Grok 4.7 Build Fast
+- Refreshed 2,562-model offline pricing catalog with pinned LiteLLM additions
+  and official Grok 4.7 Build Fast
   rates, including its distinct long-context prices.
+- Generic model-name pricing resolution adapted from ccusage: provider prefixes,
+  separator spellings, dates, tool suffixes and configured alias chains resolve against
+  the catalog, including Grok Build names without per-version mappings. Fast/Flex prices
+  and numeric model versions remain distinct; unknown or ambiguous rates retain unpriced tokens.
 
 ### Fixed
 

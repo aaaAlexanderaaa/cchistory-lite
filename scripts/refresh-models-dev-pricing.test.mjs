@@ -25,8 +25,8 @@ test("LiteLLM fallback converts per-token USD and preserves primary model prices
 
 test("generated snapshots preserve model aliases and exact upstream provenance", () => {
   const source = renderBuiltinCatalogTs({}, "2026-11-17", ["https://fixture.example/prices.json"]);
-  assert.ok(source.includes('"grok-4.6-build": "grok-4.6"'));
-  assert.ok(source.includes('"grok-4.7-build": "grok-4.7"'));
+  assert.ok(source.includes('"gemini-pro-orchestrator": "gemini-4-carbon"'));
+  assert.equal(source.includes('"grok-4.7-build":'), false);
   assert.ok(source.includes('MODEL_PRICING_CATALOG_SOURCES = ["https://fixture.example/prices.json"]'));
 });
 

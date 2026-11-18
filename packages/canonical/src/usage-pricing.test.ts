@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { ProjectIdentity, SessionProjection, SourceStatus, UserTurnProjection } from "@cchistory/domain";
 import {
@@ -405,7 +406,7 @@ test("parseUsagePricingInput handles raw models.dev/api.json dumps and timezone 
   assert.ok((relative7d.after_ts ?? 0) < nowMs);
 });
 
-test("Grok Build alias uses the current xAI catalog with explicit long-context rates", () => {
+test("Grok Build names use generic matching and the current xAI catalog with long-context rates", () => {
   for (const name of ["grok-4.6-build", "xai/grok-4.6-build", "x-ai/grok-4.6-build", "grok-4.7-build", "xai/grok-4.7-build", "x-ai/grok-4.7-build"]) {
     const pricing = resolveModelPricing(name);
     assert.equal(pricing.resolved_model, name.includes("4.7") ? "grok-4.7" : "grok-4.6");
@@ -480,4 +481,32 @@ test("Grok Build Fast keeps its own whole-request rates across aliases and conte
   }));
   assert.equal(custom.match_kind, "custom");
   assert.equal(custom.unit_prices!.input, 8);
+});
+
+test("decorated standard and Fast calls reconcile across statistics while unknown variants retain tokens", () => {
+  const fixture = JSON.parse(readFileSync(new URL("../../../mock_data/fixtures/pricing-catalog/model-names.json", import.meta.url), "utf8"));
+  const source = createSource({ slot_id: "codex", platform: "codex" });
+  const session = createSession(source);
+  const turn = createTurn(source, session);
+  session.usage_events = fixture.usage_calls.map(({ model, ...token_usage }: { model: string }) => ({
+    id: `fixture-${model}`, turn_id: turn.id, model, token_usage, created_at: turn.created_at,
+  }));
+  const pricing = { aliases: { "private-xai": "grok-4.7" } };
+  const data = { filters: { timezone: "UTC", pricing }, listResolvedSessions: () => [session],
+    listResolvedTurns: () => [turn], listSources: () => [source], listProjects: () => [] };
+  const result = computeUsageBreakdown({ ...data, matrix_dimensions: ["model", "day"] });
+  const expected = 0.25006 + 0.50012 + 0.750186;
+  assert.equal(result.overview.total_tokens, 603031);
+  assert.equal(result.overview.total_turns, 1);
+  assert.equal(result.overview.usage_event_count, 4);
+  assert.equal(result.overview.cost!.unpriced_tokens, 3000);
+  assert.ok(Math.abs(result.overview.cost!.list_cost_usd - expected) < 1e-12);
+  assert.ok(Math.abs(result.model_resolutions.reduce((sum, item) => sum + item.list_cost_usd, 0) - expected) < 1e-12);
+  assert.ok(Math.abs(result.matrix!.rows.reduce((sum, item) => sum + item.cost.list_cost_usd, 0) - expected) < 1e-12);
+  // In-memory calibration mutates this same object; aggregation must use its current value.
+  pricing.aliases["private-xai"] = "grok-4.6";
+  const calibrated = computeUsageOverview(data);
+  assert.equal(calibrated.total_tokens, 603031);
+  assert.equal(calibrated.cost!.unpriced_tokens, 203011);
+  assert.ok(Math.abs(calibrated.cost!.list_cost_usd - 0.75018) < 1e-12);
 });

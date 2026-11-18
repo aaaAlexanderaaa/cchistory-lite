@@ -1,0 +1,1086 @@
+{
+  "catalog": {
+    "fixture-7": {
+      "id": "fixture-7",
+      "provider": "fixture",
+      "prices": {
+        "input": 9,
+        "output": 27,
+        "cache_read": 2.25
+      }
+    },
+    "fixture-7.2": {
+      "id": "fixture-7.2",
+      "provider": "fixture",
+      "prices": {
+        "input": 2,
+        "output": 6,
+        "cache_read": 0.5
+      }
+    },
+    "fixture-7.20": {
+      "id": "fixture-7.20",
+      "provider": "fixture",
+      "prices": {
+        "input": 8,
+        "output": 24,
+        "cache_read": 2.0
+      }
+    },
+    "fixture-7.2-fast": {
+      "id": "fixture-7.2-fast",
+      "provider": "fixture",
+      "prices": {
+        "input": 4,
+        "output": 12,
+        "cache_read": 1.0
+      }
+    },
+    "fixture-7.2-flex": {
+      "id": "fixture-7.2-flex",
+      "provider": "fixture",
+      "prices": {
+        "input": 1,
+        "output": 3,
+        "cache_read": 0.25
+      }
+    },
+    "fixture-7.2-code": {
+      "id": "fixture-7.2-code",
+      "provider": "fixture",
+      "prices": {
+        "input": 3,
+        "output": 9,
+        "cache_read": 0.75
+      }
+    },
+    "fixture-7.2-mini": {
+      "id": "fixture-7.2-mini",
+      "provider": "fixture",
+      "prices": {
+        "input": 0.5,
+        "output": 1.5,
+        "cache_read": 0.125
+      }
+    },
+    "fixture-7.2-free": {
+      "id": "fixture-7.2-free",
+      "provider": "fixture",
+      "prices": {
+        "input": 0,
+        "output": 0,
+        "cache_read": 0.0
+      }
+    },
+    "fixture-build-0.1": {
+      "id": "fixture-build-0.1",
+      "provider": "fixture",
+      "prices": {
+        "input": 1.1,
+        "output": 3.3000000000000003,
+        "cache_read": 0.275
+      }
+    },
+    "dated-2-20261118": {
+      "id": "dated-2-20261118",
+      "provider": "fixture",
+      "prices": {
+        "input": 2,
+        "output": 6,
+        "cache_read": 0.5
+      }
+    },
+    "only-2-fast": {
+      "id": "only-2-fast",
+      "provider": "fixture",
+      "prices": {
+        "input": 4,
+        "output": 12,
+        "cache_read": 1.0
+      }
+    },
+    "routing-label": {
+      "id": "routing-label",
+      "provider": "fixture",
+      "prices": {
+        "input": 2,
+        "output": 6,
+        "cache_read": 0.5
+      }
+    },
+    "specific-3.4": {
+      "id": "specific-3.4",
+      "provider": "fixture",
+      "prices": {
+        "input": 2,
+        "output": 6,
+        "cache_read": 0.5
+      }
+    },
+    "specific-3.4-eu": {
+      "id": "specific-3.4-eu",
+      "provider": "fixture",
+      "prices": {
+        "input": 5,
+        "output": 15,
+        "cache_read": 1.25
+      }
+    },
+    "ambiguous-8.1": {
+      "id": "ambiguous-8.1",
+      "provider": "fixture",
+      "prices": {
+        "input": 2,
+        "output": 6,
+        "cache_read": 0.5
+      }
+    },
+    "ambiguous-8-1": {
+      "id": "ambiguous-8-1",
+      "provider": "fixture",
+      "prices": {
+        "input": 3,
+        "output": 9,
+        "cache_read": 0.75
+      }
+    },
+    "equivalent-6.4": {
+      "id": "equivalent-6.4",
+      "provider": "fixture",
+      "prices": {
+        "input": 2,
+        "output": 6,
+        "cache_read": 0.5
+      }
+    },
+    "equivalent-6-4": {
+      "id": "equivalent-6-4",
+      "provider": "fixture",
+      "prices": {
+        "input": 2,
+        "output": 6,
+        "cache_read": 0.5
+      }
+    },
+    "vendor/qualified-4.1": {
+      "id": "vendor/qualified-4.1",
+      "provider": "fixture",
+      "prices": {
+        "input": 6,
+        "output": 18,
+        "cache_read": 1.5
+      }
+    },
+    "qualified-4.1": {
+      "id": "qualified-4.1",
+      "provider": "fixture",
+      "prices": {
+        "input": 2,
+        "output": 6,
+        "cache_read": 0.5
+      }
+    },
+    "fixture-7.20-fast": {
+      "id": "fixture-7.20-fast",
+      "provider": "fixture",
+      "prices": {
+        "input": 16,
+        "output": 48,
+        "cache_read": 4
+      }
+    }
+  },
+  "default_aliases": {
+    "route": "fixture-7.2",
+    "chain-a": "chain-b",
+    "chain-b": "fixture-7.2",
+    "route-fast": "fixture-7.2-flex",
+    "cycle-a": "cycle-b",
+    "cycle-b": "cycle-a"
+  },
+  "cases": [
+    {
+      "raw": "fixture-7.2-build",
+      "expected": "fixture-7.2",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture-7.2-build-high",
+      "expected": "fixture-7.2",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture-7.2-beta",
+      "expected": "fixture-7.2",
+      "kind": "normalized"
+    },
+    {
+      "raw": "provider/fixture-7.2",
+      "expected": "fixture-7.2",
+      "kind": "normalized"
+    },
+    {
+      "raw": "provider/fixture-7.2-build",
+      "expected": "fixture-7.2",
+      "kind": "normalized"
+    },
+    {
+      "raw": "FIXTURE_7_2_BUILD",
+      "expected": "fixture-7.2",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture@7@2-build",
+      "expected": "fixture-7.2",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture-7.2-20261118",
+      "expected": "fixture-7.2",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture-7.2-2026-11-18",
+      "expected": "fixture-7.2",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture-7.2-20261118-high",
+      "expected": "fixture-7.2",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture-7.2-high-20261118",
+      "expected": "fixture-7.2",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture-7.2",
+      "expected": "fixture-7.2",
+      "kind": "exact"
+    },
+    {
+      "raw": "fixture-7.20-build",
+      "expected": "fixture-7.20",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture-build-0.1-high",
+      "expected": "fixture-build-0.1",
+      "kind": "normalized"
+    },
+    {
+      "raw": "dated-2",
+      "expected": "dated-2-20261118",
+      "kind": "normalized"
+    },
+    {
+      "raw": "provider/dated-2",
+      "expected": "dated-2-20261118",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture-7.2-code-preview",
+      "expected": "fixture-7.2-code",
+      "kind": "normalized"
+    },
+    {
+      "raw": "specific-3-4-eu-high",
+      "expected": "specific-3.4-eu",
+      "kind": "normalized"
+    },
+    {
+      "raw": "specific-3.4@eu",
+      "expected": "specific-3.4-eu",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture-7.2-build-fast",
+      "expected": "fixture-7.2-fast",
+      "kind": "normalized"
+    },
+    {
+      "raw": "provider/fixture-7.2-fast-high",
+      "expected": "fixture-7.2-fast",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture_7_2_fast",
+      "expected": "fixture-7.2-fast",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture-7.2-build-flex",
+      "expected": "fixture-7.2-flex",
+      "kind": "normalized"
+    },
+    {
+      "raw": "provider/fixture-7.2-flex-high",
+      "expected": "fixture-7.2-flex",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture_7_2_flex",
+      "expected": "fixture-7.2-flex",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture-7.2-build-mini",
+      "expected": "fixture-7.2-mini",
+      "kind": "normalized"
+    },
+    {
+      "raw": "provider/fixture-7.2-mini-high",
+      "expected": "fixture-7.2-mini",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture_7_2_mini",
+      "expected": "fixture-7.2-mini",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture-7.2-build-free",
+      "expected": "fixture-7.2-free",
+      "kind": "normalized"
+    },
+    {
+      "raw": "provider/fixture-7.2-free-high",
+      "expected": "fixture-7.2-free",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture_7_2_free",
+      "expected": "fixture-7.2-free",
+      "kind": "normalized"
+    },
+    {
+      "raw": "fixture-7.3-build",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "fixture-7.200-build",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "fixture-7.2.1-build",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "fixture-7.2-3-build",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "prefixfixture-7.2",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "fixture-7.2suffix",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "fixture-7.2-202611180",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "dated-2-202611180",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "fixture-7.2-priority",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "fixture-7.2-fast-flex",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "only-2",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "only-2-flex",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "routing-label-preview",
+      "expected": "routing-label",
+      "kind": "normalized"
+    },
+    {
+      "raw": "unrecognized-7.2-build",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "cycle-a",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "cycle-a-fast",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "__proto__",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "constructor",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "ambiguous-8_1-build",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "only-2-build-fast",
+      "expected": "only-2-fast",
+      "kind": "normalized"
+    },
+    {
+      "raw": "ambiguous-8.1-build",
+      "expected": "ambiguous-8.1",
+      "kind": "normalized"
+    },
+    {
+      "raw": "ambiguous-8-1-build",
+      "expected": "ambiguous-8-1",
+      "kind": "normalized"
+    },
+    {
+      "raw": "equivalent-6_4-build",
+      "expected": "equivalent-6-4",
+      "kind": "normalized"
+    },
+    {
+      "raw": "vendor/qualified-4.1-high",
+      "expected": "vendor/qualified-4.1",
+      "kind": "normalized"
+    },
+    {
+      "raw": "route",
+      "expected": "fixture-7.2",
+      "kind": "alias"
+    },
+    {
+      "raw": "provider/route-high",
+      "expected": "fixture-7.2",
+      "kind": "alias"
+    },
+    {
+      "raw": "chain-a",
+      "expected": "fixture-7.2",
+      "kind": "alias"
+    },
+    {
+      "raw": "route-fast",
+      "expected": "fixture-7.2-flex",
+      "kind": "alias"
+    },
+    {
+      "raw": "chain-a-fast",
+      "expected": "fixture-7.2-fast",
+      "kind": "alias"
+    },
+    {
+      "raw": "chain-a-build-fast",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "chain-a-flex",
+      "expected": "fixture-7.2-flex",
+      "kind": "alias"
+    },
+    {
+      "raw": "chain-a-priority",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "private-route-fast",
+      "expected": "fixture-7.2-fast",
+      "kind": "alias",
+      "config": {
+        "aliases": {
+          "private-route": "fixture-7.2"
+        }
+      }
+    },
+    {
+      "raw": "fixture-7.2",
+      "expected": "fixture-7.2-flex",
+      "kind": "alias",
+      "config": {
+        "aliases": {
+          "fixture-7.2": "fixture-7.2-flex"
+        }
+      }
+    },
+    {
+      "raw": "fixture-7.2-fast",
+      "expected": "fixture-7.2-flex",
+      "kind": "alias",
+      "config": {
+        "aliases": {
+          "fixture-7.2-fast": "fixture-7.2-flex"
+        }
+      }
+    },
+    {
+      "raw": "fixture-7.2-build",
+      "expected": "fixture-7.2",
+      "kind": "custom",
+      "config": {
+        "catalog_overrides": {
+          "fixture-7.2": {
+            "id": "fixture-7.2",
+            "provider": "fixture",
+            "prices": {
+              "input": 10,
+              "output": 30,
+              "cache_read": 2.5
+            }
+          }
+        }
+      },
+      "input_rate": 10
+    },
+    {
+      "raw": "fixture-7.2-build",
+      "expected": "gateway-build",
+      "kind": "custom",
+      "config": {
+        "catalog_overrides": {
+          "fixture-7.2-build": {
+            "id": "gateway-build",
+            "provider": "fixture",
+            "prices": {
+              "input": 11,
+              "output": 33,
+              "cache_read": 2.75
+            }
+          }
+        }
+      },
+      "input_rate": 11
+    },
+    {
+      "raw": "chain-a-fast",
+      "expected": "private-fast",
+      "kind": "custom",
+      "config": {
+        "catalog_overrides": {
+          "fixture-7.2-fast": {
+            "id": "private-fast",
+            "provider": "fixture",
+            "prices": {
+              "input": 12,
+              "output": 36,
+              "cache_read": 3.0
+            }
+          }
+        }
+      },
+      "input_rate": 12
+    },
+    {
+      "raw": "fixture-7.2-build-priority",
+      "expected": "private-priority",
+      "kind": "custom",
+      "config": {
+        "catalog_overrides": {
+          "fixture-7.2-priority": {
+            "id": "private-priority",
+            "provider": "fixture",
+            "prices": {
+              "input": 13,
+              "output": 39,
+              "cache_read": 3.25
+            }
+          }
+        }
+      },
+      "input_rate": 13
+    },
+    {
+      "raw": "ambiguous-8_1-build",
+      "expected": "custom-normalized",
+      "kind": "custom",
+      "config": {
+        "catalog_overrides": {
+          "ambiguous-8.1": {
+            "id": "custom-normalized",
+            "provider": "fixture",
+            "prices": {
+              "input": 14,
+              "output": 42,
+              "cache_read": 3.5
+            }
+          }
+        }
+      },
+      "input_rate": 14
+    },
+    {
+      "raw": "fast",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "flex",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "7.2",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "7",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "provider/fast",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "provider/7.2",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "route-preview",
+      "expected": "fixture-7.2",
+      "kind": "alias"
+    },
+    {
+      "raw": "route-latest",
+      "expected": "fixture-7.2",
+      "kind": "alias"
+    },
+    {
+      "raw": "provider/route-preview",
+      "expected": "fixture-7.2",
+      "kind": "alias"
+    },
+    {
+      "raw": "chain-a-preview-latest",
+      "expected": "fixture-7.2",
+      "kind": "alias"
+    },
+    {
+      "raw": "routing-label-opaque",
+      "expected": null,
+      "kind": "unpriced"
+    },
+    {
+      "raw": "private",
+      "expected": null,
+      "kind": "unpriced",
+      "config": {
+        "aliases": {
+          "private-high": "fixture-7.2-fast"
+        }
+      }
+    },
+    {
+      "raw": "private-low",
+      "expected": null,
+      "kind": "unpriced",
+      "config": {
+        "aliases": {
+          "private-high": "fixture-7.2-fast"
+        }
+      }
+    },
+    {
+      "raw": "private-low",
+      "expected": "fixture-7.2",
+      "kind": "alias",
+      "config": {
+        "aliases": {
+          "private": "fixture-7.2",
+          "private-high": "fixture-7.2-fast"
+        }
+      }
+    },
+    {
+      "raw": "private-high",
+      "expected": "fixture-7.2-fast",
+      "kind": "alias",
+      "config": {
+        "aliases": {
+          "private": "fixture-7.2",
+          "private-high": "fixture-7.2-fast"
+        }
+      }
+    },
+    {
+      "raw": "private-7.2-high",
+      "expected": "fixture-7.2-fast",
+      "kind": "alias",
+      "config": {
+        "aliases": {
+          "private-7.2": "fixture-7.2-fast",
+          "private-7-2": "fixture-7.2"
+        }
+      }
+    },
+    {
+      "raw": "private-7-2-high",
+      "expected": "fixture-7.2",
+      "kind": "alias",
+      "config": {
+        "aliases": {
+          "private-7.2": "fixture-7.2-fast",
+          "private-7-2": "fixture-7.2"
+        }
+      }
+    },
+    {
+      "raw": "fixture-7.2-preview",
+      "expected": "custom-preview",
+      "kind": "custom",
+      "input_rate": 9,
+      "config": {
+        "catalog_overrides": {
+          "fixture-7-2-preview": {
+            "id": "custom-preview",
+            "provider": "fixture",
+            "prices": {
+              "input": 9,
+              "output": 27
+            }
+          }
+        }
+      }
+    },
+    {
+      "raw": "gateway/vendor/qualified-4.1-high",
+      "expected": "vendor/qualified-4.1",
+      "kind": "normalized",
+      "input_rate": 6
+    },
+    {
+      "raw": "gateway/vendor/private-high",
+      "expected": "fixture-7.2-fast",
+      "kind": "alias",
+      "config": {
+        "aliases": {
+          "vendor/private": "fixture-7.2-fast",
+          "private": "fixture-7.2"
+        }
+      }
+    },
+    {
+      "raw": "route_4_7",
+      "expected": null,
+      "kind": "unpriced",
+      "config": {
+        "aliases": {
+          "route-4.7": "fixture-7.2",
+          "route-4-7": "fixture-7.20"
+        }
+      }
+    },
+    {
+      "raw": "route_4_7-fast",
+      "expected": null,
+      "kind": "unpriced",
+      "config": {
+        "aliases": {
+          "route-4.7": "fixture-7.2",
+          "route-4-7": "fixture-7.20"
+        }
+      }
+    },
+    {
+      "raw": "route-4.7-fast",
+      "expected": "fixture-7.2-fast",
+      "kind": "alias",
+      "config": {
+        "aliases": {
+          "route-4.7": "fixture-7.2",
+          "route-4-7": "fixture-7.20"
+        }
+      }
+    },
+    {
+      "raw": "route-4-7-fast",
+      "expected": "fixture-7.20-fast",
+      "kind": "alias",
+      "config": {
+        "aliases": {
+          "route-4.7": "fixture-7.2",
+          "route-4-7": "fixture-7.20"
+        }
+      }
+    },
+    {
+      "raw": "route-4.7_fast",
+      "expected": "fixture-7.2-fast",
+      "kind": "alias",
+      "config": {
+        "aliases": {
+          "route-4.7": "fixture-7.2",
+          "route-4-7": "fixture-7.20"
+        }
+      }
+    }
+  ],
+  "builtin_cases": [
+    {
+      "raw": "grok-4.6-build",
+      "expected": "grok-4.6",
+      "input_rate": 2
+    },
+    {
+      "raw": "x-ai/grok-4.6-build",
+      "expected": "grok-4.6",
+      "input_rate": 2
+    },
+    {
+      "raw": "grok-4.6-build-high",
+      "expected": "grok-4.6",
+      "input_rate": 2
+    },
+    {
+      "raw": "grok-4.6-preview",
+      "expected": "grok-4.6",
+      "input_rate": 2
+    },
+    {
+      "raw": "grok-4.7-build",
+      "expected": "grok-4.7",
+      "input_rate": 2
+    },
+    {
+      "raw": "x-ai/grok-4.7-build",
+      "expected": "grok-4.7",
+      "input_rate": 2
+    },
+    {
+      "raw": "grok-4.7-build-high",
+      "expected": "grok-4.7",
+      "input_rate": 2
+    },
+    {
+      "raw": "grok-4.7-preview",
+      "expected": "grok-4.7",
+      "input_rate": 2
+    },
+    {
+      "raw": "grok-4.7-fast",
+      "expected": "grok-4.7-build-fast",
+      "input_rate": 4
+    },
+    {
+      "raw": "grok-4.7-build-fast",
+      "expected": "grok-4.7-build-fast",
+      "input_rate": 4
+    },
+    {
+      "raw": "xai/grok-4.7-fast-high",
+      "expected": "grok-4.7-build-fast",
+      "input_rate": 4
+    },
+    {
+      "raw": "X-AI/GROK_4_7_BUILD_FAST",
+      "expected": "grok-4.7-build-fast",
+      "input_rate": 4
+    },
+    {
+      "raw": "grok-4.6-build-fast",
+      "expected": null
+    },
+    {
+      "raw": "grok-4.7-build-flex",
+      "expected": null
+    },
+    {
+      "raw": "grok-4.70-build",
+      "expected": null
+    },
+    {
+      "raw": "grok-4.8-build",
+      "expected": null
+    },
+    {
+      "raw": "fast",
+      "expected": null
+    },
+    {
+      "raw": "flex",
+      "expected": null
+    },
+    {
+      "raw": "5",
+      "expected": null
+    },
+    {
+      "raw": "4.7",
+      "expected": null
+    },
+    {
+      "raw": "provider/fast",
+      "expected": null
+    },
+    {
+      "raw": "gemini-pro-orchestrator-preview",
+      "expected": "gemini-4-carbon",
+      "input_rate": 2
+    },
+    {
+      "raw": "gemini-pro-orchestrator-latest",
+      "expected": "gemini-4-carbon",
+      "input_rate": 2
+    }
+  ],
+  "upstream_comparison": {
+    "version": "20.0.51",
+    "revision": "58866ba681343634ab6e5add61f18f3b70aa98f7",
+    "command": "ccusage pi daily --pi-path <temporary sessions> --config <empty config> --offline --json --timezone UTC",
+    "aliases": {
+      "private-xai": "grok-4.7"
+    },
+    "tokens": {
+      "input_tokens": 1000,
+      "cache_read_input_tokens": 1000,
+      "cache_creation_input_tokens": 0,
+      "non_reasoning_output_tokens": 1000,
+      "reasoning_for_billing_tokens": 0,
+      "total_tokens": 3000
+    },
+    "cases": [
+      {
+        "raw": "grok-4.6",
+        "ccusage_cost_usd": 0.0085,
+        "ccusage_missing_pricing": false,
+        "lite_cost_usd": 0.0085
+      },
+      {
+        "raw": "grok-4.6-build",
+        "ccusage_cost_usd": 0.0085,
+        "ccusage_missing_pricing": false,
+        "lite_cost_usd": 0.0085
+      },
+      {
+        "raw": "x-ai/grok-4.6-build",
+        "ccusage_cost_usd": 0.0085,
+        "ccusage_missing_pricing": false,
+        "lite_cost_usd": 0.0085
+      },
+      {
+        "raw": "grok-4.7",
+        "ccusage_cost_usd": 0.0085,
+        "ccusage_missing_pricing": false,
+        "lite_cost_usd": 0.0085
+      },
+      {
+        "raw": "grok-4.7-build",
+        "ccusage_cost_usd": 0.0085,
+        "ccusage_missing_pricing": false,
+        "lite_cost_usd": 0.0085
+      },
+      {
+        "raw": "xai/grok-4.7-build",
+        "ccusage_cost_usd": 0.0085,
+        "ccusage_missing_pricing": false,
+        "lite_cost_usd": 0.0085
+      },
+      {
+        "raw": "grok-4.7-build-high",
+        "ccusage_cost_usd": 0.0085,
+        "ccusage_missing_pricing": false,
+        "lite_cost_usd": 0.0085
+      },
+      {
+        "raw": "grok-4.7-20261118",
+        "ccusage_cost_usd": 0.0085,
+        "ccusage_missing_pricing": false,
+        "lite_cost_usd": 0.0085
+      },
+      {
+        "raw": "grok-4.70-build",
+        "ccusage_cost_usd": 0.0,
+        "ccusage_missing_pricing": true,
+        "lite_cost_usd": null
+      },
+      {
+        "raw": "grok-4.7-build-fast",
+        "ccusage_cost_usd": 0.0085,
+        "ccusage_missing_pricing": false,
+        "lite_cost_usd": 0.017
+      },
+      {
+        "raw": "grok-4.6-build-fast",
+        "ccusage_cost_usd": 0.0085,
+        "ccusage_missing_pricing": false,
+        "lite_cost_usd": null
+      },
+      {
+        "raw": "private-xai",
+        "ccusage_cost_usd": 0.0085,
+        "ccusage_missing_pricing": true,
+        "lite_cost_usd": 0.0085
+      },
+      {
+        "raw": "private-xai-fast",
+        "ccusage_cost_usd": 0.0085,
+        "ccusage_missing_pricing": true,
+        "lite_cost_usd": 0.017
+      }
+    ]
+  },
+  "usage_calls": [
+    {
+      "model": "grok-4.7-build-20261118",
+      "input_tokens": 100000,
+      "cache_read_input_tokens": 100000,
+      "output_tokens": 10,
+      "total_tokens": 200010
+    },
+    {
+      "model": "x-ai/grok-4.7-build-fast-high",
+      "input_tokens": 100000,
+      "cache_read_input_tokens": 100000,
+      "output_tokens": 10,
+      "total_tokens": 200010
+    },
+    {
+      "model": "private-xai-fast",
+      "input_tokens": 100001,
+      "cache_read_input_tokens": 100000,
+      "output_tokens": 10,
+      "total_tokens": 200011
+    },
+    {
+      "model": "grok-4.6-build-fast",
+      "input_tokens": 1000,
+      "cache_read_input_tokens": 1000,
+      "output_tokens": 1000,
+      "total_tokens": 3000
+    }
+  ]
+}

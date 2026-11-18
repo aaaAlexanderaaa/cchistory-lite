@@ -344,9 +344,14 @@ Both CLI `stats` and TUI use the bundled offline `models.dev/api.json` snapshot,
 supplemented with missing direct-provider models from a pinned LiteLLM snapshot
 (plus local `--pricing` / `CCHISTORY_PRICING_CONFIG` overrides, see
 [pricing.example.json](pricing.example.json)) and never access the network at
-runtime. `grok-4.6-build` and `grok-4.7-build` map to their matching public API reference prices;
-`grok-4.7-build-fast` retains the official Grok Build Fast rates and context tiers;
-local aliases and price overrides can select gateway-specific rates. Native independent
+runtime. Generic name matching handles provider prefixes, separator spellings, dates and tool
+suffixes such as `Build` against the catalog, so `grok-4.6-build` and `grok-4.7-build` resolve
+without per-version aliases. Exact names and authored separator spellings take priority;
+numeric versions stay distinct. `Fast`, `Flex` and other rate qualifiers retain their own
+prices: `grok-4.7-fast` resolves to the official Grok Build Fast rates and context tiers.
+A variant with missing prices, or an ambiguous spelling with conflicting prices, keeps its
+tokens under unpriced usage. Configured aliases carry Fast/Flex qualifiers to their targets;
+explicit aliases and price overrides select gateway-specific rates. Native independent
 calls use their own model and timestamp, including Codex compaction requests and calls
 with `turn_id: null`. Overview and source/project/day rollups retain unique user-turn
 counts. Context price tiers apply to individual recorded calls; turn-only evidence uses

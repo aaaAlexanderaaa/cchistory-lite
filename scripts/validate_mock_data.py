@@ -38,7 +38,7 @@ ALLOWED_FILE_PATTERNS = [
     re.compile(r"fixtures/codex-counter-cases\.json"),
     re.compile(r"fixtures/ccusage-20\.0\.51\.json"),
     re.compile(r"fixtures/codex-inherited-usage/[^/]+\.jsonl"),
-    re.compile(r"fixtures/pricing-catalog/refresh\.json"),
+    re.compile(r"fixtures/pricing-catalog/(?:refresh|model-names)\.json"),
     re.compile(r"fixtures/codex-accounting/[^/]+\.jsonl"),
     re.compile(r"fixtures/read-budget/(?:sqlite|cursor-store|cursor-state)\.sql"),
     re.compile(r"fixtures/system-memory/(?:darwin-vm-stat\.txt|launcher-trace\.cjs)"),

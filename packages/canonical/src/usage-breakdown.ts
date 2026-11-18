@@ -30,9 +30,11 @@ import {
   type UsageSourceData,
 } from "./usage.js";
 import {
-  addModelUsageToCostBreakdown,
+  addResolvedModelUsageToCostBreakdown,
   buildModelPricingResolutions,
   createEmptyCostBreakdown,
+  resolveModelPricing,
+  type ResolvedModelPricing,
   type UsageTokenQuantities,
 } from "./usage-pricing.js";
 import { resolveEffectiveQuotaLimitUsd } from "./usage-pricing-config.js";
@@ -209,8 +211,14 @@ export function computeCostForRows(rows: readonly UsageAggregationRow[], filters
     filters.quota_limit_usd,
   );
   const cost = createEmptyCostBreakdown(quotaLimitUsd);
+  const resolutions = new Map<string, ResolvedModelPricing>();
   for (const row of rows) {
-    addModelUsageToCostBreakdown(cost, row.model, row, filters.pricing, quotaLimitUsd);
+    let resolved = resolutions.get(row.model);
+    if (!resolved) {
+      resolved = resolveModelPricing(row.model, filters.pricing);
+      resolutions.set(row.model, resolved);
+    }
+    addResolvedModelUsageToCostBreakdown(cost, resolved, row, quotaLimitUsd);
   }
   return cost;
 }

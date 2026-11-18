@@ -5,7 +5,6 @@
  */
 
 import type {
-  ModelCatalogEntry,
   ModelCostMultipliers,
   ModelPricingMatchKind,
   ModelPricingResolution,
@@ -15,11 +14,9 @@ import type {
   UsagePricingConfig,
 } from "@cchistory/domain";
 import { BUILTIN_MODEL_PRICING_CATALOG, DEFAULT_MODEL_ALIASES } from "./model-pricing-catalog.js";
+import { createModelNameMatcher } from "./model-name-matching.js";
 
-const PROVIDER_PREFIX_RE = /^(?:anthropic|google|openai|xai|x-ai|grok|spacexai|deepseek|moonshotai|zhipuai|zai|alibaba|minimax|mistral|cohere|opencode|openrouter|google-vertex|google-vertex-anthropic|vertex_ai)\//iu;
-const REGION_OR_TAG_SUFFIX_RE = /(?:@[a-z0-9-]+|:(?:thinking|free|exacto|beta))$/iu;
-const VARIANT_SUFFIX_RE = /-(?:xhigh|high|medium|low|minimal|max|tiered|fast|thinking|preview|latest|customtools)$/iu;
-const DATE_SUFFIX_RE = /-\d{8}$/u;
+const matchModelName = createModelNameMatcher(BUILTIN_MODEL_PRICING_CATALOG, DEFAULT_MODEL_ALIASES);
 
 export interface ResolvedModelPricing {
   raw_model: string;
@@ -71,89 +68,7 @@ export function resolveModelPricing(
   const trimmed = rawModel.trim() || "unknown";
   const lower = trimmed.toLowerCase();
 
-  const customAliases = config?.aliases ?? {};
-  const customCatalog = config?.catalog_overrides ?? {};
-
-  const lookupCatalog = (candidate: string): { entry: ModelCatalogEntry; source: "custom" | "builtin" } | undefined => {
-    const key = candidate.trim().toLowerCase();
-    if (!key) return undefined;
-    const customEntry = customCatalog[key];
-    if (customEntry) return { entry: customEntry, source: "custom" };
-    const builtinEntry = BUILTIN_MODEL_PRICING_CATALOG[key];
-    if (builtinEntry) return { entry: builtinEntry, source: "builtin" };
-    return undefined;
-  };
-
-  const resolveChain = (
-    start: string,
-  ): { entry: ModelCatalogEntry; kind: Exclude<ModelPricingMatchKind, "unpriced">; aliasKey?: string } | undefined => {
-    let current = start.trim().toLowerCase();
-    const visited = new Set<string>();
-    let usedAlias = false;
-
-    for (let hop = 0; hop < 4; hop += 1) {
-      if (!current || visited.has(current)) break;
-      visited.add(current);
-
-      const customTarget = customAliases[current];
-      if (customTarget) {
-        current = customTarget.trim().toLowerCase();
-        usedAlias = true;
-        continue;
-      }
-      const direct = lookupCatalog(current);
-      if (direct) {
-        return {
-          entry: direct.entry,
-          kind: direct.source === "custom" ? "custom" : usedAlias ? "alias" : "exact",
-          aliasKey: usedAlias ? current : undefined,
-        };
-      }
-      const defaultTarget = DEFAULT_MODEL_ALIASES[current];
-      if (defaultTarget) {
-        current = defaultTarget.trim().toLowerCase();
-        usedAlias = true;
-        continue;
-      }
-      break;
-    }
-
-    for (const candidate of generateNormalizedCandidates(current)) {
-      const customTarget = customAliases[candidate];
-      if (customTarget) {
-        const aliased = lookupCatalog(customTarget);
-        if (aliased) {
-          return {
-            entry: aliased.entry,
-            kind: aliased.source === "custom" ? "custom" : "alias",
-            aliasKey: aliased.entry.id.toLowerCase(),
-          };
-        }
-      }
-      const defaultTarget = DEFAULT_MODEL_ALIASES[candidate];
-      if (defaultTarget) {
-        const aliased = lookupCatalog(defaultTarget);
-        if (aliased) {
-          return {
-            entry: aliased.entry,
-            kind: aliased.source === "custom" ? "custom" : "alias",
-            aliasKey: aliased.entry.id.toLowerCase(),
-          };
-        }
-      }
-      const hit = lookupCatalog(candidate);
-      if (hit) {
-        return {
-          entry: hit.entry,
-          kind: hit.source === "custom" ? "custom" : usedAlias ? "alias" : "normalized",
-          aliasKey: hit.entry.id.toLowerCase(),
-        };
-      }
-    }
-    return undefined;
-  };
-
-  const matched = resolveChain(lower);
+  const matched = matchModelName(lower, config);
   const resolvedKey = matched?.entry.id.toLowerCase();
   const multipliers = normalizeMultipliers(
     config?.default_multipliers,
@@ -210,6 +125,16 @@ export function addModelUsageToCostBreakdown(
   quotaLimitUsd?: number,
 ): ResolvedModelPricing {
   const resolved = resolveModelPricing(rawModel, config);
+  return addResolvedModelUsageToCostBreakdown(target, resolved, tokens, quotaLimitUsd);
+}
+
+/** Reuses a model resolution within one synchronous aggregation; tiers remain per call. */
+export function addResolvedModelUsageToCostBreakdown(
+  target: UsageCostBreakdown,
+  resolved: ResolvedModelPricing,
+  tokens: UsageTokenQuantities,
+  quotaLimitUsd?: number,
+): ResolvedModelPricing {
   if (!resolved.unit_prices) {
     target.unpriced_tokens += tokens.total_tokens;
     if (!target.unpriced_models.includes(resolved.raw_model)) {
@@ -275,9 +200,9 @@ export function buildModelPricingResolutions(
     const resolved = resolveModelPricing(rawModel, config);
     if (callRows) {
       for (const row of callRows) if (row.model === rawModel) {
-        addModelUsageToCostBreakdown(cost, rawModel, row, config, quotaLimitUsd);
+        addResolvedModelUsageToCostBreakdown(cost, resolved, row, quotaLimitUsd);
       }
-    } else addModelUsageToCostBreakdown(cost, rawModel, tokens, config, quotaLimitUsd);
+    } else addResolvedModelUsageToCostBreakdown(cost, resolved, tokens, quotaLimitUsd);
     resolutions.push({
       raw_model: resolved.raw_model,
       resolved_model: resolved.resolved_model,
@@ -305,39 +230,6 @@ export function buildModelPricingResolutions(
     }
     return left.raw_model.localeCompare(right.raw_model);
   });
-}
-
-function generateNormalizedCandidates(rawLower: string): string[] {
-  const candidates: string[] = [];
-  const push = (value: string) => {
-    const clean = value.trim().toLowerCase();
-    if (clean && clean !== rawLower && !candidates.includes(clean)) {
-      candidates.push(clean);
-    }
-  };
-
-  let base = rawLower.replace(PROVIDER_PREFIX_RE, "");
-  push(base);
-  base = base.replace(REGION_OR_TAG_SUFFIX_RE, "");
-  push(base);
-
-  let stripped = base;
-  for (let pass = 0; pass < 3; pass += 1) {
-    const next = stripped.replace(VARIANT_SUFFIX_RE, "");
-    if (next === stripped) break;
-    stripped = next;
-    push(stripped);
-  }
-
-  for (const stem of [base, stripped]) {
-    if (DATE_SUFFIX_RE.test(stem)) {
-      push(stem.replace(DATE_SUFFIX_RE, ""));
-    }
-    push(stem.replace(/(\d)\.(\d)/gu, "$1-$2"));
-    push(stem.replace(/(claude-[a-z]+-)(\d)-(\d)/gu, "$1$2.$3"));
-  }
-
-  return candidates;
 }
 
 function isFiniteNonNegative(value: unknown): value is number {

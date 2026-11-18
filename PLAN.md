@@ -1,6 +1,60 @@
 # Project work
 
-## Current work — 2026-11-17 Model pricing refresh and Codex accounting comparison
+## Current work — 2026-11-18 General model-name pricing resolution
+
+Status: implementation and verification complete. Commit and push to `origin/main` authorized;
+the owner will run the GitHub Release workflow for `0.8.1`.
+
+Owner request (verbatim):
+> 那就把 ccusage 的通用模型名称匹配逻辑也学过来，覆盖这类后缀和别名，别每个模型都手动补映射。Fast 这种独立费率要区分清楚，验证后 commit and push。
+
+Pre-code judgment:
+- Executor: preserve offline/read-only execution, current CLI/TUI presentation and pricing-config contracts; deliver generic matching and verify actual costs before commit/push.
+- Collaborator: replace per-version Grok Build aliases with catalog-driven rules and preserve opaque Gemini routing aliases and explicit user overrides.
+- Architect: keep name matching and rate-variant boundaries in one pure canonical owner, separate from cost arithmetic and source I/O; preserve numeric model versions and deterministic results.
+
+Reference: ccusage `58866ba681343634ab6e5add61f18f3b70aa98f7` / 20.0.51, re-fetched on 2026-11-18. Inspect `pricing.rs` (`find_with_fallbacks`, `find_entry_with_fallback`, `pricing_key_matches`, `contains_pricing_key`, `suffix_starts_with_numeric_model_version`, exact-only catalog rules) and `model_aliases.rs` (configured aliases preserve Fast suffixes). Use normalized separators and bounded longest-key matching, with exact/explicit precedence and separate billing variants. Keep incomplete/ambiguous matches unpriced with their raw model evidence.
+
+Acceptance: fixture-based matching/version/alias/variant counterexamples, per-call Fast and standard cost comparisons, CLI JSON pricing explanations, bounded comparison with the upstream binary, all four repository gates, fresh-context review for the repeated model-price concern, and a clean committed/pushed main branch.
+
+Implementation: `model-name-matching.ts` owns catalog-driven names, input suffix normalization,
+provider prefixes, alias chains, numeric boundaries and independent rate qualifiers. Removed
+the three manual Grok Build/Fast aliases from both snapshot and generator; retained actual Fast
+prices and opaque Gemini aliases. Exact authored spelling precedes equivalent separators, and
+ambiguous/missing rates keep unpriced tokens. Per-aggregation model resolutions avoid repeated
+catalog scans while later in-memory calibration reads the current config.
+
+Evidence: the fixture's 13-case replay through ccusage 20.0.51 agrees on ordinary Build,
+provider/date/alias prices ($0.0085 per 1k input + 1k cache + 1k output) and the 4.70 version
+boundary. The replay preserves contrary evidence: ccusage falls back to ordinary rates for
+4.7/4.6 Fast, while Lite uses the official 4.7 Fast supplement ($0.017) and retains 4.6 Fast as
+unpriced. Built CLI mixed-call output is 603,031 tokens / $1.500366 / 3,000 unpriced tokens,
+with separate standard/Fast explanations. A Node 22.23.5 / 256-MiB-heap synthetic run of
+100,000 calls across four raw model names took 19 ms for cost aggregation (86 MiB process RSS);
+225M priced plus 75M unpriced tokens were retained. This measures that bounded fixture shape.
+
+Independent review: fresh context `model_matching_review` first judged goal alignment, pure
+canonical ownership, offline/source boundaries, per-call context prices and docs consistent.
+It then recorded two P2 findings: normalization of alias keys widened a specific `private-high`
+alias to sibling inputs; old `preview/latest` alias fallbacks were lost. Both findings remain
+part of the review record: the fix normalizes only the request's suffixes, retains full alias
+keys, and restores preview/latest compatibility. Additional author counterexamples cover
+suffix-only/numeric-only names, a separately priced normalized preview entry, and nested
+gateway/provider names retaining their most specific price or alias. The reviewer subsequently
+found a third P2: inherited Fast aliases with colliding separator spellings depended on object
+insertion order. Inheritance now prefers authored prefixes and collects all equally specific
+normalized targets; conflicting targets remain unpriced. Every synthetic case reverses both
+catalog and alias insertion order. Canonical's 174 tests pass after these repairs. The original
+reviewer closed all three P2 findings, independently passed 96 synthetic cases, confirmed
+source/dist agreement across 119 cases and 132 matching/pricing tests, and rechecked the built
+CLI's 200,312 tokens / $0.3505255 with matching model/day totals. No findings remain open.
+Final full gates pass: `build:lite`, `pnpm test` (858 package tests + 4 catalog tests),
+`verify:governance`, and `verify:lite-artifact` with a temporary npm cache. All 198 fixture
+files pass sanitization/layout validation, and `git diff --check` passes. Source inputs,
+offline execution and CLI/TUI presentation retain their existing contracts. The GitHub
+Release workflow owns the `0.8.1` version bump and tag.
+
+## Previous work — 2026-11-17 Model pricing refresh and Codex accounting comparison
 
 Status: implementation and verification complete in the local working tree.
 
