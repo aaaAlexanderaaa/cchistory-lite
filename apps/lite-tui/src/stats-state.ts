@@ -17,11 +17,18 @@ import type { LiteBrowserModel } from "./model.js";
 import { resolveStatsViewData, sortStatsRollupRows } from "./stats-query.js";
 export { resolveStatsViewData, sortStatsRollupRows };
 
-export type LiteStatsView = "quad" | "matrix" | "multipliers";
+export type LiteStatsView = "quad" | "matrix" | "sessions" | "multipliers";
 export type LiteStatsQuadrant = "source" | "project" | "model" | "day";
+export type LiteStatsMatrixGroup = "project_model" | "model_time" | "project_time" | "all_4";
 export type LiteStatsMultiplierColumn = "model" | "input" | "cache_read" | "cache_write" | "output" | "reasoning";
 
 export const STATS_QUADRANTS: readonly LiteStatsQuadrant[] = ["source", "project", "model", "day"];
+export const STATS_MATRIX_GROUPS: readonly LiteStatsMatrixGroup[] = [
+  "project_model",
+  "model_time",
+  "project_time",
+  "all_4",
+];
 export const STATS_MULTIPLIER_COLUMNS: readonly LiteStatsMultiplierColumn[] = [
   "model",
   "input",
@@ -31,7 +38,7 @@ export const STATS_MULTIPLIER_COLUMNS: readonly LiteStatsMultiplierColumn[] = [
   "reasoning",
 ];
 export const STATS_TIME_PRESETS: readonly UsageTimePreset[] = ["all", "today", "24h", "week", "7d", "month", "30d"];
-export const STATS_TIME_BUCKETS: readonly UsageTimeBucket[] = ["day", "week", "month"];
+export const STATS_TIME_BUCKETS: readonly UsageTimeBucket[] = ["day", "week", "month", "hour", "hour_of_day"];
 export const STATS_WEEK_MODES: readonly UsageWeekMode[] = ["rolling_7d", "iso_week", "custom_reset"];
 export const STATS_SORT_OPTIONS: readonly UsageMatrixSort[] = [
   "adjusted_cost",
@@ -54,11 +61,12 @@ export interface LiteStatsCursors {
   model: number;
   day: number;
   matrix: number;
+  sessions: number;
   multipliers: number;
 }
 
 export interface LiteStatsTextEdit {
-  target: "alias" | "quota" | "multiplier";
+  target: "alias" | "quota" | "multiplier" | "export_path";
   rawModel?: string;
   col?: LiteStatsMultiplierColumn;
   value: string;
@@ -70,8 +78,12 @@ export interface LiteStatsState {
   activeQuadrant: LiteStatsQuadrant;
   timePreset: UsageTimePreset;
   timeBucket: UsageTimeBucket;
+  /** True once the user explicitly pressed `b`; prevents `t` preset cycling from overriding it. */
+  timeBucketPinned: boolean;
   weekMode: UsageWeekMode;
   sortBy: UsageMatrixSort;
+  matrixGroup: LiteStatsMatrixGroup;
+  matrixColPage: 0 | 1;
   filters: LiteStatsFilters;
   cursors: LiteStatsCursors;
   multiplierColIndex: number;
@@ -94,6 +106,8 @@ export type LiteStatsAction =
   | { type: "stats-cycle-time-bucket" }
   | { type: "stats-cycle-week-mode" }
   | { type: "stats-cycle-sort" }
+  | { type: "stats-cycle-matrix-group" }
+  | { type: "stats-matrix-col-page"; delta: number }
   | { type: "stats-multiplier-col"; delta: number }
   | { type: "stats-multiplier-step"; delta: number }
   | { type: "stats-multiplier-set"; value: number }
@@ -109,6 +123,7 @@ export interface LiteStatsResolvedViewData {
   breakdown: UsageBreakdownSnapshot;
   quadrantRows: Record<LiteStatsQuadrant, UsageStatsRollupRow[]>;
   matrixRows: NonNullable<UsageBreakdownSnapshot["matrix"]>["rows"];
+  sessionRows: UsageStatsRollupRow[];
   modelResolutions: UsageBreakdownSnapshot["model_resolutions"];
 }
 
@@ -118,10 +133,13 @@ export function createLiteStatsState(model?: LiteBrowserModel): LiteStatsState {
     activeQuadrant: "source",
     timePreset: "all",
     timeBucket: "day",
+    timeBucketPinned: false,
     weekMode: model?.pricingConfig?.quota?.week_mode ?? "rolling_7d",
     sortBy: "adjusted_cost",
+    matrixGroup: "project_model",
+    matrixColPage: 0,
     filters: { projectIds: [], models: [], sourceIds: [], timeKeys: [] },
-    cursors: { source: 0, project: 0, model: 0, day: 0, matrix: 0, multipliers: 0 },
+    cursors: { source: 0, project: 0, model: 0, day: 0, matrix: 0, sessions: 0, multipliers: 0 },
     multiplierColIndex: 0,
     customAliases: {},
     multiplierOverrides: {},
@@ -159,12 +177,14 @@ function toggleKey(list: readonly string[], key: string): string[] {
 
 function activeListLength(data: LiteStatsResolvedViewData, stats: LiteStatsState): number {
   if (stats.view === "matrix") return data.matrixRows.length;
+  if (stats.view === "sessions") return data.sessionRows.length;
   if (stats.view === "multipliers") return data.modelResolutions.length;
   return data.quadrantRows[stats.activeQuadrant].length;
 }
 
 function activeCursorKey(stats: LiteStatsState): keyof LiteStatsCursors {
   if (stats.view === "matrix") return "matrix";
+  if (stats.view === "sessions") return "sessions";
   if (stats.view === "multipliers") return "multipliers";
   return stats.activeQuadrant;
 }
@@ -179,6 +199,7 @@ function clampStatsCursors(stats: LiteStatsState, data: LiteStatsResolvedViewDat
       model: clamp(stats.cursors.model, data.quadrantRows.model.length),
       day: clamp(stats.cursors.day, data.quadrantRows.day.length),
       matrix: clamp(stats.cursors.matrix, data.matrixRows.length),
+      sessions: clamp(stats.cursors.sessions, data.sessionRows.length),
       multipliers: clamp(stats.cursors.multipliers, data.modelResolutions.length),
     },
   };
@@ -243,6 +264,8 @@ export function reduceLiteStatsState(
       const updated: LiteStatsState = {
         ...clamped,
         timePreset: "all",
+        timeBucket: "day",
+        timeBucketPinned: false,
         filters: { projectIds: [], models: [], sourceIds: [], timeKeys: [] },
       };
       return clampStatsCursors(updated, resolveStatsViewData(model, updated));
@@ -250,7 +273,16 @@ export function reduceLiteStatsState(
     case "stats-cycle-time-preset": {
       const idx = STATS_TIME_PRESETS.indexOf(clamped.timePreset);
       const nextPreset = STATS_TIME_PRESETS[(idx + 1) % STATS_TIME_PRESETS.length] ?? "all";
-      const updated = { ...clamped, timePreset: nextPreset };
+      const autoBucket: UsageTimeBucket =
+        nextPreset === "today" || nextPreset === "24h" ? "hour" : "day";
+      const nextBucket = clamped.timeBucketPinned ? clamped.timeBucket : autoBucket;
+      const bucketChanged = nextBucket !== clamped.timeBucket;
+      const updated: LiteStatsState = {
+        ...clamped,
+        timePreset: nextPreset,
+        timeBucket: nextBucket,
+        filters: bucketChanged ? { ...clamped.filters, timeKeys: [] } : clamped.filters,
+      };
       return clampStatsCursors(updated, resolveStatsViewData(model, updated));
     }
     case "stats-cycle-time-bucket": {
@@ -259,6 +291,7 @@ export function reduceLiteStatsState(
       const updated = {
         ...clamped,
         timeBucket: nextBucket,
+        timeBucketPinned: true,
         filters: { ...clamped.filters, timeKeys: [] },
       };
       return clampStatsCursors(updated, resolveStatsViewData(model, updated));
@@ -273,6 +306,20 @@ export function reduceLiteStatsState(
       const idx = STATS_SORT_OPTIONS.indexOf(clamped.sortBy);
       const nextSort = STATS_SORT_OPTIONS[(idx + 1) % STATS_SORT_OPTIONS.length] ?? "adjusted_cost";
       return { ...clamped, sortBy: nextSort };
+    }
+    case "stats-cycle-matrix-group": {
+      const idx = STATS_MATRIX_GROUPS.indexOf(clamped.matrixGroup);
+      const nextGroup = STATS_MATRIX_GROUPS[(idx + 1) % STATS_MATRIX_GROUPS.length] ?? "project_model";
+      const updated: LiteStatsState = {
+        ...clamped,
+        matrixGroup: nextGroup,
+        cursors: { ...clamped.cursors, matrix: 0 },
+      };
+      return clampStatsCursors(updated, resolveStatsViewData(model, updated));
+    }
+    case "stats-matrix-col-page": {
+      const nextPage: 0 | 1 = ((clamped.matrixColPage + action.delta + 2) % 2) as 0 | 1;
+      return { ...clamped, matrixColPage: nextPage };
     }
     case "stats-multiplier-col": {
       const nextCol = (clamped.multiplierColIndex + action.delta + STATS_MULTIPLIER_COLUMNS.length) % STATS_MULTIPLIER_COLUMNS.length;
@@ -323,6 +370,16 @@ export function reduceLiteStatsState(
       };
     }
     case "stats-start-edit": {
+      if (action.target === "export_path") {
+        return {
+          ...clamped,
+          editing: {
+            target: "export_path",
+            value: "./cchistory-pricing.json",
+            placeholder: "./cchistory-pricing.json",
+          },
+        };
+      }
       if (action.target === "quota") {
         const currentQuota = data.breakdown.quota_limit_usd;
         return {

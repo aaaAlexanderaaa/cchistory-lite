@@ -91,6 +91,7 @@ export class LiteBrowserModel {
   readonly pricingConfig?: UsagePricingConfig;
   readonly quotaLimitUsd?: number;
   readonly defaultTimezone: string;
+  readonly directoryScope?: string;
 
   private readonly sessionsById: Map<string, SessionProjection>;
   /** Bounded cache for contexts fetched on demand after the initial scan. */
@@ -103,6 +104,8 @@ export class LiteBrowserModel {
   private readonly transientOversizedContexts = new Map<string, TurnContextProjection>();
   private readonly searchCache = new BoundedCache<string, LiteSearchPage>(32, 20_000,
     (page, query) => page.results.reduce((total, row) => total + 1 + row.highlights.length * 2, Math.ceil(query.length / 128)));
+  private readonly conversationSearchCache = new BoundedCache<string, LiteSearchPage>(32, 20_000,
+    (page, query) => page.results.reduce((total, row) => total + 1 + row.highlights.length * 2, Math.ceil(query.length / 128)));
 
   constructor(
     snapshot: LiveHistorySnapshot,
@@ -111,14 +114,17 @@ export class LiteBrowserModel {
       pricingConfig?: UsagePricingConfig;
       quotaLimitUsd?: number;
       timezone?: string;
+      directoryScope?: string;
     } = {},
   ) {
     this.snapshot = snapshot;
     this.pricingConfig = options.pricingConfig;
     this.quotaLimitUsd = options.quotaLimitUsd;
     this.defaultTimezone = resolveUsageTimezone(options.timezone ?? options.pricingConfig?.timezone);
+    this.directoryScope = options.directoryScope;
     const resolvedSessions = snapshot.listResolvedSessions();
-    const sessions = snapshot.listTopLevelSessions();
+    const scopeOpt = options.directoryScope ? { directoryScope: options.directoryScope } : undefined;
+    const sessions = snapshot.listTopLevelSessions(scopeOpt);
     const includedIds = new Set(sessions.map((session) => session.id));
     for (const ref of options.includeSessionRefs ?? []) {
       const session = snapshot.getSession(ref);
@@ -128,7 +134,7 @@ export class LiteBrowserModel {
       }
     }
     this.sessionsById = new Map(resolvedSessions.map((session) => [session.id, session]));
-    this.projects = buildProjectEntries(snapshot, this.sessionsById);
+    this.projects = buildProjectEntries(snapshot, this.sessionsById, options.directoryScope);
     const sourceNames = new Map(snapshot.listSources().map((source) => [source.id, source.display_name]));
     const paneSessions: LiteSessionEntry[] = [];
     for (const session of sessions) {
@@ -147,7 +153,7 @@ export class LiteBrowserModel {
       sources: snapshot.listSources().length,
       projects: this.projects.filter((entry) => entry.project).length,
       sessions: paneSessions.length,
-      turns: snapshot.listResolvedTurns().length,
+      turns: snapshot.listResolvedTurns(scopeOpt).length,
     };
     this.sourceHealth = buildSourceHealth(snapshot.listSources());
   }
@@ -204,11 +210,67 @@ export class LiteBrowserModel {
    * all rows costs one array slice. The TUI needs the full set to group hits
    * by project the way the Full TUI does.
    */
+  get hasConversationEvidence(): boolean {
+    return this.snapshot.data.conversation_evidence !== undefined;
+  }
+
   searchAll(query: string): LiteSearchPage {
     const cached = this.searchCache.get(query);
     if (cached) return cached;
-    const page = this.snapshot.search({ query, limit: Number.MAX_SAFE_INTEGER, offset: 0 });
+    const page = this.snapshot.search({
+      query,
+      limit: Number.MAX_SAFE_INTEGER,
+      offset: 0,
+      directoryScope: this.directoryScope,
+    });
     this.searchCache.set(query, page);
+    return page;
+  }
+
+  /** Search full masked user prompts and assistant replies (requires conversation_evidence). */
+  searchConversationAll(query: string): LiteSearchPage {
+    if (!this.hasConversationEvidence) return this.searchAll(query);
+    const cached = this.conversationSearchCache.get(query);
+    if (cached) return cached;
+
+    const conv = this.snapshot.searchConversation({
+      query,
+      directoryScope: this.directoryScope,
+      limit: 100,
+      offset: 0,
+      max_chars: 64_000,
+      group_by: "message",
+    });
+    const promptPage = this.searchAll(query);
+    const results: TurnSearchResult[] = [];
+    const seenTurnIds = new Set<string>();
+
+    for (const hit of conv.results) {
+      const session = this.sessionsById.get(hit.session_id) ?? this.snapshot.getSession(hit.session_id);
+      let turn = hit.turn_id ? this.snapshot.getTurn(hit.turn_id) : undefined;
+      if (!turn && session) {
+        turn = this.snapshot.listSessionTurns(session.id)[0];
+      }
+      if (!turn || seenTurnIds.has(turn.id)) continue;
+      seenTurnIds.add(turn.id);
+      const projectId = turn.project_id ?? session?.primary_project_id;
+      const project = projectId ? this.snapshot.getProject(projectId) : undefined;
+      results.push({
+        turn,
+        session,
+        project,
+        highlights: [],
+        relevance_score: 0,
+        match_field: "text",
+      });
+    }
+    for (const row of promptPage.results) {
+      if (seenTurnIds.has(row.turn.id)) continue;
+      seenTurnIds.add(row.turn.id);
+      results.push(row);
+    }
+    const page: LiteSearchPage = { results, total: results.length };
+    this.conversationSearchCache.set(query, page);
     return page;
   }
 
@@ -264,6 +326,7 @@ export class LiteBrowserModel {
       models: options.models?.length ? [...options.models] : undefined,
       source_ids: options.sourceIds?.length ? [...options.sourceIds] : undefined,
       time_keys: options.timeKeys?.length ? [...options.timeKeys] : undefined,
+      directory_scope: this.directoryScope,
       time_dimension: timeBucket,
       time_preset: timePreset,
       timezone: timeZone,
@@ -288,12 +351,14 @@ export class LiteBrowserModel {
 function buildProjectEntries(
   snapshot: LiveHistorySnapshot,
   sessionsById: Map<string, SessionProjection>,
+  directoryScope?: string,
 ): LiteProjectEntry[] {
+  const scopeOpt = directoryScope ? { directoryScope } : undefined;
   const entries: LiteProjectEntry[] = [];
   const linkedTurnIds = new Set<string>();
 
-  for (const project of snapshot.listProjects()) {
-    const turns = snapshot.listProjectTurns(project.project_id);
+  for (const project of snapshot.listProjects(scopeOpt)) {
+    const turns = snapshot.listProjectTurns(project.project_id, scopeOpt);
     for (const turn of turns) linkedTurnIds.add(turn.id);
     entries.push({
       key: project.project_id,
@@ -308,7 +373,7 @@ function buildProjectEntries(
     });
   }
 
-  const unlinkedTurns = snapshot.listResolvedTurns().filter((turn) => !linkedTurnIds.has(turn.id));
+  const unlinkedTurns = snapshot.listResolvedTurns(scopeOpt).filter((turn) => !linkedTurnIds.has(turn.id));
   if (unlinkedTurns.length > 0) {
     entries.push({
       key: UNLINKED_PROJECT_KEY,

@@ -150,13 +150,16 @@ function renderCountsLine(model: LiteBrowserModel, state: LiteBrowserState): str
     `${counts.sessions} sessions`,
     `${counts.turns} turns`,
   ];
+  const dirTrail = model.directoryScope
+    ? `${dim(" · ")}${yellow(`dir: ${compact(model.directoryScope, 40)}`)}`
+    : "";
   const trail = state.mode === "search"
     ? `${dim(" · ")}${cyan(`search "${state.searchQuery}"`)}`
     : "";
   const projectionWarning = model.snapshot.projectionIssues.length > 0
     ? `${dim(" · ")}${danger(`${model.snapshot.projectionIssues.length} data warning${model.snapshot.projectionIssues.length === 1 ? "" : "s"}`)}`
     : "";
-  return `${dim(parts.join(" · "))}${trail}${projectionWarning}`;
+  return `${dim(parts.join(" · "))}${dirTrail}${trail}${projectionWarning}`;
 }
 
 function renderStatusMessageLine(state: LiteBrowserState, width: number): string {
@@ -170,15 +173,21 @@ function renderStatusMessageLine(state: LiteBrowserState, width: number): string
 
 function renderStatusBar(model: LiteBrowserModel, state: LiteBrowserState): string {
   if (state.overlay === "stats") {
+    const modeHint =
+      state.stats.view === "matrix"
+        ? "g group │ ←/→ cols"
+        : state.stats.view === "sessions"
+          ? "Enter open"
+          : "Space filter";
     return dim(
       [
         `stats/${state.stats.view}`,
-        "Tab quadrant",
-        "Space filter",
+        modeHint,
+        "S sessions",
         "v matrix",
         "m calibrate",
-        "t window",
-        "b bucket",
+        "E export",
+        "t/b window",
         "c clear",
         "i/Esc close",
         "q quit",
@@ -192,6 +201,8 @@ function renderStatusBar(model: LiteBrowserModel, state: LiteBrowserState): stri
   if (state.mode === "search") parts.push(`${getSearchTotal(model, state)} matches`);
   parts.push(`${model.counts.projects}P ${model.counts.turns}A`);
   parts.push("/ search");
+  parts.push("y copy");
+  parts.push("i stats");
   parts.push("r refresh");
   parts.push("? help");
   parts.push("q quit");
@@ -315,7 +326,13 @@ function renderSearchGroupPane(
   const queryDisplay = state.searchQuery.length > 0
     ? `${state.searchQuery}${focused ? cursorColor("▏") : ""}`
     : muted("(type to search)");
-  const lines = [focused ? activeSectionTitle(`▸ / ${queryDisplay}`) : sectionTitle(`  / ${queryDisplay}`)];
+  const scopeHint = state.searchScope === "conversation"
+    ? cyan("  [+replies · ^F prompts]")
+    : dim("  [prompts · ^F +replies]");
+  const lines = [
+    focused ? activeSectionTitle(`▸ / ${queryDisplay}`) : sectionTitle(`  / ${queryDisplay}`),
+    clipLine(scopeHint, columnWidth),
+  ];
 
   const groups = getSearchGroups(model, state);
   if (groups.length === 0) {
@@ -325,7 +342,7 @@ function renderSearchGroupPane(
     return lines;
   }
 
-  const window = viewportWindow(groups.length, state.selectedSearchGroupIndex, viewportSize);
+  const window = viewportWindow(groups.length, state.selectedSearchGroupIndex, Math.max(1, viewportSize - 1));
   if (window.start > 0) lines.push(muted(` ↑ ${window.start} more`));
   for (let index = window.start; index < window.end; index += 1) {
     const group = groups[index]!;
@@ -682,9 +699,10 @@ function renderHelpOverlay(width: number, contentHeight: number): string[] {
     `    ${bold("Enter")} on Detail opens the full session conversation`,
     "",
     bold("  Actions"),
-    `    ${bold("/")} search      ${bold("i")} stats    ${bold("s")} sources   ${bold("?")} help`,
+    `    ${bold("/")} search (${bold("Ctrl+F")} toggle +replies)   ${bold("i")} stats    ${bold("s")} sources   ${bold("?")} help`,
+    `    ${bold("y")} copy resume cmd    ${bold("Y")} copy turn Q&A    ${bold("R")} quit & print resume`,
     `    ${bold("r")} refresh the snapshot from disk   ${bold("q")} quit`,
-    `    ${bold("Stats (i)")}: ${bold("Tab/1-4")} quadrant · ${bold("Space")} filter · ${bold("v")} matrix · ${bold("m")} calibrate · ${bold("t/b/w")} window · ${bold("$")} quota · ${bold("c")} clear`,
+    `    ${bold("Stats (i)")}: ${bold("Tab/1-4")} quadrant · ${bold("Space")} filter · ${bold("S")} sessions (Enter open) · ${bold("v")} matrix · ${bold("m")} calibrate · ${bold("E")} export · ${bold("t/b/w")} window · ${bold("$")} quota · ${bold("c")} clear`,
     "",
     bold("  Lite guarantees"),
     muted("    Reads native tool history only. Never opens or creates ~/.cchistory."),

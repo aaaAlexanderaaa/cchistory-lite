@@ -6,6 +6,8 @@
 
 import type {
   ProjectIdentity,
+  SessionContributionProjection,
+  SessionFamilyProjection,
   SessionProjection,
   SessionUsageEvent,
   SourceStatus,
@@ -51,6 +53,7 @@ export interface UsageAggregationRow {
   context_input_tokens?: number;
   turn_id: string | null;
   session_id: string;
+  session_label: string;
   source_id: string;
   source_label: string;
   host_id: string;
@@ -58,6 +61,9 @@ export interface UsageAggregationRow {
   project_label: string;
   model: string;
   timestamp_ms: number;
+  local_hour: number;
+  hour: string;
+  hour_of_day: string;
   day: string;
   week: string;
   week_label: string;
@@ -97,6 +103,8 @@ export interface UsageSourceData {
   listResolvedSessions: () => readonly SessionProjection[];
   listSources: () => readonly SourceStatus[];
   listProjects: () => readonly ProjectIdentity[];
+  listSessionContributions?: () => readonly SessionContributionProjection[];
+  listSessionFamilies?: () => readonly SessionFamilyProjection[];
 }
 
 export const UNASSIGNED_PROJECT_KEY = "unassigned";
@@ -208,6 +216,12 @@ export function usageDimensionKey(row: UsageAggregationRow, dimension: UsageStat
       return row.source_id;
     case "host":
       return row.host_id;
+    case "session":
+      return row.session_id;
+    case "hour":
+      return row.hour;
+    case "hour_of_day":
+      return row.hour_of_day;
     case "day":
       return row.day;
     case "week":
@@ -227,6 +241,12 @@ export function usageDimensionLabel(row: UsageAggregationRow, dimension: UsageSt
       return row.source_label;
     case "host":
       return row.host_id;
+    case "session":
+      return row.session_label;
+    case "hour":
+      return row.hour;
+    case "hour_of_day":
+      return row.hour_of_day;
     case "day":
       return row.day;
     case "week":
@@ -241,8 +261,18 @@ export function compareUsageRollupRows(
   left: UsageStatsRollupRow,
   right: UsageStatsRollupRow,
 ): number {
-  if (dimension === "day" || dimension === "week" || dimension === "month") {
+  if (
+    dimension === "hour" ||
+    dimension === "hour_of_day" ||
+    dimension === "day" ||
+    dimension === "week" ||
+    dimension === "month"
+  ) {
     return left.key.localeCompare(right.key);
+  }
+  if (dimension === "session") {
+    const costDiff = (right.cost?.adjusted_cost_usd ?? 0) - (left.cost?.adjusted_cost_usd ?? 0);
+    if (Math.abs(costDiff) > 1e-9) return costDiff;
   }
   if (left.total_tokens !== right.total_tokens) {
     return right.total_tokens - left.total_tokens;
@@ -284,16 +314,39 @@ export function extractUnfilteredUsageRows(
     }
   }
 
+  const resolveSessionLabel = (session: SessionProjection | undefined, sessionId: string): string => {
+    const raw = session?.title?.trim() || session?.canonical_title?.trim() || session?.source_session_id?.trim() || sessionId;
+    return raw.replace(/\s+/gu, " ");
+  };
+
   const bucketTime = (isoTimestamp: string) => {
     const parsedMs = Date.parse(isoTimestamp);
     if (!Number.isFinite(parsedMs)) {
       const fallbackDay = isoTimestamp.slice(0, 10) || "1970-01-01";
       const fallbackMonth = isoTimestamp.slice(0, 7) || "1970-01";
-      return { timestamp_ms: Number.NaN, day: fallbackDay, week: fallbackDay, week_label: fallbackDay, month: fallbackMonth };
+      return {
+        timestamp_ms: Number.NaN,
+        local_hour: 0,
+        hour: `${fallbackDay} 00:00`,
+        hour_of_day: "00:00",
+        day: fallbackDay,
+        week: fallbackDay,
+        week_label: fallbackDay,
+        month: fallbackMonth,
+      };
     }
     const local = extractLocalTimeParts(parsedMs, timeZone);
     const week = resolveWeekBucket(parsedMs, { timeZone, weekMode, weekStartDay, weekResetHour, nowMs });
-    return { timestamp_ms: parsedMs, day: local.dayKey, week: week.key, week_label: week.label, month: local.monthKey };
+    return {
+      timestamp_ms: parsedMs,
+      local_hour: local.hour,
+      hour: local.hourKey,
+      hour_of_day: `${String(local.hour).padStart(2, "0")}:00`,
+      day: local.dayKey,
+      week: week.key,
+      week_label: week.label,
+      month: local.monthKey,
+    };
   };
 
   const rows: UsageAggregationRow[] = turns.flatMap((turn): UsageAggregationRow[] => {
@@ -319,6 +372,7 @@ export function extractUnfilteredUsageRows(
     const baseRow: UsageAggregationRow = {
       turn_id: turn.id,
       session_id: turn.session_id,
+      session_label: resolveSessionLabel(session, turn.session_id),
       source_id: turn.source_id,
       source_label: source ? `${source.display_name} (${source.slot_id})` : turn.source_id,
       host_id: session?.host_id ?? source?.host_id ?? "unknown",
@@ -346,6 +400,7 @@ export function extractUnfilteredUsageRows(
       rows.push({
         turn_id: null,
         session_id: session.id,
+        session_label: resolveSessionLabel(session, session.id),
         source_id: session.source_id,
         source_label: source ? `${source.display_name} (${source.slot_id})` : session.source_id,
         host_id: session.host_id,

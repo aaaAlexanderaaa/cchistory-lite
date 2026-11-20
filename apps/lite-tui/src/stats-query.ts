@@ -4,17 +4,44 @@
  * Excludes state reducers (stats-state.ts) and ANSI rendering (stats-render.ts).
  */
 
-import type { UsageMatrixSort, UsageStatsDimension, UsageStatsRollupRow } from "@cchistory/domain";
+import type {
+  UsageMatrixSort,
+  UsageStatsDimension,
+  UsageStatsRollupRow,
+  UsageTimeBucket,
+} from "@cchistory/domain";
+import { densifyShortHourlyRollupRows } from "@cchistory/live-runtime";
 import type { LiteBrowserModel } from "./model.js";
-import type { LiteStatsResolvedViewData, LiteStatsState } from "./stats-state.js";
+import type { LiteStatsMatrixGroup, LiteStatsResolvedViewData, LiteStatsState } from "./stats-state.js";
+
+export function resolveMatrixDimensions(
+  group: LiteStatsMatrixGroup,
+  timeBucket: UsageTimeBucket,
+): UsageStatsDimension[] {
+  switch (group) {
+    case "project_model":
+      return ["project", "model"];
+    case "model_time":
+      return ["model", timeBucket];
+    case "project_time":
+      return ["project", timeBucket];
+    case "all_4":
+      return ["project", "model", "source", timeBucket];
+  }
+}
 
 export function sortStatsRollupRows(
   rows: readonly UsageStatsRollupRow[],
   sortBy: UsageMatrixSort,
   isTime: boolean,
+  timeBucket?: UsageTimeBucket,
 ): UsageStatsRollupRow[] {
   const copy = [...rows];
   if (isTime && (sortBy === "adjusted_cost" || sortBy === "label")) {
+    // 00:00..23:00 hour-of-day reads top-to-bottom in clock order; calendar buckets read newest-first.
+    if (timeBucket === "hour_of_day") {
+      return copy.sort((a, b) => a.key.localeCompare(b.key));
+    }
     return copy.sort((a, b) => b.key.localeCompare(a.key));
   }
   return copy.sort((a, b) => {
@@ -54,7 +81,7 @@ export function resolveStatsViewData(
     multiplierOverrides: stats.multiplierOverrides,
     quotaUsdOverride: stats.quotaUsdOverride,
   };
-  const matrixDimensions: UsageStatsDimension[] = ["project", "model", "source", stats.timeBucket];
+  const matrixDimensions: UsageStatsDimension[] = resolveMatrixDimensions(stats.matrixGroup, stats.timeBucket);
   const breakdown = model.getUsageBreakdown({
     ...baseParams,
     projectIds: stats.filters.projectIds,
@@ -110,15 +137,21 @@ export function resolveStatsViewData(
         }).by_time.rows
       : breakdown.by_time.rows;
 
+  const displayTimeRows =
+    stats.timeBucket === "hour"
+      ? densifyShortHourlyRollupRows(timeRows, { timezone: breakdown.timezone, maxSpanHours: 48 })
+      : timeRows;
+
   return {
     breakdown,
     quadrantRows: {
       project: sortStatsRollupRows(projectRows, stats.sortBy, false),
       model: sortStatsRollupRows(modelRows, stats.sortBy, false),
       source: sortStatsRollupRows(sourceRows, stats.sortBy, false),
-      day: sortStatsRollupRows(timeRows, stats.sortBy, true),
+      day: sortStatsRollupRows(displayTimeRows, stats.sortBy, true, stats.timeBucket),
     },
     matrixRows: breakdown.matrix?.rows ?? [],
+    sessionRows: sortStatsRollupRows(breakdown.by_session?.rows ?? [], stats.sortBy, false),
     modelResolutions: breakdown.model_resolutions,
   };
 }

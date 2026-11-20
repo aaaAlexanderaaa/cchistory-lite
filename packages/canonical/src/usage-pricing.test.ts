@@ -510,3 +510,40 @@ test("decorated standard and Fast calls reconcile across statistics while unknow
   assert.equal(calibrated.cost!.unpriced_tokens, 203011);
   assert.ok(Math.abs(calibrated.cost!.list_cost_usd - 0.75018) < 1e-12);
 });
+
+test("gemini-4-neon resolves official Google pricing across variants and bills reasoning at output rate", () => {
+  for (const name of ["gemini-4-neon", "google/gemini-4-neon", "gemini-4-neon-high", "gemini-4-neon-xhigh", "gemini-4-neon-thinking"]) {
+    const resolved = resolveModelPricing(name);
+    assert.equal(resolved.resolved_model, "gemini-4-neon");
+    assert.equal(resolved.provider, "google");
+    assert.deepEqual(resolved.unit_prices, { input: 3, output: 15, cache_read: 0.15 });
+  }
+  const source = createSource({ slot_id: "antigravity", platform: "antigravity" });
+  const session = createSession(source, { model: "gemini-4-neon" });
+  const turn = createTurn(source, session, {
+    context_summary: {
+      assistant_reply_count: 1,
+      tool_call_count: 0,
+      primary_model: "gemini-4-neon",
+      has_errors: false,
+      token_usage: {
+        input_tokens: 1_000_000,
+        cache_read_input_tokens: 1_000_000,
+        output_tokens: 2_000_000,
+        reasoning_output_tokens: 1_000_000,
+        total_tokens: 4_000_000,
+      },
+    },
+  });
+  const overview = computeUsageOverview({
+    filters: { timezone: "UTC" },
+    listResolvedSessions: () => [session],
+    listResolvedTurns: () => [turn],
+    listSources: () => [source],
+    listProjects: () => [],
+  });
+  // $3.00 input + $0.15 cache_read + $15.00 non-reasoning output + $15.00 reasoning = $33.15
+  assert.ok(Math.abs(overview.cost!.list_cost_usd - 33.15) < 1e-12);
+  // Cache savings: 1M * ($3.00 - $0.15) = $2.85
+  assert.ok(Math.abs((overview.cost!.cache_list_savings_usd ?? 0) - 2.85) < 1e-12);
+});

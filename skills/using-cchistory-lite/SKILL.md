@@ -45,8 +45,10 @@ The default remains one recent hit per top-level session. `session_id` is the di
 and `message_id` identify the actual evidence. Read the matched turn to recover
 its question and answer. If `turn_id` is null (an assistant message without a
 canonical user turn), read `matched_session_id` using `session_ref`. Tool outputs and system messages are not searched.
-The ordinary CLI `search` and default search operation still search only titles,
-paths and the first 16 KiB of user text.
+The CLI `search` command now defaults to full conversation search (titles, prompts,
+and assistant replies) and accepts `--prompts-only` / `--content prompts` and
+`--group-by session|message`. In `query` and `shell`, the default `search` operation
+keeps legacy authored-text matching unless `"content": "conversation"` is set.
 
 `read` takes exactly one `session_ref` or `turn_ref`. Follow `next_cursor` with
 that same target until the needed evidence is obtained; `null` means no more.
@@ -68,8 +70,11 @@ JSON
 
 ## Interpret scope, gaps and freshness
 
-Collection commands default to the current directory. Use `--dir` for the
-requested target; an empty result is not permission to switch to `--no-dir`.
+Collection commands (`ls`, `latest`, `sample`, `search`, `tree projects`, `query`,
+`shell`) default to the current directory. Use `--dir` for the requested target; an
+empty result is not permission to switch to `--no-dir`. `stats` defaults to all
+discovered history on the machine and accepts `--dir` to narrow to one directory
+(along with `--by hour` and `--by session`).
 Project identity is not simply cwd. Inspect the top-level `read_status`:
 
 - `partial`: observed source/read losses, unknown directory attribution or

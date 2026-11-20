@@ -7,6 +7,53 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Canonical usage diagnostics (`usage-diagnostics.ts`) computing cache hit rate,
+  estimated cache savings (list and adjusted USD), `>200K` long-context tier call
+  counts, 5-component cost shares, dual-marker period quota pace projection
+  (actual spend vs elapsed time), 24-hour activity profiles, effective cost
+  multipliers, and enriched `by_session` rollups with subagent and tool counts.
+- Hourly and 24-hour clock bucketing (`--by hour`, `--by hour_of_day`, TUI
+  `hour` / `hour_of_day` buckets) with automatic switch from `day` to gap-filled
+  `hour` on `today`, `24h`, and custom windows within 48 hours, `00–23` clock
+  activity charts, plus `--by session` session-level spend/token rankings.
+- Terminal visualizations in CLI `stats` and the TUI stats dashboard (`i`):
+  5-component cost-mix bar, dual-marker quota pace gauge, cache hit rate/savings
+  and `>200K` diagnostics strip, gap-filled time trend sparkline, fixed-column
+  TUI quadrants with max-normalized 1/8th-block comparison bars, and a redesigned
+  TUI Matrix view (`g` grouping presets, unclipped time labels, `In`/`CR`/`CW`/`Out`/`Hit`/`Mult`/`List$`/`Adj$`,
+  narrow `←/→` column paging, and a pinned 2-line selected-row inspector).
+- TUI Top Sessions drill-down view (`S`, `Enter` to open the session and `i` to
+  return to stats), in-memory pricing config export (`E` with store/source/symlink
+  destination checks), clipboard copy (`y` resume command, `Y` turn Q&A via OSC 52
+  with native clipboard fallback), exit-and-print resume command (`R`), `--dir`,
+  `--stats`, and `--since` startup options, on-demand full-conversation search
+  (`Ctrl+F`), and 2-character auto-search for CJK queries.
+- CLI flags `--content conversation|prompts`, `--prompts-only`, and
+  `--group-by session|message` on `search`; `--full` and `--compact` on `show`;
+  and full option forwarding on `cchistory-lite tui` (resolving the sibling TUI
+  build directly before falling back to `PATH`).
+- Official Google `gemini-4-neon` pricing (`$3/$15/$0.15` per 1M
+  input/output/cache-read tokens from `models.dev`, 2,563 models total).
+
+### Changed
+
+- CLI `search` now defaults to full conversation search (titles, user prompts, and
+  assistant replies) while staying context-light (`--prompts-only` restores
+  prompt/title-only mode; `query`/`shell` retain legacy default unless
+  `content: "conversation"` is set).
+- CLI `stats` now defaults to machine-wide scope (`--dir <path>` narrows to one
+  directory; collection commands remain `--dir=$PWD`).
+- `show turn` wraps and prints full assistant replies plus `Resume` commands by
+  default (`--compact` restores single-line previews); `export --format markdown`
+  includes full user prompts and assistant replies grouped by session while
+  remaining context-light.
+- No-argument `cchistory-lite` and `cchistory-lite help` print a concise
+  human-first command overview, delegating detailed flags to `help <command>`
+  (generated from the single-source `agent-contract.ts`) and the machine contract
+  to `agent`.
+
 ## [0.8.1] - 2026-11-18
 
 ### Added

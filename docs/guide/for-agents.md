@@ -21,13 +21,17 @@ derivation → one in-memory snapshot → projections → the surface you called
   not a missing feature.
 - The TUI holds one snapshot. Shell holds one collection plus a bounded detail
   cache; each response identifies its actual read. Refresh replaces these on success.
-- Context-light scans (the default for collection, search, and stats reads)
-  release full assistant/tool context after projecting turns and sessions. Conversation
-  search additionally retains masked user/reply evidence without full tool/system bodies.
-  Full-context paths — JSON/JSONL `export`, `show session <exact id>`, and
-  context-matching `show` / `query` replies — retain more and therefore cost
-  more. Markdown `export` is context-light: it drops turn context after
-  projection and only writes turn text.
+- Context-light scans (the default for collection, search, stats, and Markdown
+  export reads) release full assistant/tool context after projecting turns and
+  sessions. CLI `search` (default `--content conversation`), `query`/`shell`
+  conversation search, and Markdown `export` additionally retain masked
+  user/reply evidence without full tool/system bodies. Pass `--prompts-only`
+  on CLI `search` to skip reply evidence retention. Full-context paths —
+  JSON/JSONL `export`, `show session <exact id>`, and context-matching
+  `show` / `query` replies — retain more and therefore cost more.
+- Collection commands (`ls`, `latest`, `sample`, `search`, `tree projects`,
+  `query`, `shell`) default to `--dir=$PWD`. `stats` defaults to all discovered
+  history on the machine unless `--dir` is provided.
 
 ## Cost model
 

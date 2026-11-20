@@ -7,7 +7,7 @@
 import type { UsageStatsDimension, UsageStatsOverview, UsageStatsRollup } from "./index.js";
 
 export type UsageTimePreset = "all" | "today" | "24h" | "7d" | "30d" | "week" | "month";
-export type UsageTimeBucket = "day" | "week" | "month";
+export type UsageTimeBucket = "hour" | "hour_of_day" | "day" | "week" | "month";
 export type UsageWeekMode = "rolling_7d" | "iso_week" | "custom_reset";
 export type UsageMatrixSort = "adjusted_cost" | "list_cost" | "tokens" | "turns" | "label";
 
@@ -86,6 +86,75 @@ export interface UsagePricingConfig {
   quota?: QuotaConfig;
 }
 
+export interface UsageCostShares {
+  input: number;
+  cache_read: number;
+  cache_write: number;
+  output: number;
+  reasoning: number;
+}
+
+export interface UsageEfficiencyMetrics {
+  /** cache_read / (input + cache_read + cache_creation); null when total input is 0. */
+  cache_hit_ratio: number | null;
+  /** Estimated list USD saved by cache reads compared with paying uncached input rate. */
+  cache_list_savings_usd: number;
+  /** Estimated adjusted USD saved by cache reads compared with paying adjusted uncached input rate. */
+  cache_adjusted_savings_usd: number;
+  /** reasoning_for_billing / billable_output; null when billable output is 0. */
+  reasoning_share_ratio: number | null;
+  /** Per-component share (0..1) of adjusted_cost_usd; null when adjusted_cost_usd is 0. */
+  cost_shares: UsageCostShares | null;
+  /** Count of priced calls whose input triggered a long-context price tier. */
+  high_context_call_count: number;
+  /** Total priced calls evaluated for this scope. */
+  priced_call_count: number;
+  /** Adjusted USD attributable to calls priced at a long-context tier. */
+  high_context_adjusted_cost_usd: number;
+  /** Effective aggregate cost multiplier (adjusted_cost_usd / list_cost_usd); null when list cost is 0. */
+  effective_multiplier?: number | null;
+}
+
+export type QuotaPaceStatus = "over_limit" | "fast" | "on_track" | "under_pace";
+
+export interface QuotaPaceProjection {
+  period_label: string;
+  window_start_ms: number;
+  window_end_ms: number;
+  elapsed_ms: number;
+  total_ms: number;
+  /** Fraction of the period elapsed (0..1). */
+  elapsed_ratio: number;
+  spent_usd: number;
+  quota_limit_usd: number;
+  quota_percent: number;
+  /** Projected spend over the full period at the current average rate; null when elapsed < 60s. */
+  projected_period_cost_usd: number | null;
+  /** Estimated days until reaching quota_limit_usd at the current average rate; null when rate <= 0 or already over. */
+  estimated_days_to_limit: number | null;
+  status: QuotaPaceStatus;
+}
+
+export interface UsageSessionRollupMeta {
+  session_id: string;
+  title: string;
+  project_label: string;
+  source_label: string;
+  primary_model?: string;
+  delegated_child_count: number;
+  tool_call_count: number;
+  tool_error_count: number;
+  last_activity_at?: string;
+}
+
+export interface UsageHourlyProfileCell {
+  /** Local hour 0..23. */
+  hour: number;
+  total_tokens: number;
+  adjusted_cost_usd: number;
+  call_count: number;
+}
+
 export interface UsageCostBreakdown {
   list_cost_usd: number;
   adjusted_cost_usd: number;
@@ -104,6 +173,11 @@ export interface UsageCostBreakdown {
   unpriced_models: string[];
   quota_limit_usd?: number;
   quota_percent?: number;
+  cache_list_savings_usd?: number;
+  cache_adjusted_savings_usd?: number;
+  high_context_call_count?: number;
+  priced_call_count?: number;
+  high_context_adjusted_cost_usd?: number;
 }
 
 export type ModelPricingMatchKind = "custom" | "exact" | "alias" | "normalized" | "unpriced";
@@ -141,6 +215,7 @@ export interface UsageMatrixRow {
   total_billable_output_tokens: number;
   total_tokens: number;
   cost: UsageCostBreakdown;
+  efficiency?: UsageEfficiencyMetrics;
 }
 
 export interface UsageMatrixResult {
@@ -162,8 +237,12 @@ export interface UsageBreakdownSnapshot {
   by_model: UsageStatsRollup;
   by_source: UsageStatsRollup;
   by_time: UsageStatsRollup;
+  by_session?: UsageStatsRollup;
   matrix?: UsageMatrixResult;
   model_resolutions: ModelPricingResolution[];
   quota_limit_usd?: number;
   quota_percent?: number;
+  efficiency?: UsageEfficiencyMetrics;
+  quota_pace?: QuotaPaceProjection;
+  hourly_profile?: UsageHourlyProfileCell[];
 }

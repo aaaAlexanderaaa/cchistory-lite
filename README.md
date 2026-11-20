@@ -27,18 +27,25 @@ Requires Node.js >= 22.
 | Who | Command |
 | --- | --- |
 | On your laptop | `npx @cchistory/lite tui` |
+| Check token cost & quota | `npx @cchistory/lite stats` (or `tui --stats`) |
 | Over SSH | `npx @cchistory/lite latest sessions 10` |
 | From an agent | `npx @cchistory/lite search "retry backoff" --json` |
 
 ```bash
 npx @cchistory/lite sources
 npx @cchistory/lite search "retry backoff" --source codex --limit 3
+npx @cchistory/lite stats --since today --quota 100
 npx @cchistory/lite show session sess:codex:…
 npx @cchistory/lite tui
 ```
 
 `npm install -g @cchistory/lite` puts `cchistory-lite` and `cchistory-lite-tui`
 on `PATH`.
+
+CLI `search` checks titles, user prompts, and assistant replies by default (`--prompts-only`
+limits matching to titles and prompts; `--group-by message` lists every matching message).
+`stats` defaults to machine-wide usage, cost mix, cache hit rate, estimated cache savings,
+quota pace, and hourly or session rollups (`--dir <path>` scopes to one directory).
 
 Agents: [`skills/using-cchistory-lite/SKILL.md`](skills/using-cchistory-lite/SKILL.md).
 Copy-paste recipes: [`docs/guide/lite.md`](docs/guide/lite.md).

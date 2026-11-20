@@ -408,7 +408,7 @@ export class LiveHistorySnapshot {
       ...pages.read(options) };
   }
 
-  searchConversation(options: { query: string; limit?: number; offset?: number; max_chars?: number; projectId?: string; directoryScope?: string; group_by?: "session" | "message" }) {
+  searchConversation(options: { query: string; limit?: number; offset?: number; max_chars?: number; projectId?: string; sourceIds?: readonly string[]; directoryScope?: string; group_by?: "session" | "message" }) {
     if (!this.data.conversation_evidence) throw new Error("Conversation search evidence is not loaded.");
     return searchConversationEvidence({ ...options, messages: this.data.conversation_evidence,
       sessions: this.data.sessions, related_work: this.data.related_work,
@@ -728,6 +728,8 @@ export class LiveHistorySnapshot {
       listResolvedSessions: () => this.data.sessions,
       listSources: () => this.data.sources,
       listProjects: () => this.data.projects,
+      listSessionContributions: () => this.data.session_contributions,
+      listSessionFamilies: () => this.families,
     });
   }
 
@@ -799,6 +801,8 @@ export class LiveHistorySnapshot {
       listResolvedSessions: () => this.data.sessions,
       listSources: () => this.data.sources,
       listProjects: () => this.data.projects,
+      listSessionContributions: () => this.data.session_contributions,
+      listSessionFamilies: () => this.families,
     });
   }
 }
@@ -2207,11 +2211,19 @@ export {
   normalizeMultipliers,
   parseDateEnd,
   parseDateOrRelativeStart,
+  resolveDefaultTimeBucket,
+  resolveQuotaPeriodWindow,
   resolveTimeWindowBounds,
   resolveUsageTimezone,
   resolveWeekBucket,
+  buildDenseTimeSeries,
+  computeUsageEfficiency,
+  computeQuotaPace,
+  densifyHourOfDayRollupRows,
+  densifyShortHourlyRollupRows,
 } from "@cchistory/canonical";
 export type {
+  DenseTimePoint,
   UsageFilters,
   ResolvedModelPricing,
   UsageTimeOptions,

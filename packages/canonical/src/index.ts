@@ -56,14 +56,27 @@ export {
   resolveEffectiveQuotaLimitUsd,
 } from "./usage-pricing-config.js";
 export {
+  buildDenseTimeSeries,
+  computeHourlyProfile,
+  computeQuotaPace,
+  computeUsageEfficiency,
+  densifyHourOfDayRollupRows,
+  densifyShortHourlyRollupRows,
+  enrichSessionRollup,
+  type DenseTimePoint,
+} from "./usage-diagnostics.js";
+export {
   extractLocalTimeParts,
   localWallTimeToEpochMs,
   parseDateEnd,
   parseDateOrRelativeStart,
+  resolveDefaultTimeBucket,
+  resolveQuotaPeriodWindow,
   resolveTimeWindowBounds,
   resolveUsageTimezone,
   resolveWeekBucket,
   type LocalTimeParts,
+  type QuotaPeriodWindow,
   type UsageTimeOptions,
 } from "./usage-time.js";
 export {

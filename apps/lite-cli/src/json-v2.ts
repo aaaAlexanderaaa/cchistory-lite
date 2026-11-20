@@ -59,6 +59,9 @@ export function compactPayload(
         ...base,
         query: payload.query,
         unit: payload.unit ?? "session",
+        ...(payload.content !== undefined ? { content: payload.content } : {}),
+        ...(payload.searched_roles !== undefined ? { searched_roles: payload.searched_roles } : {}),
+        ...(payload.group_by !== undefined ? { group_by: payload.group_by } : {}),
         total: payload.total,
         shown: payload.shown ?? records(payload.results).length,
         offset: payload.offset ?? 0,
@@ -114,6 +117,8 @@ export function compactPayload(
         ...base,
         overview: payload.overview,
         rollup: payload.rollup ?? null,
+        ...(payload.efficiency !== undefined ? { efficiency: payload.efficiency } : {}),
+        ...(payload.quota_pace !== undefined ? { quota_pace: payload.quota_pace } : {}),
         ...(payload.matrix !== undefined ? { matrix: payload.matrix } : {}),
         ...(payload.breakdown !== undefined ? { breakdown: payload.breakdown } : {}),
         ...(payload.model_resolutions !== undefined ? { model_resolutions: payload.model_resolutions } : {}),
@@ -324,13 +329,20 @@ export function searchResultSummary(result: Record<string, unknown>, snapshot: L
   const resolvedProject = project ?? (session.primary_project_id
     ? snapshot.getProject(session.primary_project_id)
     : undefined);
+  const extra: Record<string, unknown> = {};
+  if (result.matched_role !== undefined) extra.matched_role = result.matched_role;
+  if (result.matched_session_id !== undefined) extra.matched_session_id = result.matched_session_id;
+  if (result.message_id !== undefined) extra.message_id = result.message_id;
+  if (result.snippet !== undefined) extra.snippet = result.snippet;
+  if (result.created_at !== undefined) extra.created_at = result.created_at;
   return {
     session: sessionSummary(session, snapshot),
     project: resolvedProject ? projectSummary(resolvedProject) : null,
     best_turn: bestTurn ? turnSummary(bestTurn, snapshot) : null,
     highlights: Array.isArray(result.highlights) ? result.highlights : [],
-    relevance_score: result.relevance_score,
+    relevance_score: result.relevance_score ?? null,
     match_field: result.match_field ?? null,
+    ...extra,
   };
 }
 

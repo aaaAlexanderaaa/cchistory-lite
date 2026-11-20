@@ -14,6 +14,7 @@ const DEFAULT_API_URL = "https://models.dev/api.json";
 // Same immutable LiteLLM revision as ccusage 58866ba (2026-11-17).
 const LITELLM_URL = "https://raw.githubusercontent.com/BerriAI/litellm/9a1e3bde9453f9b1316790fc51e6c098d9447d7b/model_prices_and_context_window.json";
 const XAI_PRICING_URL = "https://docs.x.ai/developers/pricing";
+const GOOGLE_PRICING_URL = "https://ai.google.dev/gemini-api/docs/pricing";
 const PROVIDER_PRIORITY = [
   "anthropic",
   "openai",
@@ -121,7 +122,7 @@ export function mergeLiteLlmCatalog(catalog, raw) {
   return catalog;
 }
 
-/** Official tool-only rates absent from the upstream model catalogs. */
+/** Official rates absent from older upstream model snapshots (upstream retains precedence via ??=). */
 export function applyOfficialPriceSupplements(catalog) {
   catalog["grok-4.7-build-fast"] ??= {
     id: "grok-4.7-build-fast",
@@ -130,6 +131,11 @@ export function applyOfficialPriceSupplements(catalog) {
       input: 4, output: 12, cache_read: 1,
       context_tiers: [{ above_input_tokens: 200000, input: 6, output: 18, cache_read: 1.5 }],
     },
+  };
+  catalog["gemini-4-neon"] ??= {
+    id: "gemini-4-neon",
+    provider: "google",
+    prices: { input: 3, output: 15, cache_read: 0.15 },
   };
   return catalog;
 }
@@ -228,9 +234,11 @@ async function main() {
     mergeLiteLlmCatalog(catalog, JSON.parse(text));
     sources.push(LITELLM_URL);
   }
-  const beforeSupplements = Object.keys(catalog).length;
+  const hadGrokFast = Object.prototype.hasOwnProperty.call(catalog, "grok-4.7-build-fast");
+  const hadGeminiNeon = Object.prototype.hasOwnProperty.call(catalog, "gemini-4-neon");
   applyOfficialPriceSupplements(catalog);
-  if (Object.keys(catalog).length > beforeSupplements) sources.push(XAI_PRICING_URL);
+  if (!hadGrokFast && Object.prototype.hasOwnProperty.call(catalog, "grok-4.7-build-fast")) sources.push(XAI_PRICING_URL);
+  if (!hadGeminiNeon && Object.prototype.hasOwnProperty.call(catalog, "gemini-4-neon")) sources.push(GOOGLE_PRICING_URL);
   const fetchedAt = new Date().toISOString().slice(0, 10);
 
   if (updateBuiltin) {

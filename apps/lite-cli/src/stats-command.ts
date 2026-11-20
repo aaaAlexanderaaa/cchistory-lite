@@ -26,6 +26,7 @@ import {
   parseDateEnd,
   parseDateOrRelativeStart,
   parseUsagePricingInput,
+  resolveDefaultTimeBucket,
   resolveEffectiveQuotaLimitUsd,
   resolveUsageTimezone,
   type LiveHistorySnapshot,
@@ -67,7 +68,7 @@ export interface StatsCommandDeps {
   jsonSchema: string;
 }
 
-const VALID_DIMENSIONS = new Set<UsageStatsDimension>(["source", "project", "model", "day", "week", "month"]);
+const VALID_DIMENSIONS = new Set<UsageStatsDimension>(["source", "project", "model", "session", "hour", "hour_of_day", "day", "week", "month"]);
 const VALID_WEEK_MODES = new Set<UsageWeekMode>(["rolling_7d", "iso_week", "custom_reset"]);
 const VALID_SORTS = new Set<UsageMatrixSort>(["adjusted_cost", "list_cost", "tokens", "turns", "label"]);
 
@@ -98,7 +99,7 @@ export function parseStatsDimensions(
       const normalized = part.trim().toLowerCase() as UsageStatsDimension;
       if (!normalized) continue;
       if (!VALID_DIMENSIONS.has(normalized)) {
-        throw new UsageError(`--by dimensions must be source, project, model, day, week, or month; received ${JSON.stringify(part.trim())}.`);
+        throw new UsageError(`--by dimensions must be source, project, model, session, hour, hour_of_day, day, week, or month; received ${JSON.stringify(part.trim())}.`);
       }
       if (!seen.has(normalized)) {
         seen.add(normalized);
@@ -325,8 +326,17 @@ export async function runStatsCommand(options: {
     }
   }
 
-  const timeDimFromBy = dimensions.find((d): d is UsageTimeBucket => d === "day" || d === "week" || d === "month");
-  const timeDimension: UsageTimeBucket = timeDimFromBy ?? "day";
+  const timeDimFromBy = dimensions.find(
+    (d): d is UsageTimeBucket => d === "hour" || d === "hour_of_day" || d === "day" || d === "week" || d === "month",
+  );
+  const timeDimension: UsageTimeBucket =
+    timeDimFromBy ??
+    resolveDefaultTimeBucket({
+      preset: timePreset,
+      after_ts: afterTs,
+      before_ts: beforeTs,
+      now_ms: nowMs,
+    });
 
   const filters: UsageFilters = {
     project_ids: projectIds.length > 0 ? projectIds : undefined,
@@ -382,11 +392,15 @@ export async function runStatsCommand(options: {
     kind: "stats",
     overview: breakdown.overview,
     rollup,
+    ...(breakdown.efficiency ? { efficiency: breakdown.efficiency } : {}),
+    ...(breakdown.quota_pace ? { quota_pace: breakdown.quota_pace } : {}),
     ...(matrix ? { matrix } : {}),
     ...(dimensions.length === 0 ? { breakdown } : {}),
     ...(explainPricing ? { model_resolutions: breakdown.model_resolutions } : {}),
   };
 
+  const useColor =
+    io.isTTY && process.env.NO_COLOR === undefined && process.env.TERM !== "dumb";
   const exportNotice = exportTarget && exportTarget !== "-" ? expandHomePath(exportTarget, io.cwd, io.homeDir) : undefined;
   const rendered = renderEnhancedStats({
     breakdown,
@@ -399,6 +413,7 @@ export async function runStatsCommand(options: {
     sourceIds,
     explainPricing,
     exportNotice,
+    useColor,
     renderMeta: deps.renderMeta,
     renderDashRow: deps.renderDashRow,
     columns: io.columns ?? 120,
@@ -420,8 +435,12 @@ function selectRollup(
       return breakdown.by_model;
     case "source":
       return breakdown.by_source;
+    case "session":
+      return breakdown.by_session ?? snapshot.getUsageRollup("session", filters);
     case "host":
       return snapshot.getUsageRollup("host", filters);
+    case "hour":
+    case "hour_of_day":
     case "day":
     case "week":
     case "month":

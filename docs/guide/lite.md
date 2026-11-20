@@ -49,7 +49,7 @@ globally:
 
 ```bash
 pnpm run lite:link      # installs cchistory-lite
-pnpm run lite:tui:link  # installs cchistory-lite-tui (needed for `cchistory-lite tui`)
+pnpm run lite:tui:link  # installs standalone cchistory-lite-tui (`cchistory-lite tui` also resolves the sibling build directly)
 ```
 
 Re-run the link commands after rebuilding to pick up changes; remove them with
@@ -100,9 +100,10 @@ ls [projects|sessions|families|sources] [--limit <n>|--all] [--dir <path>]
 latest [sessions|turns] [N] [--dir <path>]
 sample [N] [--dir <path>] [--no-dir]
 tree [projects|project <ref>|session <ref>] [--dir <path>]
-search <query> [--project <ref>] [--source <ref>] [--dir <path>] [--no-dir] [--limit <n>] [--offset <n>]
-show project|session|turn|source <ref>
-stats [--by source|project|model|day|week|month[,...]] [--project <ref>] [--model <pattern>]
+search <query> [--content conversation|prompts] [--prompts-only] [--group-by session|message]
+       [--project <ref>] [--source <ref>] [--dir <path>] [--no-dir] [--limit <n>] [--offset <n>]
+show project|session|turn|source <ref> [--full] [--compact]
+stats [--by source|project|model|session|hour|hour_of_day|day|week|month[,...]] [--project <ref>] [--model <pattern>]
       [--since <window>] [--from <time>] [--to <time>] [--tz <zone>]
       [--week-mode rolling_7d|iso_week|custom_reset] [--pricing <file>] [--quota <usd>]
       [--explain-pricing] [--export-pricing <file|->] [--dir <path>] [--no-dir]
@@ -110,7 +111,9 @@ query --request <file|-> | --sql <text> | --sql-file <file|-> [--params <JSON-ar
       [--dir <path>] [--no-dir]
 shell [--dir <path>] [--no-dir] [--idle-timeout <seconds>]
 export --format jsonl|json|markdown [--out <file>|-]
-tui
+tui [--dir <path>] [--no-dir] [--stats] [--since <window>]
+    [--project <ref> | --session <ref> | --turn <ref>] [--search <query>]
+    [--pricing <file>] [--quota <usd>]
 help [command]
 agent [skill|guide]
 ```
@@ -119,14 +122,46 @@ Use `--json` for compact `cchistory-lite/v2` read output, or
 `--json=canonical` for full `cchistory-lite-canonical/v1` evidence. Each one-shot
 history command performs a fresh canonical scan (sources is metadata-only unless --complete); use `query` to batch agent reads into
 one scan, `shell` to keep one directory-scoped snapshot in memory, or the TUI
-to amortize a scan across interactive browsing. `--json`, `query`, and `shell`
-default to `--dir=$PWD`; pass `--no-dir` to disable that scope. The human CLI
-(`ls`, `latest`, `sample`, `search`, `stats`, `tree projects`) shares that
-current-directory default and prints the chosen scope on stderr. `--dir` filters
+to amortize a scan across interactive browsing. `--json`, `query`, `shell`, and the
+human collection commands (`ls`, `latest`, `sample`, `search`, `tree projects`)
+default to `--dir=$PWD` and print the chosen scope on stderr; pass `--no-dir` to
+disable that scope. `stats` and `tui` default to all discovered history on the
+machine and accept `--dir <path>` to narrow to one directory. `--dir` filters
 sessions by working directory and bounds the source-byte estimate to files that
-may match. Bound further with `--source`, `--limit-files`, or `sample`. TUI and
-`export` still scan every selected source and still estimate every selected
+may match. Bound further with `--source`, `--limit-files`, or `sample`. Unscoped
+`stats`, `tui`, and `export` scan every selected source and estimate every selected
 root.
+
+Running `cchistory-lite` with no arguments (or `cchistory-lite help`) prints a concise
+command overview; run `cchistory-lite help <command>` for full command options, or
+`cchistory-lite agent` for the machine-readable JSON contract.
+
+`search` defaults to full conversation search (`--content conversation`), checking
+session titles, user prompts, and assistant replies while keeping a context-light
+scan (heavy tool outputs and system messages are not retained). Pass `--prompts-only`
+(or `--content prompts`) to restrict search to titles and user prompts, and
+`--group-by message` to return every matching message instead of one top-level row
+per session.
+
+`show turn <ref>` wraps and displays the complete assistant replies by default
+together with the session's `Resume` command and tool call statuses (`--compact`
+switches back to single-line reply previews). `show session <ref> --full` prints
+every turn's complete prompt, assistant replies, and tool calls in order.
+
+`stats` defaults to whole-machine scope (`--dir` narrows to one directory). For
+short windows (`--since today`, `--since 24h`, or `--from`/`--to` ranges within 48
+hours), time rollups automatically switch from `day` to `hour` unless `--by`
+explicitly chooses a bucket, and zero-fill intermediate empty hours so real time
+gaps stay visible. `--by hour_of_day` aggregates all 24 clock hours (`00:00`–`23:00`).
+`--by session` ranks the highest-cost/token sessions
+with subagent and tool counts. Terminal `stats` renders a 5-component cost-mix bar,
+a dual-marker quota pace gauge (actual spend vs elapsed period time when `--quota`
+is given), cache hit rate with estimated cache savings and `>200K` long-context
+call count, a gap-filled time trend sparkline, a 24-hour `00–23` clock activity
+strip, and max-normalized 1/8th-block comparison bars with share `%` and cache-hit
+rates in rollup tables (adapting to terminal width and degrading cleanly under
+`NO_COLOR=1` or non-TTY output). JSON `stats` responses include additive
+`efficiency` and `quota_pace` fields.
 
 `ls` shows 20 rows by default. Pass `--limit <n>` or `--all`; JSON collection
 payloads include the untruncated `total` and returned `shown` counts. `ls families`
@@ -159,9 +194,10 @@ bounds the pre-flight memory estimate to source files that may match that
 working directory. It expands `~`,
 resolves relative paths from the current directory, and matches lexical path
 segments. Sessions without `working_directory` are excluded. It applies to
-`latest`, `sample`, `ls projects`, `ls sessions`, `search`, `stats`, and
+`latest`, `sample`, `ls projects`, `ls sessions`, `search`, `stats`, `tui`, and
 `tree projects`; the latter keeps projects as containers but removes non-matching
-sessions, turns, and empty projects. `sources`, `export`, TUI, and `--no-dir`
+sessions, turns, and empty projects. `sources`, `export`, unscoped `stats`/`tui`,
+and `--no-dir`
 still walk every selected adapter root. Use `--source <slot>` or `--limit-files`
 to shrink an unscoped estimate, and `--source-root <slot>=<path>` when the
 native history itself is in a non-default location (the adapter's default tree,
@@ -305,12 +341,16 @@ do not automatically retry with broader filters or a disabled guard.
 
 ## Lite TUI
 
-`cchistory-lite-tui` is a full-screen, keyboard-driven browser over one
+`cchistory-lite-tui` (and `cchistory-lite tui`, which resolves the sibling build
+and forwards TUI flags) is a full-screen, keyboard-driven browser over one
 context-light snapshot held for the process lifetime. It accepts
-`--source-root`, `--source`, `--limit-files`, `--safe`, `--pricing`, and
-`--quota`, and can open directly at one focused object or search query:
+`--source-root`, `--source`, `--dir`, `--no-dir`, `--limit-files`, `--safe`,
+`--stats`, `--since`, `--pricing`, and `--quota`, and can open directly at one
+focused object, search query, or stats dashboard:
 
 ```bash
+cchistory-lite tui --dir /path/to/project
+cchistory-lite tui --stats --since today --quota 100
 cchistory-lite-tui --project <ref>
 cchistory-lite-tui --session <ref>
 cchistory-lite-tui --turn <ref>
@@ -327,19 +367,32 @@ Up/Down or j/k   move cursor          Tab / Shift+Tab   next / previous pane
 PgUp/PgDn        page                 Enter             drill into the focused pane
 g / G             first / last         Esc               back or close an overlay
 p / S             projects / sessions  t / d             turns / detail pane
-/                 search              i                 usage & cost stats
-s                 source status       ?                 help
+/                 search (Ctrl+F: replies)  i            usage & cost stats
+y / Y             copy resume / Q&A    R                 exit and print resume command
+s                 source status        ?                 help
 r                 refresh from disk    q                 quit and release snapshot
 ```
 
-In the usage stats dashboard (`i`), four panels (`By project`, `By model`,
-`By source`, and `By day`/`week`/`month`) show tokens, `models.dev` reference list
-USD cost, multiplier-adjusted USD cost, and period quota usage together:
+In the usage stats dashboard (`i`), four fixed-column panels (`By project`, `By model`,
+`By source`, and `By hour`/`hour_of_day`/`day`/`week`/`month`) show max-normalized
+1/8th-block bars, tokens, multiplier-adjusted USD cost, cache hit rates,
+a 5-component cost-mix bar, a diagnostics strip (cache savings, `>200K` tier
+calls, and `00–23h` clock rhythm), a gap-filled trend sparkline, and a dual-marker
+period quota pace gauge:
 press `Tab`/`1-4` to focus a panel, `Space`/`Enter` to toggle multi-dimensional
-cross-filters (`c` clears), `t`/`b`/`w`/`o` to cycle time window, bucket, week
-reset mode, or sort order, `v` to open the full-width matrix table, `m` to
-calibrate per-model/per-component multipliers and aliases in memory (`+`/`-`,
-`0`/`1`/`u`, `a` alias, `e` value, `R` reset), and `$` to set a period USD quota.
+cross-filters (`c` clears), `t`/`b`/`w`/`o` to cycle time window (`today`/`24h`
+auto-switches the time panel to gap-filled `hour` unless `b` was pinned manually),
+bucket (including `hour_of_day` `00–23`), week reset mode, or sort order, `v` to
+open the Matrix breakdown table (`g` cycles `Project × Model` / `Model × Time` /
+`Project × Time` / `All 4`; shows `In`/`CR`/`CW`/`Out`/`Hit`/`Mult`/`List$`/`Adj$`,
+`←/→` toggles columns on narrow terminals, and a pinned bottom inspector shows the
+selected row's complete untruncated labels and metrics), `S` to
+open the Top Sessions ranking (`Enter` jumps directly into that session in the
+browser, and `i` returns to the preserved stats view), `m` to calibrate
+per-model/per-component multipliers and aliases in memory (`+`/`-`, `0`/`1`/`u`,
+`a` alias, `e` value, `R` reset), `E` to export the calibrated pricing config JSON
+(checked against `.cchistory`, `cchistory.sqlite`, symlinks, and native source
+roots), and `$` to set a period USD quota.
 Both CLI `stats` and TUI use the bundled offline `models.dev/api.json` snapshot,
 supplemented with missing direct-provider models from a pinned LiteLLM snapshot
 (plus local `--pricing` / `CCHISTORY_PRICING_CONFIG` overrides, see
@@ -359,12 +412,16 @@ base rates. See [pricing sources and accounting comparisons](../research/2026-11
 for the manual catalog refresh and reproducible ccusage comparison.
 
 The interactive TUI uses the alternate screen and raw keyboard input. Search
-queries of one to three characters wait for Enter; queries of four or more
-characters run automatically as you type. Startup and refresh scans are
-context-light. Press Enter on the Detail pane to load full conversation context
-for only that session. A failed refresh keeps the previous complete snapshot
-available. When stdout is not interactive, the TUI renders one fixed snapshot
-frame and exits 0.
+auto-runs from 2 characters for CJK queries and from 4 characters for Latin
+queries (shorter queries run on Enter). Inside search, press `Ctrl+F` to toggle
+between prompt/title search and full-conversation search (which runs a one-time
+context-light rescan retaining masked assistant replies). Startup and refresh
+scans are context-light. Press Enter on the Detail pane to load full conversation
+context for only that session. `y` copies the active session's resume command
+(via OSC 52 and native clipboard tools), `Y` copies the active turn's prompt and
+assistant reply, and `R` exits the TUI and prints the resume command directly to
+stdout. A failed refresh keeps the previous complete snapshot available. When
+stdout is not interactive, the TUI renders one fixed snapshot frame and exits 0.
 
 ## One-Way Export
 
@@ -378,9 +435,11 @@ cchistory-lite export --format jsonl --out -
 ```
 
 JSON and JSONL output carry the schema marker
-`cchistory-lite-export/v1`. Lite has no import command, and Full must not treat
-this output as a restorable evidence bundle because it does not contain copied
-raw parser input.
+`cchistory-lite-export/v1`. Markdown export stays context-light while retaining
+masked user prompts and assistant replies, grouping conversations by session with
+titles, metadata, and `Resume` commands. Lite has no import command, and Full must
+not treat this output as a restorable evidence bundle because it does not contain
+copied raw parser input.
 
 ## Canonical Semantics Contract
 

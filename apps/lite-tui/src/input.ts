@@ -13,6 +13,11 @@ export type LiteInputEffect =
   | { type: "action"; action: LiteBrowserAction }
   | { type: "refresh" }
   | { type: "load-context" }
+  | { type: "export-pricing"; destination: string }
+  | { type: "copy-resume" }
+  | { type: "copy-content" }
+  | { type: "exit-print-resume" }
+  | { type: "toggle-search-scope" }
   | { type: "exit" }
   | { type: "none" };
 
@@ -26,6 +31,10 @@ export function resolveLiteInputEffect(state: LiteBrowserState, key: LiteKey): L
   if (key.name === "escape") {
     if (state.overlay !== "none") return action({ type: "close-overlay" });
     return action({ type: "retreat" });
+  }
+
+  if (state.mode === "search" && state.overlay === "none" && key.ctrl && key.input === "f") {
+    return { type: "toggle-search-scope" };
   }
 
   const editingSearch = state.mode === "search" && state.focusPane === "projects" && state.overlay === "none";
@@ -50,6 +59,12 @@ export function resolveLiteInputEffect(state: LiteBrowserState, key: LiteKey): L
         return action({ type: "toggle-stats" });
       case "r":
         return { type: "refresh" };
+      case "y":
+        return state.overlay === "none" ? { type: "copy-resume" } : { type: "none" };
+      case "Y":
+        return state.overlay === "none" ? { type: "copy-content" } : { type: "none" };
+      case "R":
+        return state.overlay === "none" ? { type: "exit-print-resume" } : { type: "none" };
       case "p":
         return action({ type: "set-browse-scope", scope: "projects" });
       case "S":
@@ -92,7 +107,13 @@ function resolveStatsInputEffect(state: LiteBrowserState, key: LiteKey): LiteInp
   const stats = state.stats;
   if (stats.editing) {
     if (key.name === "escape") return action({ type: "stats-edit-cancel" });
-    if (key.name === "return") return action({ type: "stats-edit-commit" });
+    if (key.name === "return") {
+      if (stats.editing.target === "export_path") {
+        const destination = stats.editing.value.trim() || stats.editing.placeholder || "./cchistory-pricing.json";
+        return { type: "export-pricing", destination };
+      }
+      return action({ type: "stats-edit-commit" });
+    }
     if (key.name === "backspace" || key.name === "delete") return action({ type: "stats-edit-backspace" });
     if (isPrintable(key)) return action({ type: "stats-edit-char", char: key.input });
     return { type: "none" };
@@ -115,8 +136,16 @@ function resolveStatsInputEffect(state: LiteBrowserState, key: LiteKey): LiteInp
   if (key.name === "down" || key.input === "j") return action({ type: "stats-move", delta: 1 });
   if (key.name === "pageup") return action({ type: "stats-move", delta: -10 });
   if (key.name === "pagedown") return action({ type: "stats-move", delta: 10 });
-  if (key.name === "home" || key.input === "g") return action({ type: "stats-jump", edge: "first" });
+  if (key.name === "home" || (key.input === "g" && stats.view !== "matrix")) {
+    return action({ type: "stats-jump", edge: "first" });
+  }
   if (key.name === "end" || key.input === "G") return action({ type: "stats-jump", edge: "last" });
+
+  if (stats.view === "matrix") {
+    if (key.input === "g") return action({ type: "stats-cycle-matrix-group" });
+    if (key.name === "left" || key.input === "h") return action({ type: "stats-matrix-col-page", delta: -1 });
+    if (key.name === "right" || key.input === "l") return action({ type: "stats-matrix-col-page", delta: 1 });
+  }
 
   if (stats.view === "multipliers") {
     if (key.name === "left" || key.input === "h") return action({ type: "stats-multiplier-col", delta: -1 });
@@ -145,11 +174,14 @@ function resolveStatsInputEffect(state: LiteBrowserState, key: LiteKey): LiteInp
       default:
         break;
     }
-  } else {
+  } else if (stats.view !== "matrix") {
     if (key.name === "left" || key.input === "h") return action({ type: "stats-cycle-quadrant", reverse: true });
     if (key.name === "right" || key.input === "l") return action({ type: "cycle-stats-dimension" });
     if ((key.input === " " || key.name === "return") && stats.view === "quad") {
       return action({ type: "stats-toggle-selection" });
+    }
+    if (key.name === "return" && stats.view === "sessions") {
+      return action({ type: "open-stats-session" });
     }
     switch (key.input) {
       case "1":
@@ -178,8 +210,12 @@ function resolveStatsInputEffect(state: LiteBrowserState, key: LiteKey): LiteInp
       return { type: "refresh" };
     case "v":
       return action({ type: "stats-toggle-view", view: "matrix" });
+    case "S":
+      return action({ type: "stats-toggle-view", view: "sessions" });
     case "m":
       return action({ type: "stats-toggle-view", view: "multipliers" });
+    case "E":
+      return action({ type: "stats-start-edit", target: "export_path" });
     case "t":
       return action({ type: "stats-cycle-time-preset" });
     case "b":

@@ -30,10 +30,14 @@ test("generated snapshots preserve model aliases and exact upstream provenance",
   assert.ok(source.includes('MODEL_PRICING_CATALOG_SOURCES = ["https://fixture.example/prices.json"]'));
 });
 
-test("official Fast supplement preserves distinct short/long-context rates and upstream precedence", () => {
+test("official price supplements preserve distinct rates and upstream precedence", () => {
   const catalog = applyOfficialPriceSupplements({});
   assert.deepEqual(catalog["grok-4.7-build-fast"].prices, { input: 4, output: 12, cache_read: 1,
     context_tiers: [{ above_input_tokens: 200000, input: 6, output: 18, cache_read: 1.5 }] });
-  const upstream = { id: "grok-4.7-build-fast", provider: "xai", prices: { input: 5, output: 15 } };
-  assert.equal(applyOfficialPriceSupplements({ "grok-4.7-build-fast": upstream })["grok-4.7-build-fast"], upstream);
+  assert.deepEqual(catalog["gemini-4-neon"].prices, { input: 3, output: 15, cache_read: 0.15 });
+  const upstreamGrok = { id: "grok-4.7-build-fast", provider: "xai", prices: { input: 5, output: 15 } };
+  const upstreamNeon = { id: "gemini-4-neon", provider: "google", prices: { input: 2.5, output: 12.5, cache_read: 0.125 } };
+  const merged = applyOfficialPriceSupplements({ "grok-4.7-build-fast": upstreamGrok, "gemini-4-neon": upstreamNeon });
+  assert.equal(merged["grok-4.7-build-fast"], upstreamGrok);
+  assert.equal(merged["gemini-4-neon"], upstreamNeon);
 });

@@ -164,18 +164,59 @@ test("CLI stats --export-pricing emits valid template and blocks unsafe destinat
   }
 });
 
-test("CLI stats defaults to CWD scope, filters by --model/--since/--tz, and forwards TUI pricing flags", async () => {
+test("CLI stats defaults to machine-wide scope, honors explicit --dir, supports --by hour/session, and forwards TUI flags", async () => {
   const snapshot = await getMultiSourceSnapshot();
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-stats-filter-"));
   try {
     const defaultRun = captureCliIo(tempDir, { scan: async () => snapshot });
     assert.equal(await runLiteCli(["stats", "--json"], defaultRun.io), 0);
-    const scopedJson = JSON.parse(defaultRun.stdout.join("")) as {
+    const defaultJson = JSON.parse(defaultRun.stdout.join("")) as {
       breakdown?: UsageBreakdownSnapshot;
       overview: { total_turns: number };
+      efficiency?: { cache_hit_ratio: number | null; priced_call_count: number };
     };
-    // No sessions ran inside fresh tempDir, verifying default CWD scope stays enforced
+    assert.ok(defaultJson.overview.total_turns > 0);
+    assert.ok(defaultJson.efficiency);
+    assert.ok((defaultJson.breakdown?.by_session?.rows.length ?? 0) > 0);
+    assert.equal(defaultJson.breakdown?.hourly_profile?.length, 24);
+
+    // Explicit --dir still narrows stats strictly to that working directory
+    const scopedRun = captureCliIo(tempDir, { scan: async () => snapshot });
+    assert.equal(await runLiteCli(["stats", "--dir", tempDir, "--json"], scopedRun.io), 0);
+    const scopedJson = JSON.parse(scopedRun.stdout.join("")) as {
+      overview: { total_turns: number };
+    };
     assert.equal(scopedJson.overview.total_turns, 0);
+
+    // --by session and --by hour
+    const bySession = captureCliIo(tempDir, { scan: async () => snapshot });
+    assert.equal(await runLiteCli(["stats", "--by", "session"], bySession.io), 0);
+    assert.match(bySession.stdout.join(""), /By session/);
+
+    const byHour = captureCliIo(tempDir, { scan: async () => snapshot });
+    assert.equal(await runLiteCli(["stats", "--by", "hour", "--json"], byHour.io), 0);
+    const hourPayload = JSON.parse(byHour.stdout.join("")) as { rollup?: { dimension: string; rows: Array<{ key: string }> } };
+    assert.equal(hourPayload.rollup?.dimension, "hour");
+    assert.ok(hourPayload.rollup?.rows.every((r) => /^\d{4}-\d{2}-\d{2} \d{2}:00$/u.test(r.key)));
+
+    // --since today auto-selects hourly bucketing and renders visual summary
+    const todayRun = captureCliIo(tempDir, { scan: async () => snapshot, now: () => Date.parse("2026-11-18T18:00:00.000Z") });
+    assert.equal(await runLiteCli(["stats", "--since", "today", "--quota", "100", "--json"], todayRun.io), 0);
+    const todayJson = JSON.parse(todayRun.stdout.join("")) as {
+      breakdown?: UsageBreakdownSnapshot;
+      quota_pace?: { period_label: string };
+    };
+    assert.equal(todayJson.breakdown?.time_dimension, "hour");
+    assert.equal(todayJson.quota_pace?.period_label, "today");
+
+    // Visual summary blocks render cleanly in human output (cost mix, efficiency, share bars, top sessions)
+    const visualRun = captureCliIo(tempDir, { scan: async () => snapshot });
+    assert.equal(await runLiteCli(["stats", "--quota", "100"], visualRun.io), 0);
+    const visualText = visualRun.stdout.join("");
+    assert.match(visualText, /- Quota:\s+\[/);
+    assert.match(visualText, /- Efficiency:\s+Cache Hit/);
+    assert.match(visualText, /Top sessions/);
+    assert.match(visualText, /Share/);
 
     const modelFilter = captureCliIo(tempDir, { scan: async () => snapshot });
     assert.equal(

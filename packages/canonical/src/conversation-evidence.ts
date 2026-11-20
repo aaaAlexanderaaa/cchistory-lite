@@ -125,6 +125,7 @@ export function searchConversationEvidence(input: {
   query: string;
   directoryScope?: string;
   projectId?: string;
+  sourceIds?: readonly string[];
   projectTurnIds?: ReadonlySet<string>;
   limit?: number;
   offset?: number;
@@ -135,6 +136,7 @@ export function searchConversationEvidence(input: {
   const plan = buildSearchPlan(input.query);
   const top = new Set(filterTopLevelSessions(input.sessions, input.related_work).map(s => s.id));
   const scoped = new Set(filterSessionsByDirectoryScope(input.sessions, input.directoryScope).map(s => s.id));
+  const allowedSources = input.sourceIds?.length ? new Set(input.sourceIds) : undefined;
   const sessions = new Map(input.sessions.map(s => [s.id, s]));
   const parents = new Map<string, string>();
   for (const relation of input.related_work) {
@@ -153,6 +155,10 @@ export function searchConversationEvidence(input: {
   for (const message of input.messages) {
     const parent = root(message.session_id);
     if (!scoped.has(message.session_id) || !scoped.has(parent) || !top.has(parent)) continue;
+    if (allowedSources) {
+      const sourceId = sessions.get(message.session_id)?.source_id ?? sessions.get(parent)?.source_id;
+      if (!sourceId || !allowedSources.has(sourceId)) continue;
+    }
     if (input.projectId && (message.turn_id === null ? sessions.get(message.session_id)?.primary_project_id !== input.projectId
       : !input.projectTurnIds?.has(message.turn_id))) continue;
     if (!matchesSearchPlan(message.text, plan)) continue;

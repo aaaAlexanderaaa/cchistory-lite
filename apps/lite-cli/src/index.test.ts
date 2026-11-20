@@ -1168,77 +1168,33 @@ test("the CLI version matches the package manifest", async () => {
   assert.equal(captured.stdout.join(""), `${VERSION}\n`);
 });
 
-test("Lite CLI help documents latest, limits, and directory scope", async () => {
+test("Lite CLI help renders a concise human-first synopsis and delegates full flags to help <command>", async () => {
   const captured = captureIo(repoRoot);
   assert.equal(await runLiteCli(["help"], captured.io), 0);
   const help = captured.stdout.join("");
+  const lines = help.trimEnd().split("\n");
+  assert.ok(lines.length <= 32, `expected concise main help <= 32 lines, got ${lines.length}`);
+  assert.match(help, /cchistory-lite tui /);
   assert.match(help, /cchistory-lite latest \[sessions\|turns\] \[N\]/);
-  assert.match(help, /cchistory-lite sample \[N\]/);
-  assert.match(help, /--limit <n>/);
-  assert.match(help, /--all/);
-  assert.match(help, /--dir <path>/);
-  assert.match(help, /latest sessions is one record per session/);
-  assert.match(help, /latest turns is one record per UserTurn/);
-  assert.match(help, /sessions with 0 turns are omitted/);
-  assert.match(help, /last real message activity/);
-  assert.match(help, /Sessions without a\nworking directory are excluded/);
-  assert.match(help, /does not open parent project folders or later Codex cwd lines/);
-  assert.match(help, /default: current directory/);
-  assert.match(help, /can use a lot of memory/);
-  assert.match(help, /TUI and export still scan every selected source/);
-  assert.match(help, /--offset <n>/);
-  assert.match(help, /--project <ref>/);
-  assert.match(help, /--by <dimension>/);
-  assert.match(help, /--format jsonl\|json\|markdown/);
-  assert.match(help, /--out <file\|->/);
-  assert.match(help, /cchistory-lite help \[command\]/);
-  // store/db appear only in the closing line that documents their absence.
-  const knownFlags = new Set([
-    "diagnostics",
-    "source-root",
-    "source",
-    "limit-files",
-    "limit",
-    "offset",
-    "project",
-    "by",
-    "model",
-    "from",
-    "to",
-    "since",
-    "tz",
-    "week-mode",
-    "sort",
-    "pricing",
-    "alias",
-    "multiplier",
-    "cache-read-multiplier",
-    "cache-write-multiplier",
-    "quota",
-    "export-pricing",
-    "explain-pricing",
-    "format",
-    "out",
-    "dir",
-    "request", "sql", "sql-file", "params", "complete", "idle-timeout",
-    "safe",
-    "json",
-    "help",
-    "version",
-    "all",
-    "no-dir",
-    "store",
-    "db",
-  ]);
-  const documentedFlags = new Set([...help.matchAll(/--([a-z][a-z-]*)/gu)].map((match) => match[1]!));
+  assert.match(help, /cchistory-lite search <query>/);
+  assert.match(help, /cchistory-lite show session\|turn\|project\|source <ref>/);
+  assert.match(help, /cchistory-lite stats /);
+  assert.match(help, /cchistory-lite export --format jsonl\|json\|markdown/);
+  assert.match(help, /cchistory-lite help <command>/);
+  assert.match(help, /cchistory-lite agent/);
   assert.match(help, /NODE_OPTIONS='--max-old-space-size=8192'/);
-  documentedFlags.delete("max-old-space-size"); // Node option, not a Lite argument.
+
+  // Every documented flag in main help is a valid Lite option (besides Node's --max-old-space-size and --store/--db note).
+  const contract = buildAgentContract("0.0.0-test");
+  const knownFlags = new Set<string>(["store", "db"]);
+  for (const flag of contract.global_flags) knownFlags.add(flag.name.replace(/^--/u, ""));
+  for (const cmd of Object.values(contract.commands)) {
+    for (const flag of cmd.flags) knownFlags.add(flag.name.replace(/^--/u, ""));
+  }
+  const documentedFlags = new Set([...help.matchAll(/--([a-z][a-z-]*)/gu)].map((match) => match[1]!));
+  documentedFlags.delete("max-old-space-size");
   for (const flag of documentedFlags) {
     assert.ok(knownFlags.has(flag), `help documents unknown option --${flag}`);
-  }
-  for (const flag of knownFlags) {
-    if (flag === "store" || flag === "db") continue;
-    assert.ok(documentedFlags.has(flag), `help omits accepted option --${flag}`);
   }
 });
 
@@ -1926,7 +1882,10 @@ test("Lite CLI agent contract flags match the parser in both directions", async 
   // The parser's full flag vocabulary; like the help test's knownFlags, drift
   // here must be reflected in the contract before this audit can pass.
   const parserFlags = [
-    "--source-root", "--source", "--limit-files", "--limit", "--offset", "--project", "--by",
+    "--source-root", "--source", "--limit-files", "--limit", "--offset", "--project",
+    "--session", "--turn", "--search", "--content", "--group-by", "--prompts-only",
+    "--full", "--compact", "--stats", "--color", "--no-color",
+    "--by",
     "--model", "--from", "--to", "--since", "--tz", "--week-mode", "--sort",
     "--pricing", "--alias", "--multiplier", "--cache-read-multiplier", "--cache-write-multiplier",
     "--quota", "--export-pricing", "--explain-pricing",
@@ -1959,6 +1918,11 @@ test("Lite CLI agent contract flags match the parser in both directions", async 
       case "--limit": return [name, "1"];
       case "--offset": return [name, "0"];
       case "--project": return [name, project.project_id];
+      case "--session": return [name, session.id];
+      case "--turn": return [name, snapshot.listResolvedTurns()[0]!.id];
+      case "--search": return [name, "mock"];
+      case "--content": return [name, "conversation"];
+      case "--group-by": return [name, "session"];
       case "--by": return [name, "source"];
       case "--model": return [name, "gpt"];
       case "--from": return [name, "2026-01-01"];
@@ -2058,19 +2022,17 @@ test("Lite CLI agent skill and guide print the shipped docs", async () => {
   assert.equal(await runLiteCli(["agent", "skill", "extra"], extra.io), 2);
 });
 
-test("Lite CLI help leads with a direct scoped read and prints optional command contracts", async () => {
+test("Lite CLI help leads with everyday commands and prints per-command contracts", async () => {
   const captured = captureIo(repoRoot);
   assert.equal(await runLiteCli(["help"], captured.io), 0);
   const help = captured.stdout.join("");
-  const head = help.split("\n").slice(0, 20).join("\n");
+  const head = help.split("\n").slice(0, 26).join("\n");
+  assert.match(head, /cchistory-lite tui/);
+  assert.match(head, /cchistory-lite latest/);
+  assert.match(head, /cchistory-lite search/);
+  assert.match(head, /cchistory-lite stats/);
   assert.match(head, /cchistory-lite agent/);
-  assert.match(head, /latest sessions 10 --dir/);
-  assert.match(head, /sources --json/);
-  assert.match(head, /no history scan/);
-  assert.match(head, /first valid read/);
-  assert.match(head, /Keep stderr/);
-  assert.doesNotMatch(head, /sample --json/);
-  assert.match(help, /cchistory-lite agent \[skill\|guide\]/);
+  assert.match(head, /cchistory-lite help <command>/);
 
   const sourcesHelp = captureIo(repoRoot);
   assert.equal(await runLiteCli(["help", "sources"], sourcesHelp.io), 0);

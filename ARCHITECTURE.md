@@ -75,9 +75,14 @@ wins before separator fallback; equal-length conflicting prices remain unpriced.
 aliases and explicit price overrides remain configurable. Each synchronous aggregation reuses one
 resolution per raw model; later calibration reads the current config without a persistent cache.
 `usage-pricing.ts` selects whole-request context rates using the individual call's total input,
-including cache, before aggregation. Turn-only evidence retains base-rate estimates. The manual
-refresh script owns upstream downloads; CLI/TUI execution uses bundled prices and explicit local
-configuration. Source paths, comparison evidence and remaining format coverage are recorded in
+including cache, before aggregation, and tracks per-call cache savings and `>200K` high-context
+tier call counts. Turn-only evidence retains base-rate estimates. `usage-time.ts` buckets local
+hours (`hour`), days, weeks, and months and selects hourly granularity automatically for `today`,
+`24h`, and custom ranges up to 48 hours. `usage-diagnostics.ts` derives cache hit rates, 5-part
+cost shares, dual-marker quota pace projections, 24-hour activity profiles, and enriched
+`by_session` rollups with subagent and tool counts. The manual refresh script owns upstream
+downloads; CLI/TUI execution uses bundled prices and explicit local configuration. Source paths,
+comparison evidence and remaining format coverage are recorded in
 [the ccusage accounting comparison](docs/research/2026-11-17-ccusage-accounting.md).
 
 ### `@cchistory/domain`
@@ -99,7 +104,8 @@ Storage-neutral semantics shared by every reader:
 - collection row projection, predicates, ordering, pagination and common templates (`query.ts`)
 - search matching and ranking (`search.ts`)
 - related-work projection (`related-work.ts`)
-- usage aggregation (`usage.ts`)
+- usage aggregation, offline pricing, and diagnostics (`usage.ts`, `usage-pricing.ts`,
+  `usage-time.ts`, `usage-diagnostics.ts`, `usage-breakdown.ts`)
 
 This layer decides *what history means*. It must never learn where history is stored.
 
@@ -203,8 +209,13 @@ on exit/EOF or configurable idle expiry (300 seconds by default). CLI/shell late
 v2 operations and SQL use shared canonical templates/execution; compatibility is input/output
 adaptation, with the replaced selection branches removed. Neither surface contains history
 semantics of its own — anything they compute would be a bug in
-layering. CLI `search` projects matching turns into one row per top-level session; the TUI
-search pane still lists turns.
+layering. CLI `search` defaults to conversation search (`--content conversation`, grouping hits by
+top-level session or `--group-by message`; `--prompts-only` restricts matching to titles and user
+prompts). The TUI search pane defaults to prompt/title matching and switches to full conversation
+search on demand with `Ctrl+F`. Terminal visualization (`stats-visuals.ts` in both surfaces),
+single-source CLI help (`help.ts` derived from `agent-contract.ts`), and TUI clipboard copy
+(`clipboard.ts`, OSC 52 + platform fallback) render or forward canonical snapshot data without
+computing usage or search semantics.
 
 Canonical `conversation-evidence.ts` owns evidence ordering, content-bound cursors, bounded
 Unicode text pages and conversation search with delegated hits grouped under their parent.
@@ -226,7 +237,8 @@ Reading full assistant/tool context for every turn is the expensive path, so it 
 
 | Caller | Context mode |
 | --- | --- |
-| `sources`, `ls`, `latest`, `tree`, `search`, SQL `query`, `show project`, `show source`, `stats`, markdown `export`, `shell` startup, TUI startup | `none` — tool/system display formatting skipped, context dropped after deriving turns |
+| `sources`, `ls`, `latest`, `tree`, `search --prompts-only`, SQL `query`, `show project`, `show source`, `stats`, `shell` startup, TUI startup | `none` — tool/system display formatting skipped, context dropped after deriving turns |
+| CLI `search` (default conversation), markdown `export`, TUI `Ctrl+F` conversation search, `query`/`shell` `content: "conversation"` | `none` with `retainConversationEvidence: true` — masked user and assistant text retained without heavy tool/system contexts |
 | `show session <complete-canonical-id>` | targeted `full` scan of that one logical session |
 | `show session <fuzzy-ref>`, `show turn <ref>` | one `matching` scan; context retained only for possible resolver matches |
 | JSON/JSONL `export` | `full` |

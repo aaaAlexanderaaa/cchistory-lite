@@ -38,7 +38,14 @@ import {
   type UsageTokenQuantities,
 } from "./usage-pricing.js";
 import { resolveEffectiveQuotaLimitUsd } from "./usage-pricing-config.js";
-import { resolveUsageTimezone } from "./usage-time.js";
+import { resolveDefaultTimeBucket, resolveUsageTimezone } from "./usage-time.js";
+import {
+  computeHourlyProfile,
+  computeQuotaPace,
+  computeUsageEfficiency,
+  densifyHourOfDayRollupRows,
+  enrichSessionRollup,
+} from "./usage-diagnostics.js";
 
 export function countUsageTurns(
   rows: readonly UsageAggregationRow[],
@@ -77,7 +84,12 @@ export function computeUsageRollup(
     ? 0
     : filterUsageRows(baseRows, { ...params.filters, include_known_zero_token: true }, sessionsById)
         .filter((row) => row.zero_token_reason && !row.has_token_usage).length;
-  return buildRollupFromRows(params.dimension, rows, excludedCount, params.filters);
+  const rollup = buildRollupFromRows(params.dimension, rows, excludedCount, params.filters);
+  if (params.dimension === "session") {
+    const bySession = groupRowsByKey(rows, "session");
+    return enrichSessionRollup(rollup, bySession, params);
+  }
+  return rollup;
 }
 
 export function buildOverviewFromRows(
@@ -88,23 +100,41 @@ export function buildOverviewFromRows(
   const turnCount = countUsageTurns(rows);
   const turnsWithTokenUsage = countUsageTurns(rows, (row) => row.has_token_usage);
   const turnsWithPrimaryModel = countUsageTurns(rows, (row) => row.model !== "unknown");
+  const totalInput = sumUsageRows(rows, "input_tokens");
+  const totalCacheRead = sumUsageRows(rows, "cache_read_input_tokens");
+  const totalCacheWrite = sumUsageRows(rows, "cache_creation_input_tokens");
+  const totalCached = sumUsageRows(rows, "cached_input_tokens");
+  const totalOutput = sumUsageRows(rows, "output_tokens");
+  const totalReasoning = sumUsageRows(rows, "reasoning_output_tokens");
+  const totalBillableOutput = sumUsageRows(rows, "billable_output_tokens");
+  const cost = computeCostForRows(rows, filters);
   return {
     generated_at: nowIso(),
     total_turns: turnCount,
     turns_with_token_usage: turnsWithTokenUsage,
     turn_coverage_ratio: turnCount === 0 ? 0 : turnsWithTokenUsage / turnCount,
     turns_with_primary_model: turnsWithPrimaryModel,
-    total_input_tokens: sumUsageRows(rows, "input_tokens"),
-    total_cache_read_input_tokens: sumUsageRows(rows, "cache_read_input_tokens"),
-    total_cache_creation_input_tokens: sumUsageRows(rows, "cache_creation_input_tokens"),
-    total_cached_input_tokens: sumUsageRows(rows, "cached_input_tokens"),
-    total_output_tokens: sumUsageRows(rows, "output_tokens"),
-    total_reasoning_output_tokens: sumUsageRows(rows, "reasoning_output_tokens"),
-    total_billable_output_tokens: sumUsageRows(rows, "billable_output_tokens"),
+    total_input_tokens: totalInput,
+    total_cache_read_input_tokens: totalCacheRead,
+    total_cache_creation_input_tokens: totalCacheWrite,
+    total_cached_input_tokens: totalCached,
+    total_output_tokens: totalOutput,
+    total_reasoning_output_tokens: totalReasoning,
+    total_billable_output_tokens: totalBillableOutput,
     total_tokens: sumUsageRows(rows, "total_tokens"),
     usage_event_count: rows.length,
     excluded_zero_token_turns: excludedCount > 0 ? excludedCount : undefined,
-    cost: computeCostForRows(rows, filters),
+    cost,
+    efficiency: computeUsageEfficiency(
+      {
+        input_tokens: totalInput,
+        cache_read_input_tokens: totalCacheRead,
+        cache_creation_input_tokens: totalCacheWrite,
+        reasoning_output_tokens: totalReasoning,
+        billable_output_tokens: totalBillableOutput,
+      },
+      cost,
+    ),
   };
 }
 
@@ -160,21 +190,34 @@ export function buildRollupFromRows(
       const members = groupRows.get(row.key)!;
       const turnCount = countUsageTurns(members);
       const withUsage = countUsageTurns(members, (member) => member.has_token_usage);
+      const cost = computeCostForRows(members, filters);
       return {
         ...row,
         turn_count: turnCount,
         turns_with_token_usage: withUsage,
         turns_with_primary_model: countUsageTurns(members, (member) => member.model !== "unknown"),
         turn_coverage_ratio: turnCount === 0 ? 0 : withUsage / turnCount,
-        cost: computeCostForRows(members, filters),
+        cost,
+        efficiency: computeUsageEfficiency(
+          {
+            input_tokens: row.total_input_tokens,
+            cache_read_input_tokens: row.total_cache_read_input_tokens ?? 0,
+            cache_creation_input_tokens: row.total_cache_creation_input_tokens ?? 0,
+            reasoning_output_tokens: row.total_reasoning_output_tokens,
+            billable_output_tokens: row.total_billable_output_tokens ?? row.total_output_tokens,
+          },
+          cost,
+        ),
       };
     })
     .sort((left, right) => compareUsageRollupRows(dimension, left, right));
 
+  const finalRows = dimension === "hour_of_day" ? densifyHourOfDayRollupRows(rollupRows) : rollupRows;
+
   return {
     generated_at: nowIso(),
     dimension,
-    rows: rollupRows,
+    rows: finalRows,
     excluded_zero_token_turns: excludedCount > 0 ? excludedCount : undefined,
   };
 }
@@ -259,7 +302,15 @@ export function computeUsageBreakdown(
 
   const timeZone = resolveUsageTimezone(params.filters.timezone ?? params.filters.pricing?.timezone);
   const weekMode = params.filters.week_mode ?? params.filters.pricing?.quota?.week_mode ?? "rolling_7d";
-  const timeDimension = params.time_dimension ?? params.filters.time_dimension ?? "day";
+  const timeDimension =
+    params.time_dimension ??
+    params.filters.time_dimension ??
+    resolveDefaultTimeBucket({
+      preset: params.filters.time_preset,
+      after_ts: params.filters.after_ts,
+      before_ts: params.filters.before_ts,
+      now_ms: params.filters.now_ms,
+    });
   const quotaLimitUsd = resolveEffectiveQuotaLimitUsd(
     params.filters.pricing,
     params.filters.time_preset ?? "all",
@@ -271,6 +322,8 @@ export function computeUsageBreakdown(
   const by_model = buildRollupFromRows("model", rows, excludedCount, params.filters);
   const by_source = buildRollupFromRows("source", rows, excludedCount, params.filters);
   const by_time = buildRollupFromRows(timeDimension, rows, excludedCount, params.filters);
+  const rawBySession = buildRollupFromRows("session", rows, excludedCount, params.filters);
+  const by_session = enrichSessionRollup(rawBySession, groupRowsByKey(rows, "session"), params);
   const matrix = params.matrix_dimensions?.length
     ? buildMatrixFromRows(params.matrix_dimensions, rows, excludedCount, params.filters, params.sort_by)
     : undefined;
@@ -280,6 +333,23 @@ export function computeUsageBreakdown(
     quotaLimitUsd,
     rows,
   );
+
+  const resolutionsCache = new Map<string, ResolvedModelPricing>();
+  const hourly_profile = computeHourlyProfile(rows, (row) => {
+    let resolved = resolutionsCache.get(row.model);
+    if (!resolved) {
+      resolved = resolveModelPricing(row.model, params.filters.pricing);
+      resolutionsCache.set(row.model, resolved);
+    }
+    const single = createEmptyCostBreakdown();
+    addResolvedModelUsageToCostBreakdown(single, resolved, row);
+    return single.adjusted_cost_usd;
+  });
+  const quota_pace = computeQuotaPace({
+    spentUsd: overview.cost?.adjusted_cost_usd ?? 0,
+    quotaLimitUsd,
+    filters: params.filters,
+  });
 
   return {
     generated_at: nowIso(),
@@ -293,11 +363,29 @@ export function computeUsageBreakdown(
     by_model,
     by_source,
     by_time,
+    by_session,
     matrix,
     model_resolutions,
     quota_limit_usd: quotaLimitUsd,
     quota_percent: overview.cost?.quota_percent,
+    efficiency: overview.efficiency,
+    quota_pace,
+    hourly_profile,
   };
+}
+
+function groupRowsByKey(
+  rows: readonly UsageAggregationRow[],
+  dimension: UsageStatsDimension,
+): Map<string, UsageAggregationRow[]> {
+  const map = new Map<string, UsageAggregationRow[]>();
+  for (const row of rows) {
+    const key = usageDimensionKey(row, dimension);
+    const list = map.get(key);
+    if (list) list.push(row);
+    else map.set(key, [row]);
+  }
+  return map;
 }
 
 export function buildMatrixFromRows(
@@ -326,21 +414,38 @@ export function buildMatrixFromRows(
   for (const bucket of groups.values()) {
     const members = bucket.members;
     const turnCount = countUsageTurns(members);
+    const totalInput = sumUsageRows(members, "input_tokens");
+    const totalCacheRead = sumUsageRows(members, "cache_read_input_tokens");
+    const totalCacheWrite = sumUsageRows(members, "cache_creation_input_tokens");
+    const totalOutput = sumUsageRows(members, "output_tokens");
+    const totalReasoning = sumUsageRows(members, "reasoning_output_tokens");
+    const totalBillableOutput = sumUsageRows(members, "billable_output_tokens");
+    const cost = computeCostForRows(members, filters);
     matrixRows.push({
       keys: bucket.keys,
       labels: bucket.labels,
       dimensions: dims,
       turn_count: turnCount,
       usage_event_count: members.length,
-      total_input_tokens: sumUsageRows(members, "input_tokens"),
-      total_cache_read_input_tokens: sumUsageRows(members, "cache_read_input_tokens"),
-      total_cache_creation_input_tokens: sumUsageRows(members, "cache_creation_input_tokens"),
+      total_input_tokens: totalInput,
+      total_cache_read_input_tokens: totalCacheRead,
+      total_cache_creation_input_tokens: totalCacheWrite,
       total_cached_input_tokens: sumUsageRows(members, "cached_input_tokens"),
-      total_output_tokens: sumUsageRows(members, "output_tokens"),
-      total_reasoning_output_tokens: sumUsageRows(members, "reasoning_output_tokens"),
-      total_billable_output_tokens: sumUsageRows(members, "billable_output_tokens"),
+      total_output_tokens: totalOutput,
+      total_reasoning_output_tokens: totalReasoning,
+      total_billable_output_tokens: totalBillableOutput,
       total_tokens: sumUsageRows(members, "total_tokens"),
-      cost: computeCostForRows(members, filters),
+      cost,
+      efficiency: computeUsageEfficiency(
+        {
+          input_tokens: totalInput,
+          cache_read_input_tokens: totalCacheRead,
+          cache_creation_input_tokens: totalCacheWrite,
+          reasoning_output_tokens: totalReasoning,
+          billable_output_tokens: totalBillableOutput,
+        },
+        cost,
+      ),
     });
   }
 

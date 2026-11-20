@@ -1093,7 +1093,7 @@ export interface AskUserQuestionTurn {
   answers: AskUserAnswer[];
 }
 
-export type UsageStatsDimension = "model" | "project" | "source" | "host" | "day" | "week" | "month";
+export type UsageStatsDimension = "model" | "project" | "source" | "host" | "session" | "hour" | "hour_of_day" | "day" | "week" | "month";
 
 export interface UsageStatsOverview {
   generated_at: string;
@@ -1112,6 +1112,7 @@ export interface UsageStatsOverview {
   usage_event_count?: number;
   excluded_zero_token_turns?: number;
   cost?: import("./usage-pricing.js").UsageCostBreakdown;
+  efficiency?: import("./usage-pricing.js").UsageEfficiencyMetrics;
 }
 
 export interface UsageStatsRollupRow {
@@ -1132,6 +1133,8 @@ export interface UsageStatsRollupRow {
   total_tokens: number;
   usage_event_count?: number;
   cost?: import("./usage-pricing.js").UsageCostBreakdown;
+  efficiency?: import("./usage-pricing.js").UsageEfficiencyMetrics;
+  session_meta?: import("./usage-pricing.js").UsageSessionRollupMeta;
 }
 
 export interface UsageStatsRollup {

@@ -3,7 +3,7 @@
  * Excludes model pricing and aggregation rollups (owned by usage-pricing.ts and usage.ts).
  */
 
-import type { UsageTimePreset, UsageWeekMode } from "@cchistory/domain";
+import type { UsageTimeBucket, UsageTimePreset, UsageWeekMode } from "@cchistory/domain";
 
 export interface LocalTimeParts {
   year: number;
@@ -12,6 +12,7 @@ export interface LocalTimeParts {
   hour: number;
   minute: number;
   weekday: number; // 0 = Sun .. 6 = Sat
+  hourKey: string; // YYYY-MM-DD HH:00
   dayKey: string; // YYYY-MM-DD
   monthKey: string; // YYYY-MM
 }
@@ -74,6 +75,7 @@ export function extractLocalTimeParts(timestampMs: number, timeZone: string): Lo
       hour: 0,
       minute: 0,
       weekday: 4,
+      hourKey: "1970-01-01 00:00",
       dayKey: "1970-01-01",
       monthKey: "1970-01",
     };
@@ -95,6 +97,8 @@ export function extractLocalTimeParts(timestampMs: number, timeZone: string): Lo
   }
   const mm = String(month).padStart(2, "0");
   const dd = String(day).padStart(2, "0");
+  const hh = String(hour).padStart(2, "0");
+  const dayKey = `${year}-${mm}-${dd}`;
   return {
     year,
     month,
@@ -102,7 +106,8 @@ export function extractLocalTimeParts(timestampMs: number, timeZone: string): Lo
     hour,
     minute,
     weekday,
-    dayKey: `${year}-${mm}-${dd}`,
+    hourKey: `${dayKey} ${hh}:00`,
+    dayKey,
     monthKey: `${year}-${mm}`,
   };
 }
@@ -270,6 +275,126 @@ export function resolveTimeWindowBounds(
     after_date: `${localNow.monthKey}-01`,
     before_date: localNow.dayKey,
   };
+}
+
+/**
+ * Pick the default time bucket when the caller did not ask for one explicitly:
+ * short windows (`today`, `24h`, or <= 48h ranges) show hourly activity instead
+ * of collapsing into one or two day rows.
+ */
+export function resolveDefaultTimeBucket(options: {
+  preset?: UsageTimePreset;
+  after_ts?: number;
+  before_ts?: number;
+  now_ms?: number;
+}): UsageTimeBucket {
+  if (options.preset === "today" || options.preset === "24h") return "hour";
+  if (options.after_ts !== undefined) {
+    const endMs = options.before_ts ?? options.now_ms;
+    if (endMs !== undefined && Number.isFinite(endMs) && endMs >= options.after_ts) {
+      if (endMs - options.after_ts <= 48 * 3_600_000) return "hour";
+    }
+  }
+  return "day";
+}
+
+export interface QuotaPeriodWindow {
+  period_label: string;
+  window_start_ms: number;
+  window_end_ms: number;
+  now_ms: number;
+  rolling: boolean;
+}
+
+/**
+ * Resolve the calendar or rolling quota window bounds for pace/projection estimates.
+ * Returns undefined for unbounded `"all"` windows.
+ */
+export function resolveQuotaPeriodWindow(
+  preset: UsageTimePreset | undefined,
+  options: UsageTimeOptions = {},
+): QuotaPeriodWindow | undefined {
+  if (!preset || preset === "all") return undefined;
+  const timeZone = resolveUsageTimezone(options.timezone);
+  const nowMs = options.now_ms ?? Date.now();
+  const localNow = extractLocalTimeParts(nowMs, timeZone);
+
+  if (preset === "today") {
+    const startMs = localWallTimeToEpochMs(localNow.year, localNow.month, localNow.day, 0, 0, timeZone);
+    const nextDay = new Date(Date.UTC(localNow.year, localNow.month - 1, localNow.day + 1));
+    const endMs = localWallTimeToEpochMs(
+      nextDay.getUTCFullYear(),
+      nextDay.getUTCMonth() + 1,
+      nextDay.getUTCDate(),
+      0,
+      0,
+      timeZone,
+    );
+    return { period_label: "today", window_start_ms: startMs, window_end_ms: endMs, now_ms: nowMs, rolling: false };
+  }
+  if (preset === "24h") {
+    return { period_label: "24h", window_start_ms: nowMs - 86_400_000, window_end_ms: nowMs, now_ms: nowMs, rolling: true };
+  }
+  if (preset === "7d") {
+    return { period_label: "7d", window_start_ms: nowMs - 7 * 86_400_000, window_end_ms: nowMs, now_ms: nowMs, rolling: true };
+  }
+  if (preset === "30d") {
+    return { period_label: "30d", window_start_ms: nowMs - 30 * 86_400_000, window_end_ms: nowMs, now_ms: nowMs, rolling: true };
+  }
+  if (preset === "week") {
+    const weekMode = options.week_mode ?? "rolling_7d";
+    if (weekMode === "rolling_7d") {
+      return {
+        period_label: "week (rolling 7d)",
+        window_start_ms: nowMs - 7 * 86_400_000,
+        window_end_ms: nowMs,
+        now_ms: nowMs,
+        rolling: true,
+      };
+    }
+    if (weekMode === "iso_week") {
+      const mondayShift = (localNow.weekday + 6) % 7;
+      const monday = new Date(Date.UTC(localNow.year, localNow.month - 1, localNow.day - mondayShift));
+      const nextMonday = new Date(Date.UTC(localNow.year, localNow.month - 1, localNow.day - mondayShift + 7));
+      const startMs = localWallTimeToEpochMs(
+        monday.getUTCFullYear(),
+        monday.getUTCMonth() + 1,
+        monday.getUTCDate(),
+        0,
+        0,
+        timeZone,
+      );
+      const endMs = localWallTimeToEpochMs(
+        nextMonday.getUTCFullYear(),
+        nextMonday.getUTCMonth() + 1,
+        nextMonday.getUTCDate(),
+        0,
+        0,
+        timeZone,
+      );
+      return { period_label: "week (ISO)", window_start_ms: startMs, window_end_ms: endMs, now_ms: nowMs, rolling: false };
+    }
+    const startMs = findLastResetBoundaryMs(
+      nowMs,
+      timeZone,
+      options.week_start_day ?? 1,
+      options.week_reset_hour ?? 0,
+    );
+    return {
+      period_label: "week (reset)",
+      window_start_ms: startMs,
+      window_end_ms: startMs + 7 * 86_400_000,
+      now_ms: nowMs,
+      rolling: false,
+    };
+  }
+
+  // month: 1st of current local month 00:00 .. 1st of next local month 00:00
+  const startMs = localWallTimeToEpochMs(localNow.year, localNow.month, 1, 0, 0, timeZone);
+  const nextMonthYear = localNow.month === 12 ? localNow.year + 1 : localNow.year;
+  const nextMonth = localNow.month === 12 ? 1 : localNow.month + 1;
+  const endMs = localWallTimeToEpochMs(nextMonthYear, nextMonth, 1, 0, 0, timeZone);
+  return { period_label: "month", window_start_ms: startMs, window_end_ms: endMs, now_ms: nowMs, rolling: false };
 }
 
 export function parseDateOrRelativeStart(

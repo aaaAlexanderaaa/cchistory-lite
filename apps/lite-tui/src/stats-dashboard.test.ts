@@ -13,6 +13,7 @@ import { LiteBrowserModel } from "./model.js";
 import { renderLiteFrame } from "./render.js";
 import { createLiteBrowserState, reduceLiteBrowserState, type LiteBrowserAction, type LiteBrowserState } from "./state.js";
 import { displayWidth } from "./text.js";
+import { renderTuiFractionalBar } from "./stats-visuals.js";
 import { runLiteTui } from "./index.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -91,15 +92,40 @@ test("Plan A 2x2 dashboard displays all four dimensions and cross-filters via Sp
   assert.doesNotMatch(renderLiteFrame(model, state, { width: 120, height: 36 }), /Filters:/);
 });
 
-test("v switches to Matrix view, t/b/w/o cycle windows and buckets, Esc steps out cleanly", async () => {
+test("v switches to Matrix view with g grouping, ←/→ narrow columns, full time/Hit/Mult, and Selected inspector", async () => {
   configureColorPolicy({ color: false });
   const model = await getMultiModel();
   let state = applyAll(model, createLiteBrowserState(model), { type: "toggle-stats" });
 
   state = pressKeys(model, state, "v");
   assert.equal(state.stats.view, "matrix");
+  assert.equal(state.stats.matrixGroup, "project_model");
   const matrixFrame = renderLiteFrame(model, state, { width: 120, height: 36 });
-  assert.match(matrixFrame, /▸ Matrix \(project × model × source × day\)/);
+  assert.match(matrixFrame, /▸ Matrix \[g: Project × Model\]/);
+  assert.match(matrixFrame, /\bIn\s+CR\s+CW\s+Out\s+Hit\s+Mult\s+List\$\s+Adj\$/);
+  assert.match(matrixFrame, /Selected:/);
+
+  // Cycle g through Model × Day -> Project × Day -> All 4
+  state = pressKeys(model, state, "g");
+  assert.equal(state.stats.matrixGroup, "model_time");
+  assert.match(renderLiteFrame(model, state, { width: 120, height: 36 }), /▸ Matrix \[g: Model × Day\]/);
+
+  state = pressKeys(model, state, "g");
+  assert.equal(state.stats.matrixGroup, "project_time");
+
+  state = pressKeys(model, state, "g");
+  assert.equal(state.stats.matrixGroup, "all_4");
+  const all4Frame = renderLiteFrame(model, state, { width: 120, height: 36 });
+  assert.match(all4Frame, /▸ Matrix \[g: All 4 · Day\]/);
+
+  // Narrow terminal toggles between [Tokens] and [Cost] pages with right arrow
+  const narrowTok = renderLiteFrame(model, state, { width: 90, height: 28 });
+  assert.match(narrowTok, /←\/→ \[Tokens\]\|Cost/);
+  assert.match(narrowTok, /Selected:/);
+  state = pressKeys(model, state, "\x1b[C");
+  const narrowCost = renderLiteFrame(model, state, { width: 90, height: 28 });
+  assert.match(narrowCost, /←\/→ Tokens\|\[Cost\]/);
+  assert.match(narrowCost, /\bHit\s+Mult\s+List\$\s+Adj\$/);
 
   state = pressKeys(model, state, "bwot");
   assert.equal(state.stats.timeBucket, "week");
@@ -107,10 +133,21 @@ test("v switches to Matrix view, t/b/w/o cycle windows and buckets, Esc steps ou
   assert.equal(state.stats.sortBy, "list_cost");
   assert.equal(state.stats.timePreset, "today");
 
+  // Clear time filter back to all, cycle b to hour and hour_of_day, and verify hour time label is NOT truncated to YYYY-MM
+  state = pressKeys(model, state, "cbbb"); // day -> week -> month -> hour
+  assert.equal(state.stats.timeBucket, "hour");
+  const hourMatrix = renderLiteFrame(model, state, { width: 120, height: 36 });
+  assert.match(hourMatrix, /\d{2}-\d{2} \d{2}:00/);
+
+  state = pressKeys(model, state, "b"); // hour -> hour_of_day
+  assert.equal(state.stats.timeBucket, "hour_of_day");
+
   // Esc inside matrix returns to quad view; second Esc closes stats overlay
   state = pressKeys(model, state, "\x1b");
   assert.equal(state.overlay, "stats");
   assert.equal(state.stats.view, "quad");
+  const hodQuad = renderLiteFrame(model, state, { width: 120, height: 36 });
+  assert.match(hodQuad, /By hour \(00-23\)/);
   state = pressKeys(model, state, "\x1b");
   assert.equal(state.overlay, "none");
 });
@@ -213,5 +250,33 @@ test("runLiteTui accepts --pricing and --quota options cleanly", async () => {
     assert.match(joined, /of \$75\.00/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("fractional bars separate $200 vs $3 cleanly and quad columns align every row to identical column offsets", async () => {
+  configureColorPolicy({ color: false });
+  const bar200 = renderTuiFractionalBar(1, 10);
+  const bar3 = renderTuiFractionalBar(3 / 200, 10);
+  const bar0 = renderTuiFractionalBar(0, 10);
+  assert.equal(displayWidth(bar200), 10);
+  assert.equal(displayWidth(bar3), 10);
+  assert.equal(displayWidth(bar0), 10);
+  assert.equal(bar200, "██████████");
+  assert.equal(bar3, "▏         ");
+  assert.equal(bar0, "          ");
+
+  const model = await getMultiModel();
+  const state = applyAll(model, createLiteBrowserState(model), { type: "toggle-stats" });
+  const frame = renderLiteFrame(model, state, { width: 130, height: 34 });
+  const lines = frame.split("\n");
+  // Every data row in the top-right By model quadrant shares identical column width before │ and aligned Adj$ / Hit columns
+  const modelHeaderLine = lines.find((line) => line.includes("Name") && line.includes("Bar (max)"));
+  assert.ok(modelHeaderLine, "Quad panels should display aligned column headers");
+  const rightDividerIdx = modelHeaderLine.indexOf("│");
+  assert.ok(rightDividerIdx > 0);
+  const topQuadLines = lines.filter((line) => line.includes("│") && line.includes("$") && !line.includes("Tot "));
+  assert.ok(topQuadLines.length >= 2);
+  for (const line of topQuadLines) {
+    assert.equal(displayWidth(line.slice(0, line.indexOf("│"))), displayWidth(modelHeaderLine.slice(0, rightDividerIdx)));
   }
 });

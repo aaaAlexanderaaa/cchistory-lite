@@ -114,6 +114,11 @@ export function createEmptyCostBreakdown(quotaLimitUsd?: number): UsageCostBreak
     unpriced_models: [],
     quota_limit_usd: quotaLimitUsd,
     quota_percent: quotaLimitUsd && quotaLimitUsd > 0 ? 0 : undefined,
+    cache_list_savings_usd: 0,
+    cache_adjusted_savings_usd: 0,
+    high_context_call_count: 0,
+    priced_call_count: 0,
+    high_context_adjusted_cost_usd: 0,
   };
 }
 
@@ -144,10 +149,14 @@ export function addResolvedModelUsageToCostBreakdown(
   }
 
   let prices = resolved.unit_prices;
+  let highContextTierApplied = false;
   if (tokens.context_input_tokens !== undefined) {
     const tier = prices.context_tiers?.filter(item => tokens.context_input_tokens! > item.above_input_tokens)
       .sort((left, right) => right.above_input_tokens - left.above_input_tokens)[0];
-    if (tier) prices = { ...prices, ...tier };
+    if (tier) {
+      prices = { ...prices, ...tier };
+      highContextTierApplied = true;
+    }
   }
   const m = resolved.multipliers;
   const cacheReadRate = prices.cache_read ?? prices.input;
@@ -166,6 +175,14 @@ export function addResolvedModelUsageToCostBreakdown(
   const outAdj = outList * m.model * m.output;
   const reasonAdj = reasonList * m.model * m.reasoning;
 
+  const callAdj = inAdj + crAdj + cwAdj + outAdj + reasonAdj;
+  const cacheReadMillions = tokens.cache_read_input_tokens / 1_000_000;
+  const cacheListSavings = cacheReadMillions * Math.max(0, prices.input - cacheReadRate);
+  const cacheAdjSavings = Math.max(
+    0,
+    cacheReadMillions * (prices.input * m.model * m.input - cacheReadRate * m.model * m.cache_read),
+  );
+
   target.input_list_cost_usd += inList;
   target.cache_read_list_cost_usd += crList;
   target.cache_write_list_cost_usd += cwList;
@@ -178,7 +195,15 @@ export function addResolvedModelUsageToCostBreakdown(
   target.cache_write_adjusted_cost_usd += cwAdj;
   target.output_adjusted_cost_usd += outAdj;
   target.reasoning_adjusted_cost_usd += reasonAdj;
-  target.adjusted_cost_usd += inAdj + crAdj + cwAdj + outAdj + reasonAdj;
+  target.adjusted_cost_usd += callAdj;
+
+  target.cache_list_savings_usd = (target.cache_list_savings_usd ?? 0) + cacheListSavings;
+  target.cache_adjusted_savings_usd = (target.cache_adjusted_savings_usd ?? 0) + cacheAdjSavings;
+  target.priced_call_count = (target.priced_call_count ?? 0) + 1;
+  if (highContextTierApplied) {
+    target.high_context_call_count = (target.high_context_call_count ?? 0) + 1;
+    target.high_context_adjusted_cost_usd = (target.high_context_adjusted_cost_usd ?? 0) + callAdj;
+  }
 
   target.priced_tokens += tokens.total_tokens;
   if (quotaLimitUsd && quotaLimitUsd > 0) {

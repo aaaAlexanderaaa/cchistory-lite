@@ -5,6 +5,7 @@
  */
 
 import type { ModelPricingResolution, UsageCostBreakdown, UsageStatsRollupRow } from "@cchistory/domain";
+import { buildDenseTimeSeries } from "@cchistory/live-runtime";
 import {
   activeItem,
   activeSectionTitle,
@@ -14,7 +15,6 @@ import {
   danger,
   dim,
   green,
-  metaLabel,
   muted,
   sectionTitle,
   selectedItem,
@@ -24,6 +24,7 @@ import {
 import type { LiteBrowserModel } from "./model.js";
 import { viewportWindow } from "./render.js";
 import type { LiteBrowserState } from "./state.js";
+import { renderMatrixView } from "./stats-matrix-render.js";
 import {
   STATS_MULTIPLIER_COLUMNS,
   activeFilterSelection,
@@ -33,6 +34,15 @@ import {
   type LiteStatsResolvedViewData,
   type LiteStatsState,
 } from "./stats-state.js";
+import {
+  formatTuiTimeLabel,
+  renderTopSessionsView,
+  renderTuiCacheHit,
+  renderTuiDiagnosticsBar,
+  renderTuiFractionalBar,
+  renderTuiQuotaGauge,
+  renderTuiSparkline,
+} from "./stats-visuals.js";
 import {
   clipLine,
   compact,
@@ -76,11 +86,17 @@ export function renderStatsDashboard(
   lines.push(renderHeaderLine(stats, width));
   lines.push(dim("─".repeat(Math.max(10, width))));
   lines.push(renderTotalsBar(data, width));
+  if (contentHeight >= 15) {
+    const diagLine = renderTuiDiagnosticsBar(data, width);
+    if (diagLine) lines.push(diagLine);
+  }
   lines.push(renderFilterOrEditBar(data, stats, width));
 
   const bodyBudget = Math.max(4, contentHeight - lines.length);
   if (stats.view === "matrix") {
     lines.push(...renderMatrixView(data, stats, width, bodyBudget));
+  } else if (stats.view === "sessions") {
+    lines.push(...renderTopSessionsView(data, stats, width, bodyBudget));
   } else if (stats.view === "multipliers") {
     lines.push(...renderMultipliersView(data, stats, width, bodyBudget));
   } else {
@@ -90,35 +106,39 @@ export function renderStatsDashboard(
 }
 
 function renderHeaderLine(stats: LiteStatsState, width: number): string {
-  const quadTab = stats.view === "quad" ? bold(cyan("[1:Quad]")) : dim("1:Quad");
-  const matrixTab = stats.view === "matrix" ? bold(cyan("[2:Matrix(v)]")) : dim("v:Matrix");
-  const multTab = stats.view === "multipliers" ? bold(cyan("[3:Calibrate(m)]")) : dim("m:Calibrate");
+  const quadTab = stats.view === "quad" ? bold(cyan("[Quad]")) : dim("Quad");
+  const matrixTab = stats.view === "matrix" ? bold(cyan("[v:Matrix]")) : dim("v:Matrix");
+  const sessionsTab = stats.view === "sessions" ? bold(cyan("[S:Sessions]")) : dim("S:Sessions");
+  const multTab = stats.view === "multipliers" ? bold(cyan("[m:Calibrate]")) : dim("m:Calibrate");
   const timeBadge = yellow(`t:${stats.timePreset}`);
   const bucketBadge = green(`b:${stats.timeBucket}`);
   const weekBadge = dim(`w:${stats.weekMode}`);
   const sortBadge = dim(`o:${stats.sortBy}`);
-  const head = `${activeSectionTitle("▸ Statistics")}  ${quadTab} ${matrixTab} ${multTab}  ${timeBadge} ${bucketBadge}`;
-  const tail = width >= 96 ? ` ${weekBadge} ${sortBadge}  ${dim("(i/Esc close)")}` : ` ${dim("(i close)")}`;
+  const head = `${activeSectionTitle("▸ Statistics")}  ${quadTab} ${matrixTab} ${sessionsTab} ${multTab}  ${timeBadge} ${bucketBadge}`;
+  const tail = width >= 108 ? ` ${weekBadge} ${sortBadge}  ${dim("(i/Esc close)")}` : ` ${dim("(i close)")}`;
   return clipLine(`${head}${tail}`, width);
 }
 
 function renderTotalsBar(data: LiteStatsResolvedViewData, width: number): string {
   const ov = data.breakdown.overview;
   const cost = ov.cost;
+  const compactTok = width < 100;
   const tokParts = [
     `Tot ${cyan(formatCompactCount(ov.total_tokens) || "0")}`,
     `In ${formatCompactCount(ov.total_input_tokens) || "0"}`,
     `CR ${formatCompactCount(ov.total_cache_read_input_tokens ?? 0) || "0"}`,
-    `CW ${formatCompactCount(ov.total_cache_creation_input_tokens ?? 0) || "0"}`,
+    ...(!compactTok ? [`CW ${formatCompactCount(ov.total_cache_creation_input_tokens ?? 0) || "0"}`] : []),
     `Out ${formatCompactCount(ov.total_output_tokens) || "0"}`,
-    ov.total_reasoning_output_tokens > 0 ? `R ${formatCompactCount(ov.total_reasoning_output_tokens)}` : undefined,
-  ].filter(Boolean);
+    ...(!compactTok && ov.total_reasoning_output_tokens > 0
+      ? [`R ${formatCompactCount(ov.total_reasoning_output_tokens)}`]
+      : []),
+  ];
   const costParts = [
     `List ${green(formatUsd(cost?.list_cost_usd ?? 0))}`,
     `Adj ${yellow(formatUsd(cost?.adjusted_cost_usd ?? 0))}`,
-    cost?.quota_limit_usd !== undefined && cost.quota_percent !== undefined
-      ? bold(cyan(`${cost.quota_percent.toFixed(1)}% of ${formatUsd(cost.quota_limit_usd)}`))
-      : dim("$ quota"),
+    ...(!compactTok || cost?.quota_limit_usd === undefined
+      ? [renderTuiQuotaGauge(cost, data.breakdown.quota_pace, width >= 110 ? 8 : 5)]
+      : []),
   ];
   return clipLine(`  ${tokParts.join(" · ")}  │  ${costParts.join(" · ")}`, width);
 }
@@ -130,12 +150,17 @@ function renderFilterOrEditBar(
 ): string {
   if (stats.editing) {
     const label =
-      stats.editing.target === "alias"
-        ? `Alias ${stats.editing.rawModel}`
-        : stats.editing.target === "quota"
-          ? "Quota USD"
-          : `${stats.editing.rawModel} ${stats.editing.col}x`;
-    const nowHint = stats.editing.placeholder ? dim(` (now ${stats.editing.placeholder})`) : "";
+      stats.editing.target === "export_path"
+        ? "Export pricing JSON"
+        : stats.editing.target === "alias"
+          ? `Alias ${stats.editing.rawModel}`
+          : stats.editing.target === "quota"
+            ? "Quota USD"
+            : `${stats.editing.rawModel} ${stats.editing.col}x`;
+    const nowHint =
+      stats.editing.placeholder && stats.editing.target !== "export_path"
+        ? dim(` (now ${stats.editing.placeholder})`)
+        : "";
     return clipLine(
       `  ${bold(cyan(`${label}${nowHint} ->`))} ${stats.editing.value}${cursorColor("_")}  ${dim("(Enter save · Esc cancel)")}`,
       width,
@@ -151,17 +176,17 @@ function renderFilterOrEditBar(
 
   const unpriced = data.breakdown.overview.cost?.unpriced_models ?? [];
   if (hasActiveStatsFilters(stats)) {
-    const hint = dim(" (Space toggle · c clear · v matrix · m calibrate)");
+    const hint = dim(" (Space toggle · c clear · S sessions · v matrix · m calibrate · E export)");
     return clipLine(`  ${cyan(`Filters: ${chips.join(" · ")}`)}${hint}`, width);
   }
   if (unpriced.length > 0) {
     return clipLine(
-      `  ${warning(`Unpriced models (${unpriced.length}): ${unpriced.slice(0, 3).join(", ")}`)}  ${dim("press m to set alias/price")}`,
+      `  ${warning(`Unpriced models (${unpriced.length}): ${unpriced.slice(0, 3).join(", ")}`)}  ${dim("press m to set alias/price · E export")}`,
       width,
     );
   }
   return clipLine(
-    dim("  Tab quadrant · 1-4 jump · Space/Enter filter · t window · b day/wk/mo · v matrix · m multipliers · $ quota"),
+    dim("  Tab/1-4 quadrant · Space filter · S top sessions · v matrix · m calibrate · E export · t/b window · $ quota"),
     width,
   );
 }
@@ -185,7 +210,9 @@ function renderQuadDashboard(
   const tl = renderQuadrantBox("project", "By project", data.quadrantRows.project, stats, leftW, topH);
   const tr = renderQuadrantBox("model", "By model", data.quadrantRows.model, stats, rightW, topH);
   const bl = renderQuadrantBox("source", "By source", data.quadrantRows.source, stats, leftW, bottomH);
-  const br = renderQuadrantBox("day", `By ${stats.timeBucket}`, data.quadrantRows.day, stats, rightW, bottomH);
+  const timeTitle = stats.timeBucket === "hour_of_day" ? "By hour (00-23)" : `By ${stats.timeBucket}`;
+  const timeSpark = buildTimeSparkBadge(data, stats);
+  const br = renderQuadrantBox("day", timeTitle, data.quadrantRows.day, stats, rightW, bottomH, timeSpark);
 
   const lines: string[] = [];
   for (let i = 0; i < topH; i += 1) {
@@ -204,11 +231,12 @@ function renderStackedQuads(
   width: number,
   budget: number,
 ): string[] {
-  const order: Array<{ q: LiteStatsQuadrant; title: string }> = [
+  const timeTitle = stats.timeBucket === "hour_of_day" ? "By hour (00-23)" : `By ${stats.timeBucket}`;
+  const order: Array<{ q: LiteStatsQuadrant; title: string; suffix?: string }> = [
     { q: "project", title: "By project" },
     { q: "model", title: "By model" },
     { q: "source", title: "By source" },
-    { q: "day", title: `By ${stats.timeBucket}` },
+    { q: "day", title: timeTitle, suffix: buildTimeSparkBadge(data, stats) },
   ];
   const eachH = Math.max(3, Math.floor(budget / 4));
   const lines: string[] = [];
@@ -216,9 +244,21 @@ function renderStackedQuads(
     const item = order[i]!;
     const h = i === order.length - 1 ? Math.max(2, budget - lines.length) : Math.min(eachH, budget - lines.length);
     if (h <= 0) break;
-    lines.push(...renderQuadrantBox(item.q, item.title, data.quadrantRows[item.q], stats, width, h));
+    lines.push(...renderQuadrantBox(item.q, item.title, data.quadrantRows[item.q], stats, width, h, item.suffix ?? ""));
   }
   return lines;
+}
+
+function buildTimeSparkBadge(data: LiteStatsResolvedViewData, stats: LiteStatsState): string {
+  const dense = buildDenseTimeSeries(data.breakdown.by_time.rows, stats.timeBucket, {
+    timezone: data.breakdown.timezone,
+    maxPoints: 24,
+  });
+  if (dense.length < 2) return "";
+  const useCost = dense.some((pt) => pt.adjusted_cost_usd > 0);
+  const values = dense.map((pt) => (useCost ? pt.adjusted_cost_usd : pt.total_tokens));
+  const spark = renderTuiSparkline(values, { zeroChar: "·", activeStyle: cyan, zeroStyle: dim });
+  return spark ? `  ${spark}` : "";
 }
 
 function renderQuadrantBox(
@@ -228,23 +268,51 @@ function renderQuadrantBox(
   stats: LiteStatsState,
   width: number,
   height: number,
+  extraTitleSuffix = "",
 ): string[] {
   const focused = stats.activeQuadrant === quadrant && stats.view === "quad";
   const selectedKeys = new Set(activeFilterSelection(stats, quadrant));
   const badge = selectedKeys.size > 0 ? ` ${cyan(`[${selectedKeys.size} on]`)}` : "";
   const countTag = dim(` (${rows.length})`);
   const headingLine = focused
-    ? `${activeSectionTitle(`▸ ${title}`)}${countTag}${badge}`
-    : `${sectionTitle(`  ${title}`)}${countTag}${badge}`;
+    ? `${activeSectionTitle(`▸ ${title}`)}${countTag}${badge}${extraTitleSuffix}`
+    : `${sectionTitle(`  ${title}`)}${countTag}${badge}${extraTitleSuffix}`;
 
   const result: string[] = [clipLine(headingLine, width)];
-  const bodyH = Math.max(1, height - 1);
   if (rows.length === 0) {
     result.push(clipLine(`  ${muted("(no matching usage rows)")}`, width));
     while (result.length < height) result.push("");
     return result;
   }
 
+  // Compute strict fixed column widths once so every single row aligns to exact terminal columns.
+  const prefixW = 2 + (selectedKeys.size > 0 ? 4 : 0);
+  const showHit = width >= 54 && quadrant !== "day";
+  const hitW = showHit ? 5 : 0;
+  const costW = 8;
+  const tokW = 6;
+  const barW = width >= 68 ? 12 : width >= 54 ? 10 : width >= 44 ? 8 : 0;
+  const rightW = (barW > 0 ? barW + 1 : 0) + tokW + 1 + costW + (showHit ? 1 + hitW : 0);
+  const nameW = Math.max(8, width - prefixW - rightW - 1);
+
+  const showColHeader = height >= 5;
+  if (showColHeader) {
+    const hdrName = padLine(quadrant === "day" ? "Time" : "Name", nameW);
+    const hdrBar = barW > 0 ? `${padLine("Bar (max)", barW)} ` : "";
+    const hdrTok = padRight("Tok", tokW);
+    const hdrCost = padRight("Adj$", costW);
+    const hdrHit = showHit ? ` ${padRight("Hit", hitW)}` : "";
+    result.push(dim(clipLine(`${" ".repeat(prefixW)}${hdrName} ${hdrBar}${hdrTok} ${hdrCost}${hdrHit}`, width)));
+  }
+
+  const totalCost = rows.reduce((sum, r) => sum + (r.cost?.adjusted_cost_usd ?? 0), 0);
+  const useCost = totalCost > 0;
+  const maxVal = rows.reduce(
+    (best, r) => Math.max(best, useCost ? (r.cost?.adjusted_cost_usd ?? 0) : r.total_tokens),
+    0,
+  );
+
+  const bodyH = Math.max(1, height - result.length);
   const cursorIdx = Math.min(stats.cursors[quadrant], Math.max(0, rows.length - 1));
   const win = viewportWindow(rows.length, cursorIdx, bodyH);
   for (let idx = win.start; idx < win.end; idx += 1) {
@@ -254,95 +322,43 @@ function renderQuadrantBox(
     const pointer = isCursor ? cursorColor("❯") : isChecked ? bold("▪") : dim("·");
     const check = selectedKeys.size > 0 ? (isChecked ? cyan("[x] ") : dim("[ ] ")) : "";
 
-    const adjStr = formatUsd(row.cost?.adjusted_cost_usd ?? 0);
-    const listStr = formatUsd(row.cost?.list_cost_usd ?? 0);
+    const adjVal = row.cost?.adjusted_cost_usd ?? 0;
+    const listVal = row.cost?.list_cost_usd ?? 0;
+    const adjStr = formatUsd(adjVal);
+    const adjustedDiffers = Math.abs(adjVal - listVal) > 1e-6;
     const tokStr = formatCompactCount(row.total_tokens) || "0";
-    const rightMeta =
-      width >= 50
-        ? `${tokStr.padStart(6)} ${listStr === adjStr ? listStr.padStart(7) : `${listStr}→${adjStr}`}`
-        : `${tokStr.padStart(6)} ${adjStr.padStart(7)}`;
+    const metricVal = useCost ? adjVal : row.total_tokens;
+    const barRatio = maxVal > 0 ? metricVal / maxVal : 0;
+    const barCell = barW > 0 ? `${renderTuiFractionalBar(barRatio, barW, cyan)} ` : "";
+    const tokCell = row.total_tokens === 0 ? dim(padRight(tokStr, tokW)) : padRight(tokStr, tokW);
+    const costRaw = padRight(adjStr, costW);
+    const costCell =
+      adjVal === 0 && row.total_tokens === 0
+        ? dim(costRaw)
+        : adjustedDiffers
+          ? yellow(costRaw)
+          : costRaw;
+    const hitCell = showHit
+      ? ` ${padRight(renderTuiCacheHit(row.efficiency?.cache_hit_ratio ?? null, true), hitW)}`
+      : "";
 
-    const prefixW = 2 + (selectedKeys.size > 0 ? 4 : 0);
-    const metaW = displayWidth(rightMeta);
-    const nameBudget = Math.max(8, width - prefixW - metaW - 2);
-    const rawLabel = compact(row.label, nameBudget);
-    const styledLabel = isCursor ? activeItem(rawLabel) : isChecked ? selectedItem(rawLabel) : rawLabel;
-    const left = `${pointer} ${check}${styledLabel}`;
-    const gap = Math.max(1, width - displayWidth(left) - metaW);
-    result.push(clipLine(`${left}${" ".repeat(gap)}${metaLabel(rightMeta)}`, width));
+    const displayLabel =
+      quadrant === "day" ? formatTuiTimeLabel(row.label, stats.timeBucket) : row.label;
+    const rawLabel = padLine(compact(displayLabel, nameW), nameW);
+    const styledLabel = isCursor
+      ? activeItem(rawLabel)
+      : isChecked
+        ? selectedItem(rawLabel)
+        : row.total_tokens === 0 && quadrant === "day"
+          ? dim(rawLabel)
+          : rawLabel;
+
+    result.push(
+      clipLine(`${pointer} ${check}${styledLabel} ${barCell}${tokCell} ${costCell}${hitCell}`, width),
+    );
   }
   while (result.length < height) result.push("");
   return result.slice(0, height);
-}
-
-function renderMatrixView(
-  data: LiteStatsResolvedViewData,
-  stats: LiteStatsState,
-  width: number,
-  budget: number,
-): string[] {
-  const rows = data.matrixRows;
-  const lines: string[] = [
-    clipLine(
-      `${activeSectionTitle(`▸ Matrix (${["project", "model", "source", stats.timeBucket].join(" × ")})`)}  ${dim(
-        `${rows.length} rows · o sort (${stats.sortBy}) · v back`,
-      )}`,
-      width,
-    ),
-  ];
-
-  const wide = width >= 112;
-  const headerLine = wide
-    ? `  ${"Project".padEnd(15)} ${"Model".padEnd(18)} ${"Source".padEnd(13)} ${"Time".padEnd(10)} ${"Turns".padStart(5)} ${"In".padStart(7)} ${"CR".padStart(7)} ${"CW".padStart(6)} ${"Out".padStart(7)} ${"List$".padStart(7)} ${"Adj$".padStart(7)}`
-    : `  ${"Project".padEnd(13)} ${"Model".padEnd(15)} ${"Src".padEnd(9)} ${"Time".padEnd(10)} ${"Tok".padStart(7)} ${"List$".padStart(7)} ${"Adj$".padStart(7)}`;
-  lines.push(dim(clipLine(headerLine, width)));
-
-  if (rows.length === 0) {
-    lines.push(`  ${muted("(no matrix rows match active filters)")}`);
-    return lines;
-  }
-
-  const bodyH = Math.max(1, budget - lines.length);
-  const cursorIdx = Math.min(stats.cursors.matrix, rows.length - 1);
-  const win = viewportWindow(rows.length, cursorIdx, bodyH);
-  for (let idx = win.start; idx < win.end; idx += 1) {
-    const r = rows[idx]!;
-    const isCursor = idx === cursorIdx;
-    const prefix = isCursor ? cursorColor("❯") : dim("·");
-    const [p = "-", m = "-", s = "-", t = "-"] = r.labels;
-    const listStr = formatUsd(r.cost.list_cost_usd);
-    const adjStr = formatUsd(r.cost.adjusted_cost_usd);
-    if (wide) {
-      const cells = [
-        padLine(compact(p, 15), 15),
-        padLine(compact(m, 18), 18),
-        padLine(compact(s, 13), 13),
-        padLine(compact(t, 10), 10),
-        padRight(String(r.turn_count), 5),
-        padRight(formatCompactCount(r.total_input_tokens) || "0", 7),
-        padRight(formatCompactCount(r.total_cache_read_input_tokens) || "0", 7),
-        padRight(formatCompactCount(r.total_cache_creation_input_tokens) || "0", 6),
-        padRight(formatCompactCount(r.total_output_tokens) || "0", 7),
-        padRight(listStr, 7),
-        padRight(adjStr, 7),
-      ];
-      const body = cells.join(" ");
-      lines.push(clipLine(`${prefix} ${isCursor ? activeItem(body) : body}`, width));
-    } else {
-      const cells = [
-        padLine(compact(p, 13), 13),
-        padLine(compact(m, 15), 15),
-        padLine(compact(s, 9), 9),
-        padLine(compact(t, 10), 10),
-        padRight(formatCompactCount(r.total_tokens) || "0", 7),
-        padRight(listStr, 7),
-        padRight(adjStr, 7),
-      ];
-      const body = cells.join(" ");
-      lines.push(clipLine(`${prefix} ${isCursor ? activeItem(body) : body}`, width));
-    }
-  }
-  return lines;
 }
 
 function renderMultipliersView(
@@ -360,7 +376,7 @@ function renderMultipliersView(
       width,
     ),
     clipLine(
-      dim("  ←/→ cell · +/- step · 0/1/u set · a alias · e edit value · $ quota · R reset all · m/Esc back"),
+      dim("  ←/→ cell · +/- step · 0/1/u set · a alias · e edit · $ quota · E export · R reset · m/Esc back"),
       width,
     ),
   ];

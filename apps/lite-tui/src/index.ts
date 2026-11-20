@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 
 import { realpathSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { lstat, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import type { UsagePricingConfig } from "@cchistory/domain";
+import type { UsagePricingConfig, UsageTimePreset } from "@cchistory/domain";
 import {
+  buildPricingConfigTemplate,
   formatScanGuardWarning,
   mergeUsagePricingConfigs,
   parseUsagePricingInput,
@@ -16,6 +17,7 @@ import {
   type LiveHistorySnapshot,
   type ScanLiteHistoryOptions,
 } from "@cchistory/live-runtime";
+import { copyTextToClipboard, type ClipboardCopyResult } from "./clipboard.js";
 import { configureColorPolicy } from "./colors.js";
 import { KeyDecoder, type LiteKey } from "./keys.js";
 import { resolveLiteInputEffect } from "./input.js";
@@ -23,6 +25,7 @@ import { LiteBrowserModel } from "./model.js";
 import { BANNER_TITLE, DEFAULT_HEIGHT, DEFAULT_WIDTH, renderLiteFrame, type LiteScrollReconciliation } from "./render.js";
 import {
   createLiteBrowserState,
+  getSelectedSession,
   getSelectedTurn,
   reduceLiteBrowserState,
   type LiteBrowserAction,
@@ -60,15 +63,19 @@ export interface LiteTuiIo {
   rows?: number;
   now?: () => number;
   scan?: (options: ScanLiteHistoryOptions) => Promise<LiveHistorySnapshot>;
+  copyToClipboard?: (text: string) => Promise<ClipboardCopyResult>;
 }
 
 interface ParsedArgs {
   sourceRoots: LiteSourceRoot[];
   sourceRefs: string[];
+  directoryScope?: string;
   safeMode: boolean;
   limitFiles?: number;
   pricingFiles: string[];
   quotaUsd?: number;
+  openStats: boolean;
+  statsSince?: UsageTimePreset;
   projectRef?: string;
   sessionRef?: string;
   turnRef?: string;
@@ -114,7 +121,7 @@ async function loadTuiPricingConfig(
 export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): Promise<number> {
   let parsed: ParsedArgs;
   try {
-    parsed = parseArgs(argv, io.cwd);
+    parsed = parseArgs(argv, io.cwd, io.homeDir);
   } catch (error) {
     io.stderr(`${errorMessage(error)}\n`);
     return error instanceof TuiUsageError ? 2 : 1;
@@ -141,6 +148,7 @@ export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): P
       hostname: io.hostname,
       sourceRoots: parsed.sourceRoots,
       sourceRefs: parsed.sourceRefs,
+      directoryScope: parsed.directoryScope,
       safeMode: parsed.safeMode,
       limitFiles: parsed.limitFiles,
       contextMode: "none",
@@ -161,6 +169,7 @@ export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): P
       includeSessionRefs,
       pricingConfig,
       quotaLimitUsd: parsed.quotaUsd,
+      directoryScope: parsed.directoryScope,
     });
     const state = applyEntryPoints(model, createLiteBrowserState(model), parsed);
 
@@ -178,6 +187,7 @@ export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): P
       includeSessionRefs,
       pricingConfig,
       quotaLimitUsd: parsed.quotaUsd,
+      directoryScope: parsed.directoryScope,
     });
   } catch (error) {
     io.stderr(`${errorMessage(error)}\n`);
@@ -196,6 +206,7 @@ interface InteractiveOptions {
   includeSessionRefs?: readonly string[];
   pricingConfig?: UsagePricingConfig;
   quotaLimitUsd?: number;
+  directoryScope?: string;
 }
 
 async function runInteractive(options: InteractiveOptions): Promise<number> {
@@ -217,6 +228,7 @@ async function runInteractive(options: InteractiveOptions): Promise<number> {
   let previousFrame = "";
   let interrupted = false;
   let finished = false;
+  let exitPrintLine: string | undefined;
   let resolveExit: (() => void) | undefined;
   const exited = new Promise<void>((resolve) => {
     resolveExit = resolve;
@@ -283,6 +295,7 @@ async function runInteractive(options: InteractiveOptions): Promise<number> {
         includeSessionRefs: options.includeSessionRefs,
         pricingConfig: options.pricingConfig,
         quotaLimitUsd: options.quotaLimitUsd,
+        directoryScope: options.directoryScope,
       });
       state = createLiteBrowserState(model);
       dispatch({
@@ -362,9 +375,158 @@ async function runInteractive(options: InteractiveOptions): Promise<number> {
   const decoder = new KeyDecoder();
   let escapeTimer: NodeJS.Timeout | undefined;
 
+  const exportPricing = async (destination: string) => {
+    dispatch({ type: "stats-edit-cancel" });
+    const home = io.homeDir ?? os.homedir();
+    const expanded =
+      destination === "~"
+        ? home
+        : destination.startsWith("~/") || destination.startsWith("~\\")
+          ? path.join(home, destination.slice(2))
+          : destination;
+    const resolved = path.resolve(io.cwd, expanded);
+    try {
+      await assertSafeTuiExportDestination(resolved, model.snapshot, home);
+      const effectiveQuota = state.stats.quotaUsdOverride ?? options.quotaLimitUsd;
+      const merged = mergeUsagePricingConfigs(options.pricingConfig, {
+        schema: "cchistory-lite-pricing/v1",
+        timezone: model.defaultTimezone,
+        aliases: { ...state.stats.customAliases },
+        multipliers: { ...state.stats.multiplierOverrides },
+        quota: {
+          week_mode: state.stats.weekMode,
+          ...(effectiveQuota !== undefined ? { custom_usd: effectiveQuota } : {}),
+        },
+      });
+      const breakdown = model.getUsageBreakdown({
+        timePreset: state.stats.timePreset,
+        timeBucket: state.stats.timeBucket,
+        weekMode: state.stats.weekMode,
+        customAliases: state.stats.customAliases,
+        multiplierOverrides: state.stats.multiplierOverrides,
+        quotaUsdOverride: state.stats.quotaUsdOverride,
+      });
+      const template = buildPricingConfigTemplate(breakdown.model_resolutions, merged, model.defaultTimezone);
+      await writeFile(resolved, `${JSON.stringify(template, null, 2)}\n`, "utf8");
+      dispatch({
+        type: "set-status",
+        status: { kind: "info", text: `Exported pricing config to ${resolved} (reuse via --pricing)` },
+      });
+    } catch (error) {
+      dispatch({
+        type: "set-status",
+        status: { kind: "error", text: `Pricing export failed: ${errorMessage(error)}` },
+      });
+    }
+  };
+
+  const resolveSelectedSessionForAction = () => {
+    const turn = getSelectedTurn(model, state);
+    if (turn?.session) return turn.session;
+    if (turn) return model.getSession(turn.turn.session_id);
+    return getSelectedSession(model, state)?.session;
+  };
+
+  const performCopy = async (text: string, label: string) => {
+    const result = io.copyToClipboard
+      ? await io.copyToClipboard(text)
+      : await copyTextToClipboard(text, {
+          writeOsc52: io.isInteractiveTerminal ? (seq) => io.stdout(seq) : undefined,
+        });
+    if (result.ok) {
+      dispatch({ type: "set-status", status: { kind: "info", text: `Copied ${label} (${result.via}).` } });
+    } else {
+      dispatch({ type: "set-status", status: { kind: "error", text: `Clipboard unavailable; press R to print resume on exit.` } });
+    }
+  };
+
+  const copyResume = async () => {
+    const session = resolveSelectedSessionForAction();
+    if (!session) {
+      dispatch({ type: "set-status", status: { kind: "error", text: "No session selected to copy." } });
+      return;
+    }
+    const text = session.resume_command ?? session.id;
+    const label = session.resume_command ? "resume command" : "session ID";
+    await performCopy(text, label);
+  };
+
+  const copyContent = async () => {
+    const entry = getSelectedTurn(model, state);
+    if (!entry) {
+      dispatch({ type: "set-status", status: { kind: "error", text: "No turn selected to copy." } });
+      return;
+    }
+    const parts = [`User:\n${entry.turn.canonical_text.trim()}`];
+    const ctx = model.getTurnContext(entry.turn.id);
+    if (ctx && ctx.assistant_replies.length > 0) {
+      for (const reply of ctx.assistant_replies) {
+        parts.push(`Assistant (${reply.model}):\n${(reply.canonical_text || reply.content || reply.content_preview).trim()}`);
+      }
+      await performCopy(parts.join("\n\n"), "turn Q&A");
+    } else {
+      await performCopy(parts.join("\n\n"), "prompt (press Enter on Detail first to include replies)");
+    }
+  };
+
+  const toggleSearchScope = async () => {
+    if (state.searchScope === "conversation") {
+      dispatch({ type: "set-search-scope", scope: "prompts" });
+      dispatch({ type: "set-status", status: { kind: "info", text: "Search scope: titles & prompts." } });
+      return;
+    }
+    if (model.hasConversationEvidence) {
+      dispatch({ type: "set-search-scope", scope: "conversation" });
+      dispatch({ type: "set-status", status: { kind: "info", text: "Search scope: prompts + assistant replies." } });
+      return;
+    }
+    if (busy) return;
+    busy = true;
+    dispatch({
+      type: "set-status",
+      status: { kind: "busy", text: "Loading assistant replies for full-conversation search…" },
+    });
+    try {
+      const replacement = await scan({
+        ...scanOptions,
+        contextMode: "none",
+        retainConversationEvidence: true,
+        onProgress: undefined,
+      });
+      model = new LiteBrowserModel(replacement, {
+        includeSessionRefs: options.includeSessionRefs,
+        pricingConfig: options.pricingConfig,
+        quotaLimitUsd: options.quotaLimitUsd,
+        directoryScope: options.directoryScope,
+      });
+      state = reduceLiteBrowserState(model, state, { type: "set-search-scope", scope: "conversation" });
+      dispatch({
+        type: "set-status",
+        status: { kind: "info", text: "Search scope: prompts + assistant replies." },
+      });
+    } catch (error) {
+      dispatch({
+        type: "set-status",
+        status: { kind: "error", text: `Reply search load failed: ${errorMessage(error)}` },
+      });
+    } finally {
+      busy = false;
+    }
+  };
+
   const handleKey = (key: LiteKey) => {
     const effect = resolveLiteInputEffect(state, key);
     if (effect.type === "exit") {
+      finish();
+      return;
+    }
+    if (effect.type === "exit-print-resume") {
+      const session = resolveSelectedSessionForAction();
+      if (!session) {
+        dispatch({ type: "set-status", status: { kind: "error", text: "No session selected to resume." } });
+        return;
+      }
+      exitPrintLine = session.resume_command ?? session.id;
       finish();
       return;
     }
@@ -378,6 +540,22 @@ async function runInteractive(options: InteractiveOptions): Promise<number> {
     }
     if (effect.type === "load-context") {
       void loadContext();
+      return;
+    }
+    if (effect.type === "export-pricing") {
+      void exportPricing(effect.destination);
+      return;
+    }
+    if (effect.type === "copy-resume") {
+      void copyResume();
+      return;
+    }
+    if (effect.type === "copy-content") {
+      void copyContent();
+      return;
+    }
+    if (effect.type === "toggle-search-scope") {
+      void toggleSearchScope();
     }
   };
 
@@ -443,7 +621,11 @@ async function runInteractive(options: InteractiveOptions): Promise<number> {
   }
 
   if (interrupted) io.stdout("Interrupted; releasing snapshot.\n");
-  io.stdout("CC History Lite snapshot released.\n");
+  if (exitPrintLine) {
+    io.stdout(`${exitPrintLine}\n`);
+  } else {
+    io.stdout("CC History Lite snapshot released.\n");
+  }
   return 0;
 }
 
@@ -459,6 +641,9 @@ function applyEntryPoints(
   if (parsed.sessionRef) state = reduceLiteBrowserState(model, state, { type: "open-session-ref", ref: parsed.sessionRef });
   if (parsed.turnRef) state = reduceLiteBrowserState(model, state, { type: "open-turn-ref", ref: parsed.turnRef });
   if (parsed.searchQuery) state = reduceLiteBrowserState(model, state, { type: "open-search", query: parsed.searchQuery });
+  if (parsed.openStats || parsed.statsSince) {
+    state = reduceLiteBrowserState(model, state, { type: "open-stats", timePreset: parsed.statsSince });
+  }
   return state;
 }
 
@@ -497,13 +682,15 @@ function formatProgress(event: {
 // ── Argument parsing ──
 
 const REF_FLAGS = new Set(["project", "session", "turn", "search"]);
+const STATS_PRESET_SET = new Set<UsageTimePreset>(["all", "today", "24h", "7d", "30d", "week", "month"]);
 
-function parseArgs(argv: string[], cwd: string): ParsedArgs {
+function parseArgs(argv: string[], cwd: string, homeDir?: string): ParsedArgs {
   const parsed: ParsedArgs = {
     sourceRoots: [],
     sourceRefs: [],
     pricingFiles: [],
     safeMode: false,
+    openStats: false,
     help: false,
     version: false,
   };
@@ -512,6 +699,32 @@ function parseArgs(argv: string[], cwd: string): ParsedArgs {
     const argument = argv[index]!;
     if (argument === "--safe") {
       parsed.safeMode = true;
+      continue;
+    }
+    if (argument === "--stats") {
+      parsed.openStats = true;
+      continue;
+    }
+    if (argument === "--no-dir") {
+      parsed.directoryScope = undefined;
+      continue;
+    }
+    if (argument === "--dir" || argument.startsWith("--dir=")) {
+      const raw = readOptionValue(argv, index, argument, "dir");
+      if (argument === "--dir") index += 1;
+      const home = homeDir ?? os.homedir();
+      const expanded = raw === "~" ? home : raw.startsWith("~/") || raw.startsWith("~\\") ? path.join(home, raw.slice(2)) : raw;
+      parsed.directoryScope = path.resolve(cwd, expanded);
+      continue;
+    }
+    if (argument === "--since" || argument.startsWith("--since=")) {
+      const raw = readOptionValue(argv, index, argument, "since").trim().toLowerCase();
+      if (argument === "--since") index += 1;
+      if (!STATS_PRESET_SET.has(raw as UsageTimePreset)) {
+        throw new TuiUsageError(`--since must be one of all, today, 24h, 7d, 30d, week, month; received ${JSON.stringify(raw)}.`);
+      }
+      parsed.statsSince = raw as UsageTimePreset;
+      parsed.openStats = true;
       continue;
     }
     if (argument === "--help" || argument === "-h") {
@@ -627,12 +840,16 @@ Usage:
 Source options:
   --source-root <slot-or-id>=<path>  Override one registered adapter root; repeatable
   --source <slot-or-id>              Scan only the named adapters; repeatable
+  --dir <path>                       Scope initial scan and browser to one working directory
+  --no-dir                           Disable directory scoping (default: whole machine)
   --limit-files <n>                  Limit source files scanned per adapter
   --safe                             Enable adapter safe mode
   --pricing <file>                   Local JSON pricing/multiplier/quota file; repeatable
   --quota <usd>                      Initial period quota limit in USD for stats
 
 Entry points (at most one of --project/--session/--turn):
+  --stats                            Open directly on the Statistics dashboard
+  --since <preset>                   Open Statistics focused on all|today|24h|7d|30d|week|month
   --project <ref>                    Open focused on a project's turns
   --session <ref>                    Open at the first turn of a session
   --turn <ref>                       Open at a turn's detail
@@ -650,7 +867,7 @@ Keys:
   p / S        browse by project / by session
   t / d        focus turns / detail pane
   /            search        i  stats    s  sources    ? help
-  Stats (i):   Tab/1-4 quadrant · Space filter · v matrix · m calibrate · t/b window · $ quota
+  Stats (i):   Tab/1-4 quadrant · Space filter · S top sessions (Enter open) · v matrix · m calibrate · E export · t/b window · $ quota
   r            refresh the snapshot from disk
   q            quit and release the snapshot
 
@@ -676,6 +893,75 @@ function defaultIo(): LiteTuiIo {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function assertSafeTuiExportDestination(
+  outputPath: string,
+  snapshot: LiveHistorySnapshot,
+  homeDir: string,
+): Promise<void> {
+  assertNotFullStorePath(outputPath);
+  try {
+    const info = await lstat(outputPath);
+    if (info.isSymbolicLink()) {
+      throw new TuiUsageError("Pricing export destination cannot be a symbolic link.");
+    }
+  } catch (error) {
+    if (!isMissingPathError(error)) throw error;
+  }
+
+  const resolvedOutput = await resolvePathForContainment(outputPath);
+  assertNotFullStorePath(resolvedOutput);
+
+  const fullStoreRoot = await resolvePathForContainment(path.resolve(homeDir, ".cchistory"));
+  if (isPathWithin(fullStoreRoot, resolvedOutput)) {
+    throw new TuiUsageError("Pricing export cannot write into a Full store path.");
+  }
+  for (const source of snapshot.listSources()) {
+    const sourceRoot = await resolvePathForContainment(path.resolve(source.base_dir));
+    if (isPathWithin(sourceRoot, resolvedOutput)) {
+      throw new TuiUsageError("Pricing export must be written outside native source roots.");
+    }
+  }
+}
+
+function assertNotFullStorePath(targetPath: string): void {
+  const normalized = targetPath.replace(/\\/gu, "/").toLowerCase();
+  const segments = normalized.split("/").filter(Boolean);
+  if (path.basename(normalized) === "cchistory.sqlite" || segments.includes(".cchistory")) {
+    throw new TuiUsageError("Pricing export cannot write into a Full store path.");
+  }
+}
+
+async function resolvePathForContainment(targetPath: string): Promise<string> {
+  let current = path.resolve(targetPath);
+  const missing: string[] = [];
+  while (true) {
+    try {
+      const resolved = await realpath(current);
+      return path.resolve(resolved, ...missing);
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(targetPath);
+      missing.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+function isPathWithin(parentPath: string, childPath: string): boolean {
+  const relative = path.relative(parentPath, childPath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error.code === "ENOENT" || error.code === "ENOTDIR"),
+  );
 }
 
 function isDirectEntry(): boolean {

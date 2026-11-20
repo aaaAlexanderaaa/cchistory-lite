@@ -7,7 +7,7 @@
  * interaction is testable without a TTY.
  */
 
-import type { TurnSearchResult } from "@cchistory/domain";
+import type { TurnSearchResult, UsageTimePreset } from "@cchistory/domain";
 import {
   LiteBrowserModel,
   type LiteProjectEntry,
@@ -17,6 +17,7 @@ import {
 import {
   createLiteStatsState,
   reduceLiteStatsState,
+  resolveStatsViewData,
   type LiteStatsAction,
   type LiteStatsState,
 } from "./stats-state.js";
@@ -25,13 +26,16 @@ export type LiteFocusPane = "projects" | "turns" | "detail" | "conversation";
 /** What the left pane lists: linked projects, or top-level sessions. */
 export type LiteBrowseScope = "projects" | "sessions";
 export type LiteMode = "browse" | "search";
+export type LiteSearchScope = "prompts" | "conversation";
 export type LiteOverlay = "none" | "help" | "stats" | "sources";
 export type LiteStatsDimension = "source" | "project" | "model" | "day";
 
 export const STATS_DIMENSIONS: readonly LiteStatsDimension[] = ["source", "project", "model", "day"];
 
-/** Queries shorter than this need an explicit Enter before they run. */
+/** Queries shorter than this need an explicit Enter before they run (2 chars for CJK). */
 const SEARCH_AUTO_COMMIT_LENGTH = 4;
+const CJK_SEARCH_AUTO_COMMIT_LENGTH = 2;
+const CJK_SCRIPT_PATTERN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 const PAGE_STEP = 15;
 
 export interface LiteStatusMessage {
@@ -53,6 +57,7 @@ export interface LiteBrowserState {
   selectedSearchTurnIndex: number;
   searchQuery: string;
   searchCommitted: boolean;
+  searchScope: LiteSearchScope;
   detailScrollOffset: number;
   conversationScrollOffset: number;
   overlayScrollOffset: number;
@@ -79,6 +84,7 @@ export type LiteBrowserAction =
   | { type: "append-search-char"; value: string }
   | { type: "backspace-search" }
   | { type: "commit-search" }
+  | { type: "set-search-scope"; scope: LiteSearchScope }
   | { type: "toggle-help" }
   | { type: "toggle-stats" }
   | { type: "toggle-sources" }
@@ -90,6 +96,8 @@ export type LiteBrowserAction =
   | { type: "open-session-ref"; ref: string }
   | { type: "open-turn-ref"; ref: string }
   | { type: "open-search"; query: string }
+  | { type: "open-stats"; timePreset?: UsageTimePreset }
+  | { type: "open-stats-session" }
   | LiteStatsAction;
 
 export interface LiteSearchGroup {
@@ -114,6 +122,7 @@ export function createLiteBrowserState(model: LiteBrowserModel): LiteBrowserStat
       selectedSearchTurnIndex: 0,
       searchQuery: "",
       searchCommitted: false,
+      searchScope: model.hasConversationEvidence ? "conversation" : "prompts",
       detailScrollOffset: 0,
       conversationScrollOffset: 0,
       overlayScrollOffset: 0,
@@ -209,6 +218,15 @@ export function reduceLiteBrowserState(
       return clampState({ ...state, mode: "browse", focusPane: "projects" }, model);
     case "commit-search":
       return clampState({ ...state, ...resetSearchSelection(state), searchCommitted: true }, model);
+    case "set-search-scope":
+      return clampState(
+        {
+          ...state,
+          ...resetSearchSelection(state),
+          searchScope: coreAction.scope,
+        },
+        model,
+      );
     case "append-search-char":
       return applySearchQuery(model, state, `${state.searchQuery}${coreAction.value}`);
     case "backspace-search":
@@ -250,7 +268,51 @@ export function reduceLiteBrowserState(
       return openSessionRef(model, state, coreAction.ref);
     case "open-turn-ref":
       return openTurnRef(model, state, coreAction.ref);
+    case "open-stats": {
+      const preset = coreAction.timePreset ?? state.stats.timePreset;
+      const autoBucket = preset === "today" || preset === "24h" ? "hour" : state.stats.timeBucket;
+      return {
+        ...state,
+        overlay: "stats",
+        overlayScrollOffset: 0,
+        stats: {
+          ...state.stats,
+          timePreset: preset,
+          timeBucket: state.stats.timeBucketPinned ? state.stats.timeBucket : autoBucket,
+        },
+      };
+    }
+    case "open-stats-session":
+      return openSelectedStatsSession(model, state);
   }
+}
+
+function openSelectedStatsSession(model: LiteBrowserModel, state: LiteBrowserState): LiteBrowserState {
+  const data = resolveStatsViewData(model, state.stats);
+  const row = data.sessionRows[state.stats.cursors.sessions];
+  if (!row) return state;
+  const sessionId = row.session_meta?.session_id ?? row.key;
+
+  const directIndex = model.sessions.findIndex((entry) => entry.session.id === sessionId);
+  if (directIndex >= 0) {
+    const opened = openSessionRef(model, { ...state, overlay: "none" }, sessionId);
+    return {
+      ...opened,
+      status: { kind: "info", text: "Opened session from stats · press i to return." },
+    };
+  }
+  const inboundParent = model
+    .getSessionRelatedWork(sessionId)
+    .find((rel) => rel.relation_kind === "delegated_session" && rel.direction === "inbound" && rel.parent_session_ref)
+    ?.parent_session_ref;
+  if (inboundParent) {
+    const opened = openSessionRef(model, { ...state, overlay: "none" }, inboundParent);
+    return {
+      ...opened,
+      status: { kind: "info", text: "Opened parent of delegated child · press i to return to stats." },
+    };
+  }
+  return withError(state, `Session is not browsable in top-level list: ${row.label}.`);
 }
 
 function toggleOverlay(state: LiteBrowserState, overlay: Exclude<LiteOverlay, "none">): LiteBrowserState {
@@ -300,14 +362,22 @@ function applySearchQuery(
 export function shouldRunSearch(state: LiteBrowserState): boolean {
   if (state.mode !== "search") return false;
   if (state.searchQuery.length === 0) return false;
-  return state.searchCommitted || state.searchQuery.length >= SEARCH_AUTO_COMMIT_LENGTH;
+  if (state.searchCommitted) return true;
+  const threshold = CJK_SCRIPT_PATTERN.test(state.searchQuery)
+    ? CJK_SEARCH_AUTO_COMMIT_LENGTH
+    : SEARCH_AUTO_COMMIT_LENGTH;
+  return state.searchQuery.length >= threshold;
 }
 
 export function getSearchGroups(model: LiteBrowserModel, state: LiteBrowserState): LiteSearchGroup[] {
   if (!shouldRunSearch(state)) return [];
+  const page =
+    state.searchScope === "conversation" && model.hasConversationEvidence
+      ? model.searchConversationAll(state.searchQuery)
+      : model.searchAll(state.searchQuery);
   const groups: LiteSearchGroup[] = [];
   const byKey = new Map<string, LiteSearchGroup>();
-  for (const result of model.searchAll(state.searchQuery).results) {
+  for (const result of page.results) {
     const key = result.project?.project_id ?? "__unlinked__";
     let group = byKey.get(key);
     if (!group) {
@@ -321,7 +391,10 @@ export function getSearchGroups(model: LiteBrowserModel, state: LiteBrowserState
 }
 
 export function getSearchTotal(model: LiteBrowserModel, state: LiteBrowserState): number {
-  return shouldRunSearch(state) ? model.searchAll(state.searchQuery).total : 0;
+  if (!shouldRunSearch(state)) return 0;
+  return state.searchScope === "conversation" && model.hasConversationEvidence
+    ? model.searchConversationAll(state.searchQuery).total
+    : model.searchAll(state.searchQuery).total;
 }
 
 export function getSelectedProject(

@@ -1,6 +1,55 @@
 # Project work
 
-## Current work — 2026-11-18 General model-name pricing resolution
+## Current work — 2026-11-19 Usability, diagnostics, and terminal visualization
+
+Status: implementation and full repository verification complete; commit and push to `origin/main` authorized.
+
+Owner requests (verbatim):
+> 我在考虑易用性、可用性这一块
+>
+> A/B 还有别的：我作为一个用户，我用它最可能的场景是什么？我让AI来用它我期望用它做什么？它能做到哪些明明已经可以做到的但是只是因为默认配置而没做到的？比如把时间从天变成小时。 在这个工具交付的结果中，怎样的可视化是恰当的？怎样让用户更加地所见即所得？比如，你给我展示数字不如给我额外展示图像，来显示那个所谓的程度，比如，你给我计算了缓存命中率，那把它展现出来明显要比不展现更好。 去想如何更好地服务用户，而不是只摘低垂的果实
+>
+> 同意，我都认可，除了HTML报告导出以外，你都出方案吧
+
+Approved design & visual/interaction choices (2026-11-19):
+- **A1 (CLI `search` default)**: Default to full conversation search (titles + user prompts + assistant replies) on a context-light scan (`retainConversationEvidence: true`), with `--prompts-only` / `--content prompts` for prompt/title-only mode and `--group-by session|message`. `query`/`shell` JSON search keeps legacy default unless `content: "conversation"` is specified.
+- **A2 (`stats` / `tui` scope defaults)**: CLI `stats` and `tui` default to machine-wide scope (`--dir <path>` narrows to one directory; `--no-dir` remains accepted). Collection commands (`ls`, `latest`, `sample`, `search`, `tree projects`, `query`, `shell`) retain `--dir=$PWD`.
+- **A3 (CLI `help` layout)**: No-arg `cchistory-lite` and `help` print a concise ~25–30 line human-first command synopsis; `help <command>` renders full per-command flags from `agent-contract.ts`; `agent` remains the machine JSON contract.
+- **A4 (Hybrid terminal visualization)**: Full terminal visuals in CLI `stats` and TUI stats dashboard (`i`) — 5-component stacked cost-mix bar, dual-marker quota pace gauge, cache hit rate + bar + estimated savings + `>200K` tier call count, time trend sparkline, and inline share bars + cache-hit column on rollup tables (responsive to terminal width, `NO_COLOR=1`/non-TTY safe).
+- **A5 (Execution plan & boundaries)**: Approved visual/interaction mockups for Stage 1 (diagnostics, hourly/session dimensions, terminal visualization, Top Sessions drill-down, TUI pricing export) and Stage 2 (full-conversation CLI search, full reply `show` & Markdown export, unified CLI/TUI entry & forwarding, TUI clipboard/exit-print-resume/CJK search, concise help). Static HTML report export explicitly excluded; zero-store, read-only source, one-way layering, and canonical semantics invariants preserved.
+
+Pre-code judgment:
+- Executor: preserve zero-store, read-only sources, offline pricing, `auditProjectionConsistency`, and additive JSON compatibility while delivering both stages end-to-end.
+- Collaborator: turn already-computed canonical signals (local hours, per-call cache savings, `>200K` context tiers, 5-part cost shares, session families/tools, masked conversation evidence) into default-on, immediately visible outputs and one-keystroke workflows.
+- Architect: keep all usage diagnostics, time-bucket selection, quota pace math, session enrichment, and search matching in `packages/canonical` (pure, storage-neutral); keep `apps/lite-cli` and `apps/lite-tui` strictly presentation/interaction layers (`stats-visuals.ts`, `help.ts`, `clipboard.ts`).
+
+Scope & module ownership:
+- `packages/domain/src/index.ts`, `packages/domain/src/usage-pricing.ts`: `"hour"` / `"session"` dimensions, `UsageEfficiencyMetrics`, `UsageCostShares`, `QuotaPaceProjection`, `UsageSessionRollupMeta`, `UsageHourlyProfileCell`, and additive `UsageCostBreakdown` savings/tier counters.
+- `packages/canonical/src/usage-time.ts`, `packages/canonical/src/usage-pricing.ts`, `packages/canonical/src/usage.ts`, `packages/canonical/src/usage-diagnostics.ts`, `packages/canonical/src/usage-breakdown.ts`, `packages/canonical/src/conversation-evidence.ts`: hourly bucketing & `resolveDefaultTimeBucket`, per-call cache savings & `>200K` tier counting, efficiency/quota pace/24h profile/enriched `by_session` computation, and `sourceIds` filtering on conversation evidence search.
+- `packages/live-runtime/src/index.ts`: passes session contributions & families into usage aggregations, wires `sourceIds` through `searchConversation`, and re-exports canonical diagnostics helpers.
+- `apps/lite-cli/src/stats-visuals.ts`, `apps/lite-cli/src/stats-command.ts`, `apps/lite-cli/src/stats-render.ts`, `apps/lite-cli/src/help.ts`, `apps/lite-cli/src/json-v2.ts`, `apps/lite-cli/src/agent-contract.ts`, `apps/lite-cli/src/index.ts`: terminal visuals, auto-hourly & session stats, machine-wide `stats` default, conversation-default `search`, full reply `show` & Markdown `export`, sibling TUI launching & option forwarding, and concise single-source help.
+- `apps/lite-tui/src/stats-visuals.ts`, `apps/lite-tui/src/clipboard.ts`, `apps/lite-tui/src/stats-state.ts`, `apps/lite-tui/src/stats-query.ts`, `apps/lite-tui/src/stats-render.ts`, `apps/lite-tui/src/model.ts`, `apps/lite-tui/src/state.ts`, `apps/lite-tui/src/input.ts`, `apps/lite-tui/src/render.ts`, `apps/lite-tui/src/index.ts`: dashboard visuals, `hour` bucket, `S` Top Sessions drill-down, `E` guarded pricing export, `y`/`Y`/`R` copy & exit-print-resume, `--dir`/`--stats`/`--since`, `Ctrl+F` on-demand conversation search, and 2-char CJK auto-search.
+
+Follow-up polish (2026-11-20) — `gemini-4-neon` pricing + stats visualization & Matrix redesign:
+> gemini-4-neon的价格补一下
+>
+> 那个颜色的条带太短了以至于没有区分懂，200美金和3美金看起来差不多；而且没对齐, 而且hour没有考虑hour of the day，22:00和1:00竟然是连在一起画图的, 而且matrix 视图有一种，我不知道你想让我看什么的感觉，细节都被遮住了或者漏掉了，time被遮得只剩下月份，in/out/cr/cw/ mit都不展示？
+
+Approved follow-up choices:
+- Max-normalized 10–12 column 1/8th-block bars (`▏▎▍▌▋▊▉█`, 80–96 levels) and strict fixed column widths across CLI and TUI quadrants (`$200` full bar vs `$3` thin 1/8th sliver; zero column jitter).
+- Gap-filled chronological `hour`/`day` series (`buildDenseTimeSeries` / `densifyShortHourlyRollupRows` so empty hours `23:00`/`00:00` between `22:00` and `01:00` never collapse) plus `hour_of_day` (`00:00`–`23:00`) bucket & 24-hour clock rhythm charts across CLI and TUI.
+- Redesigned TUI Matrix view (`apps/lite-tui/src/stats-matrix-render.ts`) defaulting to `Project × Model` with `g` grouping cycle (`Project × Model` / `Model × Time` / `Project × Time` / `All 4`), unclipped bucket-aware time formatting, full `In / CR / CW / Out / Hit / Mult / List$ / Adj$` columns (plus `←/→` column paging on narrow screens), and a pinned 2-line selected-row detail inspector; CLI Matrix also adds `CacheW` and `Mult`.
+- Added official Google `gemini-4-neon` pricing (`$3 / $15 / $0.15` per 1M input/output/cache-read tokens, verified against `models.dev/api.json` & Google AI pricing) to `model-pricing-catalog.ts` (2,563 models) and `refresh-models-dev-pricing.mjs` supplements.
+
+Verification (2026-11-20):
+- `pnpm run build:lite` passed across all 6 workspace packages.
+- `pnpm test` passed: 874 package tests (`@cchistory/domain` 103, `@cchistory/canonical` 180, `@cchistory/source-adapters` 283, `@cchistory/live-runtime` 132, `@cchistory/lite-cli` 76, `@cchistory/lite-tui` 100), 4 catalog-refresh tests, and `verify-lite-boundaries.mjs` (zero store/server leaks).
+- `pnpm run verify:governance` passed: 14 JS governance tests, 5 Python doc-checker tests, `verify-architecture-boundaries.mjs` (5 rules across 144 matches), and `scripts/check_docs.py` (37 docs, 17 adapters, 0 errors).
+- `pnpm run verify:lite-artifact` passed (with temporary npm cache) for both the standalone tarball and `npm pack` + local prefix install.
+- `pnpm run mock-data:validate` passed across 198 fixture files; `git diff --check` passed.
+- Direct built-binary fixture checks verified CLI `stats` (1/8th fractional bars, gap-filled trend, `Hour of day (00-23)` + ruler, `--by hour_of_day`, Matrix `CacheW`/`Mult`), TUI 130×28 Quad alignment, and TUI 120×22 Matrix (`Project × Model` default, `g` grouping cycle, unclipped `MM-DD HH:00` time, narrow `←/→` column paging, and pinned 2-line `Selected` inspector).
+
+## Previous work — 2026-11-18 General model-name pricing resolution
 
 Status: implementation and verification complete. Commit and push to `origin/main` authorized;
 the owner will run the GitHub Release workflow for `0.8.1`.
