@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Official OpenAI `gpt-6.2-sol` (`$2/$10/$0.10`) and `gpt-6.2-astra`
+  (`$8/$40/$0.40`) list rates per 1M input/output/cache-read tokens
+  (2,565 priced models). `codex-auto-review` stays unpriced: ChatGPT-login
+  Codex auto-review is free and has no published independent API unit price.
+
 ## [0.8.2] - 2026-11-20
 
 ### Added

@@ -2,7 +2,7 @@
 doc_type: evidence
 status: current
 authority: evidence
-last_reconciled: 2026-11-18
+last_reconciled: 2026-11-20
 ---
 
 # ccusage pricing and Codex accounting
@@ -231,6 +231,32 @@ A follow-up inherited-summary case initially returned 251 versus 131 tokens; pre
 checking the inherited flag keeps the replay on its parent and the child's own 11-token call
 on the child. These initial findings remain preserved alongside their fixes. Final re-verification
 and gates are recorded in PLAN.md.
+
+### GPT-6.2 Sol and Astra (2026-11-20)
+
+The 2026-11-17 snapshot has `gpt-6.1-sol` and `gpt-6-astra` but not the 6.2
+IDs. The owner supplied official OpenAI list rates (USD per 1M tokens):
+
+| Model | Input | Cache read | Output |
+| --- | ---: | ---: | ---: |
+| `gpt-6.2-sol` | $2 | $0.10 | $10 |
+| `gpt-6.2-astra` | $8 | $0.40 | $40 |
+
+Astra is 4× Sol. Sources: [OpenAI API](https://openai.com/api/) and
+[platform pricing](https://platform.openai.com/docs/pricing). The generator
+records the OpenAI pricing URL when either key is absent from upstream.
+Numeric matching keeps `gpt-6.2-sol` distinct from `gpt-6.1-sol` / `gpt-6-sol`
+and `gpt-6.2-astra` distinct from `gpt-6-astra`.
+
+`codex-auto-review` stays unpriced. ChatGPT-login Codex auto-review is free
+and does not consume plan quota; OpenAI has not published an independent API
+unit price. A $0 catalog row would fold that volume into list cost as if it
+were a priced API model.
+
+Official long-context multipliers above 272k input tokens and cache-write
+rates exist on the pricing page. This supplement records the three rates from
+the owner table; a later models.dev refresh can add the rest when upstream
+lists the 6.2 IDs.
 
 ## Remaining coverage and verification
 

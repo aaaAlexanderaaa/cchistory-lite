@@ -15,6 +15,7 @@ const DEFAULT_API_URL = "https://models.dev/api.json";
 const LITELLM_URL = "https://raw.githubusercontent.com/BerriAI/litellm/9a1e3bde9453f9b1316790fc51e6c098d9447d7b/model_prices_and_context_window.json";
 const XAI_PRICING_URL = "https://docs.x.ai/developers/pricing";
 const GOOGLE_PRICING_URL = "https://ai.google.dev/gemini-api/docs/pricing";
+const OPENAI_PRICING_URL = "https://platform.openai.com/docs/pricing";
 const PROVIDER_PRIORITY = [
   "anthropic",
   "openai",
@@ -137,6 +138,16 @@ export function applyOfficialPriceSupplements(catalog) {
     provider: "google",
     prices: { input: 3, output: 15, cache_read: 0.15 },
   };
+  catalog["gpt-6.2-sol"] ??= {
+    id: "gpt-6.2-sol",
+    provider: "openai",
+    prices: { input: 2, output: 10, cache_read: 0.1 },
+  };
+  catalog["gpt-6.2-astra"] ??= {
+    id: "gpt-6.2-astra",
+    provider: "openai",
+    prices: { input: 8, output: 40, cache_read: 0.4 },
+  };
   return catalog;
 }
 
@@ -236,9 +247,17 @@ async function main() {
   }
   const hadGrokFast = Object.prototype.hasOwnProperty.call(catalog, "grok-4.7-build-fast");
   const hadGeminiNeon = Object.prototype.hasOwnProperty.call(catalog, "gemini-4-neon");
+  const hadGpt62Sol = Object.prototype.hasOwnProperty.call(catalog, "gpt-6.2-sol");
+  const hadGpt62Astra = Object.prototype.hasOwnProperty.call(catalog, "gpt-6.2-astra");
   applyOfficialPriceSupplements(catalog);
   if (!hadGrokFast && Object.prototype.hasOwnProperty.call(catalog, "grok-4.7-build-fast")) sources.push(XAI_PRICING_URL);
   if (!hadGeminiNeon && Object.prototype.hasOwnProperty.call(catalog, "gemini-4-neon")) sources.push(GOOGLE_PRICING_URL);
+  if (
+    (!hadGpt62Sol && Object.prototype.hasOwnProperty.call(catalog, "gpt-6.2-sol")) ||
+    (!hadGpt62Astra && Object.prototype.hasOwnProperty.call(catalog, "gpt-6.2-astra"))
+  ) {
+    sources.push(OPENAI_PRICING_URL);
+  }
   const fetchedAt = new Date().toISOString().slice(0, 10);
 
   if (updateBuiltin) {

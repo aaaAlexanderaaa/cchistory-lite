@@ -30,6 +30,23 @@ Scope & module ownership:
 - `apps/lite-cli/src/stats-visuals.ts`, `apps/lite-cli/src/stats-command.ts`, `apps/lite-cli/src/stats-render.ts`, `apps/lite-cli/src/help.ts`, `apps/lite-cli/src/json-v2.ts`, `apps/lite-cli/src/agent-contract.ts`, `apps/lite-cli/src/index.ts`: terminal visuals, auto-hourly & session stats, machine-wide `stats` default, conversation-default `search`, full reply `show` & Markdown `export`, sibling TUI launching & option forwarding, and concise single-source help.
 - `apps/lite-tui/src/stats-visuals.ts`, `apps/lite-tui/src/clipboard.ts`, `apps/lite-tui/src/stats-state.ts`, `apps/lite-tui/src/stats-query.ts`, `apps/lite-tui/src/stats-render.ts`, `apps/lite-tui/src/model.ts`, `apps/lite-tui/src/state.ts`, `apps/lite-tui/src/input.ts`, `apps/lite-tui/src/render.ts`, `apps/lite-tui/src/index.ts`: dashboard visuals, `hour` bucket, `S` Top Sessions drill-down, `E` guarded pricing export, `y`/`Y`/`R` copy & exit-print-resume, `--dir`/`--stats`/`--since`, `Ctrl+F` on-demand conversation search, and 2-char CJK auto-search.
 
+Follow-up (2026-11-20) — official GPT-6.2 Sol / Astra list rates:
+
+> 下面是价格,你更新一下本地的cchistory-lite 然后 commit and push
+>
+> gpt-6.2-sol $2 / $0.10 / $10；gpt-6.2-astra $8 / $0.40 / $40（Astra 为 Sol 的 4 倍）。Sol 和 Astra 均有官方定价。codex-auto-review 通过 ChatGPT 账号登录 Codex 时免费，且不消耗套餐额度；OpenAI 未公布其独立 API 单价。
+
+Approved follow-up choices:
+- Add `gpt-6.2-sol` (`$2 / $10 / $0.10` per 1M input/output/cache-read) and `gpt-6.2-astra` (`$8 / $40 / $0.40`) as official-price supplements; upstream catalog entries retain precedence.
+- Keep `codex-auto-review` unpriced rather than a $0 API row.
+- Leave 272k long-context multipliers and cache-write rates for a later upstream refresh; the owner table listed the three headline rates.
+
+Verification (2026-11-20 GPT-6.2 pricing):
+- `pnpm run build:lite` passed.
+- `pnpm test` passed: 875 package tests (`@cchistory/domain` 103, `@cchistory/canonical` 181, `@cchistory/source-adapters` 283, `@cchistory/live-runtime` 132, `@cchistory/lite-cli` 76, `@cchistory/lite-tui` 100), 4 catalog-refresh tests, and `verify-lite-boundaries.mjs`.
+- `pnpm run verify:governance` passed: 14 JS governance tests, 5 Python doc-checker tests, `verify-architecture-boundaries.mjs` (5 rules across 144 matches), and `scripts/check_docs.py` (37 docs, 17 adapters).
+- `pnpm run verify:lite-artifact` passed (temporary npm cache) for the standalone tarball and `npm pack` + local prefix install.
+
 Follow-up polish (2026-11-20) — `gemini-4-neon` pricing + stats visualization & Matrix redesign:
 > gemini-4-neon的价格补一下
 >

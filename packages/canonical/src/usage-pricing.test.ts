@@ -162,6 +162,10 @@ test("resolveModelPricing maps user gemini aliases, normalized suffixes, and unp
   const unknown = resolveModelPricing("private-local-llm-v9");
   assert.equal(unknown.match_kind, "unpriced");
   assert.equal(unknown.unit_prices, undefined);
+
+  const autoReview = resolveModelPricing("codex-auto-review");
+  assert.equal(autoReview.match_kind, "unpriced");
+  assert.equal(autoReview.unit_prices, undefined);
 });
 
 test("cost computation separates cache read/write, avoids reasoning double-count, and applies dual-layer multipliers", () => {
@@ -546,4 +550,79 @@ test("gemini-4-neon resolves official Google pricing across variants and bills r
   assert.ok(Math.abs(overview.cost!.list_cost_usd - 33.15) < 1e-12);
   // Cache savings: 1M * ($3.00 - $0.15) = $2.85
   assert.ok(Math.abs((overview.cost!.cache_list_savings_usd ?? 0) - 2.85) < 1e-12);
+});
+
+test("gpt-6.2-sol and gpt-6.2-astra resolve official OpenAI pricing with Astra at 4x Sol", () => {
+  for (const name of ["gpt-6.2-sol", "openai/gpt-6.2-sol", "gpt-6.2-sol-high"]) {
+    const resolved = resolveModelPricing(name);
+    assert.equal(resolved.resolved_model, "gpt-6.2-sol");
+    assert.equal(resolved.provider, "openai");
+    assert.deepEqual(resolved.unit_prices, { input: 2, output: 10, cache_read: 0.1 });
+  }
+  for (const name of ["gpt-6.2-astra", "openai/gpt-6.2-astra", "gpt-6.2-astra-high"]) {
+    const resolved = resolveModelPricing(name);
+    assert.equal(resolved.resolved_model, "gpt-6.2-astra");
+    assert.equal(resolved.provider, "openai");
+    assert.deepEqual(resolved.unit_prices, { input: 8, output: 40, cache_read: 0.4 });
+  }
+  const sol = resolveModelPricing("gpt-6.1-sol");
+  const six = resolveModelPricing("gpt-6-sol");
+  const astra6 = resolveModelPricing("gpt-6-astra");
+  assert.equal(sol.resolved_model, "gpt-6.1-sol");
+  assert.equal(six.resolved_model, "gpt-6-sol");
+  assert.equal(astra6.resolved_model, "gpt-6-astra");
+  assert.equal(six.unit_prices?.cache_read, 0.2);
+  assert.equal(astra6.unit_prices?.input, 10);
+
+  const source = createSource({ slot_id: "codex", platform: "codex" });
+  const session = createSession(source, { model: "gpt-6.2-sol" });
+  const turn = createTurn(source, session, {
+    context_summary: {
+      assistant_reply_count: 1,
+      tool_call_count: 0,
+      primary_model: "gpt-6.2-sol",
+      has_errors: false,
+      token_usage: {
+        input_tokens: 1_000_000,
+        cache_read_input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+        reasoning_output_tokens: 0,
+        total_tokens: 3_000_000,
+      },
+    },
+  });
+  const overview = computeUsageOverview({
+    filters: { timezone: "UTC" },
+    listResolvedSessions: () => [session],
+    listResolvedTurns: () => [turn],
+    listSources: () => [source],
+    listProjects: () => [],
+  });
+  // $2.00 input + $0.10 cache_read + $10.00 output = $12.10
+  assert.ok(Math.abs(overview.cost!.list_cost_usd - 12.1) < 1e-12);
+  const astraSession = createSession(source, { id: "session-astra", model: "gpt-6.2-astra" });
+  const astraTurn = createTurn(source, astraSession, {
+    context_summary: {
+      assistant_reply_count: 1,
+      tool_call_count: 0,
+      primary_model: "gpt-6.2-astra",
+      has_errors: false,
+      token_usage: {
+        input_tokens: 1_000_000,
+        cache_read_input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+        reasoning_output_tokens: 0,
+        total_tokens: 3_000_000,
+      },
+    },
+  });
+  const astraOverview = computeUsageOverview({
+    filters: { timezone: "UTC" },
+    listResolvedSessions: () => [astraSession],
+    listResolvedTurns: () => [astraTurn],
+    listSources: () => [source],
+    listProjects: () => [],
+  });
+  // $8.00 input + $0.40 cache_read + $40.00 output = $48.40 (4x Sol)
+  assert.ok(Math.abs(astraOverview.cost!.list_cost_usd - 48.4) < 1e-12);
 });

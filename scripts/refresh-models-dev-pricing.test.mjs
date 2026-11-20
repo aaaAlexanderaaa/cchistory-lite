@@ -35,9 +35,20 @@ test("official price supplements preserve distinct rates and upstream precedence
   assert.deepEqual(catalog["grok-4.7-build-fast"].prices, { input: 4, output: 12, cache_read: 1,
     context_tiers: [{ above_input_tokens: 200000, input: 6, output: 18, cache_read: 1.5 }] });
   assert.deepEqual(catalog["gemini-4-neon"].prices, { input: 3, output: 15, cache_read: 0.15 });
+  assert.deepEqual(catalog["gpt-6.2-sol"].prices, { input: 2, output: 10, cache_read: 0.1 });
+  assert.deepEqual(catalog["gpt-6.2-astra"].prices, { input: 8, output: 40, cache_read: 0.4 });
   const upstreamGrok = { id: "grok-4.7-build-fast", provider: "xai", prices: { input: 5, output: 15 } };
   const upstreamNeon = { id: "gemini-4-neon", provider: "google", prices: { input: 2.5, output: 12.5, cache_read: 0.125 } };
-  const merged = applyOfficialPriceSupplements({ "grok-4.7-build-fast": upstreamGrok, "gemini-4-neon": upstreamNeon });
+  const upstreamSol = { id: "gpt-6.2-sol", provider: "openai", prices: { input: 3, output: 12 } };
+  const upstreamAstra = { id: "gpt-6.2-astra", provider: "openai", prices: { input: 9, output: 45 } };
+  const merged = applyOfficialPriceSupplements({
+    "grok-4.7-build-fast": upstreamGrok,
+    "gemini-4-neon": upstreamNeon,
+    "gpt-6.2-sol": upstreamSol,
+    "gpt-6.2-astra": upstreamAstra,
+  });
   assert.equal(merged["grok-4.7-build-fast"], upstreamGrok);
   assert.equal(merged["gemini-4-neon"], upstreamNeon);
+  assert.equal(merged["gpt-6.2-sol"], upstreamSol);
+  assert.equal(merged["gpt-6.2-astra"], upstreamAstra);
 });
