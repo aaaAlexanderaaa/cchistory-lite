@@ -28,6 +28,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `Cache dist` / `Role split` / top-5 `Anomalies` overview lines), compact
   masked `context.tool_summaries` in `show turn --json`, and `diagnose` / `trace`
   operations in `query` and `shell --json`.
+- Finite SQL `calls` collection (`SELECT ... FROM calls ... LIMIT N`) exposing
+  per-call usage, cache-hit status, miss cause, subagent role, masked primary
+  tool signature, and anomaly tags with full parity against `stats` and `trace`,
+  plus an editable `docs/guide/queries/anomaly-calls.sql` template.
+- TUI interactive diagnostics (`a:Anom` with `g` cycling `Anomalies`, `Families`,
+  and `Tools & Loops`) and full-screen `Trace` call waterfall view (`Enter` from
+  Anomalies, `T` from `S:Sessions` or the main browser, `f` anomalies-only, `u`
+  subagent toggle, `←/→` narrow column paging, `O` jump to session conversation,
+  and a pinned 2-line Selected Call Inspector showing causal tool I/O); TUI date/time
+  quadrants now display per-bucket `Hit` cache-hit ratios, `R` is renamed to `Reas`
+  (Reasoning), and a fixed bottom abbreviation legend stays pinned across views and filters.
 - Official OpenAI `gpt-6.2-sol` (`$2/$10/$0.10`) and `gpt-6.2-astra`
   (`$8/$40/$0.40`) list rates per 1M input/output/cache-read tokens
   (2,565 priced models). `codex-auto-review` stays unpriced: ChatGPT-login

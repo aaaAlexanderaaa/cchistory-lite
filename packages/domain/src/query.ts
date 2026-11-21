@@ -1,4 +1,4 @@
-export type QueryCollection = "sessions" | "turns";
+export type QueryCollection = "sessions" | "turns" | "calls";
 export type QueryValue = string | number | boolean | null;
 export type QueryValueType = "string" | "number" | "boolean" | "timestamp";
 export interface QueryColumn { name: string; type: QueryValueType; nullable: boolean }

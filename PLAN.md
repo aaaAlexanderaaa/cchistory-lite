@@ -2,7 +2,7 @@
 
 ## Current work — 2026-11-21 Per-call usage telemetry, anomaly diagnostics, and `trace`
 
-Status: Stage 1 implementation and full repository verification complete; commit and push to `origin/main` authorized. Stage 2 (TUI interactive call waterfall & finite SQL `calls` table) authorized next.
+Status: Stage 1 committed & pushed (`c222f75`); Stage 2 (finite SQL `calls` collection, TUI interactive diagnostics & call waterfall, date `Hit`, `Reas`, and fixed legend) verified and commit/push to `origin/main` authorized.
 
 Owner requests (verbatim):
 > 我让远程的agent用了一下这个工具，让它去排查异常token开销，它感觉有点摩擦，因为只到了session级别，没有subagent或者每句话/每个工具调用的情况，它举了一个例子，可能某些工具调用的缓存命中是0,但是其他会话都是99%，结果综合下来变成了70%或者50%，就缺少了可观测性。它建议最省事的改进会是直接列出“哪条命令被反复查询、查了几次、持续多久、同期用了多少 token”，但我认为可以做得更好，你想想
@@ -33,6 +33,21 @@ Verification (2026-11-21):
 - `pnpm run verify:lite-artifact` passed (temporary npm cache) for both the standalone tarball and `npm pack` + local prefix install.
 - `pnpm run mock-data:validate` passed across 198 fixture files; `git diff --check` passed.
 - Direct built-binary fixture checks verified `stats` (`Cache dist`, `Role split`, top `Anomalies`), `stats --by family`, `stats --by tool`, `trace` on Claude Code (sidecar `subagent_key`, idle TTL miss, polling loop), Codex (prefix invalidation), and Antigravity SQLite (delegated child `[sub:...]` waterfall), plus `shell --json` `diagnose` + `trace`.
+
+Stage 2 follow-up (2026-11-21) — finite SQL `calls` collection + TUI interactive `a:Anom` & `Trace` call waterfall:
+- Owner approval: `1.同意 2.同意`, plus approved TUI visual/interaction choices:
+  - **TUI-A1**: Dedicated `a:Anom` global diagnostics view (`g` cycles `Anomalies` / `Families` / `Tools & Loops`, with `Cache dist` + `Role split` strip and pinned 2-line inspector) + full-screen interactive `Trace` call waterfall (`f` anomalies-only, `u` subagent toggle, `←/→` narrow column paging, `O` open session conversation, pinned 2-line Selected Call Inspector with full causal `preceding_tools` + `emitted_tools`).
+  - **TUI-A2**: `S:Sessions` preserves `Enter` to open the session conversation and adds `T` for call waterfall trace; `a:Anom` uses `Enter` for call waterfall trace and `O` to open the session conversation; browse mode (`overlay === "none"`) supports `T` to jump straight into `Trace` (`Esc` returns cleanly).
+  - **TUI-A3 (Owner polish)**: `日期也可以加一个缓存命中率计算，另外，那个R是啥？工具读吗还是啥？我觉得需要维护一行缩写释义在上面或底部不随筛选而变动位置` — approved bottom-pinned fixed abbreviation legend line (`Legend: In=Input · CR=CacheRead · CW=CacheWrite · Out=Output · Reas=Reasoning · Hit=CacheHit · List/Adj=List/Adjusted$`) across all stats views/filters, renamed bare `R` → `Reas`, and enabled `Hit` column on the TUI date/time quadrant (`day`/`hour`/`hour_of_day`/`week`/`month`).
+- Stage 2 module ownership:
+  - `packages/domain/src/query.ts`, `packages/canonical/src/query.ts`, `packages/live-runtime/src/sql-query.ts`, `packages/live-runtime/src/index.ts`, `docs/guide/query.md`, `docs/guide/queries/anomaly-calls.sql`: 31-column finite SQL `calls` collection sharing the single canonical `computeUsageDiagnosticsReport` owner.
+  - `apps/lite-tui/src/model.ts`, `apps/lite-tui/src/stats-state.ts`, `apps/lite-tui/src/stats-query.ts`, `apps/lite-tui/src/state.ts`, `apps/lite-tui/src/input.ts`, `apps/lite-tui/src/stats-anomalies-render.ts`, `apps/lite-tui/src/stats-trace-render.ts`, `apps/lite-tui/src/stats-render.ts`, `apps/lite-tui/src/stats-visuals.ts`, `apps/lite-tui/src/render.ts`: TUI `a:Anom` diagnostics view, interactive `Trace` waterfall, and live-pricing-aware trace resolution.
+- Verification (2026-11-21 Stage 2):
+  - `pnpm test` passed: 883 package tests (`@cchistory/domain` 103, `@cchistory/canonical` 184, `@cchistory/source-adapters` 283, `@cchistory/live-runtime` 133, `@cchistory/lite-cli` 79, `@cchistory/lite-tui` 101), 4 catalog-refresh tests, and `verify-lite-boundaries.mjs`.
+  - `pnpm run verify:governance` passed: 14 JS governance tests, 5 Python doc-checker tests, `verify-architecture-boundaries.mjs` (5 rules across 154 matches), and `scripts/check_docs.py` (37 docs, 17 adapters, 0 errors, 28 advisories).
+  - `pnpm run verify:lite-artifact` passed (temporary npm cache) for both the standalone tarball and `npm pack` + local prefix install.
+  - `pnpm run mock-data:validate` passed across 198 fixture files; `git diff --check` passed.
+  - Direct rendered-frame inspection verified TUI `a:Anom` (128×24) and `Trace` wide (128×24) / narrow (86×20) column alignment & inspector output, plus built CLI `query --sql-file docs/guide/queries/anomaly-calls.sql --params '[5]'` against Claude Code & Codex fixtures.
 
 ## Previous work — 2026-11-19 Usability, diagnostics, and terminal visualization
 

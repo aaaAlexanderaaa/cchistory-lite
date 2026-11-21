@@ -154,7 +154,7 @@ function renderSelectedRowInspector(
   const cwStr = formatCompactCount(row.total_cache_creation_input_tokens) || "0";
   const outStr = formatCompactCount(row.total_output_tokens) || "0";
   const rPart = row.total_reasoning_output_tokens > 0
-    ? ` (R ${formatCompactCount(row.total_reasoning_output_tokens)})`
+    ? ` (Reas ${formatCompactCount(row.total_reasoning_output_tokens)})`
     : "";
   const hitStr = renderTuiCacheHit(row.efficiency?.cache_hit_ratio ?? null, false);
   const multStr = formatTuiMultiplier(row.efficiency?.effective_multiplier);

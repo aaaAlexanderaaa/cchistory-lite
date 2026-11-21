@@ -65,6 +65,8 @@ export function resolveLiteInputEffect(state: LiteBrowserState, key: LiteKey): L
         return state.overlay === "none" ? { type: "copy-content" } : { type: "none" };
       case "R":
         return state.overlay === "none" ? { type: "exit-print-resume" } : { type: "none" };
+      case "T":
+        return state.overlay === "none" ? action({ type: "open-stats-trace" }) : { type: "none" };
       case "p":
         return action({ type: "set-browse-scope", scope: "projects" });
       case "S":
@@ -120,6 +122,7 @@ function resolveStatsInputEffect(state: LiteBrowserState, key: LiteKey): LiteInp
   }
 
   if (key.name === "escape") {
+    if (stats.view === "trace") return action({ type: "exit-stats-trace" });
     if (stats.view !== "quad") return action({ type: "stats-set-view", view: "quad" });
     return action({ type: "close-overlay" });
   }
@@ -130,13 +133,19 @@ function resolveStatsInputEffect(state: LiteBrowserState, key: LiteKey): LiteInp
     if (stats.view === "multipliers") {
       return action({ type: "stats-multiplier-col", delta: key.shift ? -1 : 1 });
     }
+    if (stats.view === "anomalies") {
+      return action({ type: "stats-cycle-anomalies-tab" });
+    }
+    if (stats.view === "trace") {
+      return action({ type: "stats-trace-col-page", delta: key.shift ? -1 : 1 });
+    }
     return action({ type: "stats-cycle-sort" });
   }
   if (key.name === "up" || key.input === "k") return action({ type: "stats-move", delta: -1 });
   if (key.name === "down" || key.input === "j") return action({ type: "stats-move", delta: 1 });
   if (key.name === "pageup") return action({ type: "stats-move", delta: -10 });
   if (key.name === "pagedown") return action({ type: "stats-move", delta: 10 });
-  if (key.name === "home" || (key.input === "g" && stats.view !== "matrix")) {
+  if (key.name === "home" || (key.input === "g" && stats.view !== "matrix" && stats.view !== "anomalies")) {
     return action({ type: "stats-jump", edge: "first" });
   }
   if (key.name === "end" || key.input === "G") return action({ type: "stats-jump", edge: "last" });
@@ -145,6 +154,20 @@ function resolveStatsInputEffect(state: LiteBrowserState, key: LiteKey): LiteInp
     if (key.input === "g") return action({ type: "stats-cycle-matrix-group" });
     if (key.name === "left" || key.input === "h") return action({ type: "stats-matrix-col-page", delta: -1 });
     if (key.name === "right" || key.input === "l") return action({ type: "stats-matrix-col-page", delta: 1 });
+  }
+
+  if (stats.view === "anomalies") {
+    if (key.input === "g") return action({ type: "stats-cycle-anomalies-tab" });
+    if (key.name === "return" || key.input === "T") return action({ type: "open-stats-trace" });
+    if (key.input === "O") return action({ type: "open-stats-session" });
+  }
+
+  if (stats.view === "trace") {
+    if (key.input === "f") return action({ type: "stats-toggle-trace-anomalies" });
+    if (key.input === "u") return action({ type: "stats-toggle-trace-subagents" });
+    if (key.input === "O") return action({ type: "open-stats-session" });
+    if (key.name === "left" || key.input === "h") return action({ type: "stats-trace-col-page", delta: -1 });
+    if (key.name === "right" || key.input === "l") return action({ type: "stats-trace-col-page", delta: 1 });
   }
 
   if (stats.view === "multipliers") {
@@ -174,7 +197,7 @@ function resolveStatsInputEffect(state: LiteBrowserState, key: LiteKey): LiteInp
       default:
         break;
     }
-  } else if (stats.view !== "matrix") {
+  } else if (stats.view !== "matrix" && stats.view !== "anomalies" && stats.view !== "trace") {
     if (key.name === "left" || key.input === "h") return action({ type: "stats-cycle-quadrant", reverse: true });
     if (key.name === "right" || key.input === "l") return action({ type: "cycle-stats-dimension" });
     if ((key.input === " " || key.name === "return") && stats.view === "quad") {
@@ -182,6 +205,9 @@ function resolveStatsInputEffect(state: LiteBrowserState, key: LiteKey): LiteInp
     }
     if (key.name === "return" && stats.view === "sessions") {
       return action({ type: "open-stats-session" });
+    }
+    if (key.input === "T" && stats.view === "sessions") {
+      return action({ type: "open-stats-trace" });
     }
     switch (key.input) {
       case "1":
@@ -212,6 +238,8 @@ function resolveStatsInputEffect(state: LiteBrowserState, key: LiteKey): LiteInp
       return action({ type: "stats-toggle-view", view: "matrix" });
     case "S":
       return action({ type: "stats-toggle-view", view: "sessions" });
+    case "a":
+      return action({ type: "stats-toggle-view", view: "anomalies" });
     case "m":
       return action({ type: "stats-toggle-view", view: "multipliers" });
     case "E":

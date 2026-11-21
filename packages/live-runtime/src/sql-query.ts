@@ -111,7 +111,9 @@ export function lowerSqlAst(ast: unknown, params: QueryValue[], complete: boolea
   const from = node((select.from as unknown[])[0]); only(from, ["type", "name"]);
   if (from.type !== "table") fail("unsupported", "Select one collection.");
   const table = node(from.name); only(table, ["name"]);
-  if (table.name !== "sessions" && table.name !== "turns") fail("field", "Collection must be sessions or turns.");
+  if (table.name !== "sessions" && table.name !== "turns" && table.name !== "calls") {
+    fail("field", "Collection must be sessions, turns, or calls.");
+  }
   const collection = table.name as QueryCollection;
   const fields = new Map(QUERY_COLUMNS[collection].map(c => [c.name, c]));
   const ref = (raw: unknown): string => {

@@ -420,7 +420,10 @@ queries (shorter queries run on Enter). Inside search, press `Ctrl+F` to toggle
 between prompt/title search and full-conversation search (which runs a one-time
 context-light rescan retaining masked assistant replies). Startup and refresh
 scans are context-light. Press Enter on the Detail pane to load full conversation
-context for only that session. `y` copies the active session's resume command
+context for only that session. `T` opens the interactive per-call waterfall trace
+for the active session (also available from `i` stats via `a` Anomalies/Families/Tools
+or `T` in `S` Top Sessions, with `f` anomaly filter, `u` subagent toggle, `←/→`
+narrow column paging, and a pinned 2-line selected-call tool inspector). `y` copies the active session's resume command
 (via OSC 52 and native clipboard tools), `Y` copies the active turn's prompt and
 assistant reply, and `R` exits the TUI and prints the resume command directly to
 stdout. A failed refresh keeps the previous complete snapshot available. When

@@ -168,7 +168,7 @@ export function renderTuiCostMixBar(
     { label: "CR", share: shares.cache_read, usd: cost.cache_read_adjusted_cost_usd, char: "█", plainChar: "▓", style: green },
     { label: "CW", share: shares.cache_write, usd: cost.cache_write_adjusted_cost_usd, char: "▓", plainChar: "▒", style: yellow },
     { label: "Out", share: shares.output, usd: cost.output_adjusted_cost_usd, char: "█", plainChar: "░", style: cyan },
-    { label: "R", share: shares.reasoning, usd: cost.reasoning_adjusted_cost_usd, char: "▒", plainChar: "·", style: magenta },
+    { label: "Reas", share: shares.reasoning, usd: cost.reasoning_adjusted_cost_usd, char: "▒", plainChar: "·", style: magenta },
   ];
   const segments = allSegments.filter((seg) => seg.usd > 0 && seg.share > 0);
   if (segments.length === 0) return "";
@@ -250,6 +250,10 @@ export function renderTuiDiagnosticsBar(
       parts.push(warning(`>200K: ${eff.high_context_call_count}c`));
     }
   }
+  const anomCount = data.anomalies.length;
+  if (anomCount > 0) {
+    parts.push(warning(`⚠ ${anomCount} anom(a)`));
+  }
   if (width < 100 && cost?.quota_limit_usd !== undefined) {
     parts.push(`Quota ${renderTuiQuotaGauge(cost, data.breakdown.quota_pace, 6)}`);
   }
@@ -273,7 +277,7 @@ export function renderTopSessionsView(
   const lines: string[] = [
     clipLine(
       `${activeSectionTitle(`▸ Top Sessions (${rows.length})`)}  ${dim(
-        `o sort (${stats.sortBy}) · Enter open session · S/Esc back`,
+        `o sort (${stats.sortBy}) · Enter open · T trace · S/Esc back`,
       )}`,
       width,
     ),
@@ -315,8 +319,9 @@ export function renderTopSessionsView(
       const shareStr = `${renderTuiFractionalBar(barRatio, 10, cyan)} ${String(Math.round(shareRatio * 100)).padStart(3)}%`;
       const signals: string[] = [];
       if (meta && meta.delegated_child_count > 0) signals.push(`${meta.delegated_child_count}sub`);
+      if (meta && (meta.miss_call_count ?? 0) > 0) signals.push(danger(`${meta.miss_call_count}miss`));
       if (meta && meta.tool_error_count > 0) signals.push(danger(`${meta.tool_error_count}err`));
-      else if (meta && meta.tool_call_count > 0) signals.push(dim(`${meta.tool_call_count}tool`));
+      else if (meta && meta.tool_call_count > 0 && signals.length < 2) signals.push(dim(`${meta.tool_call_count}tool`));
       const sigStr = signals.length > 0 ? signals.join(" ") : dim("—");
       const titleCell = padLine(compact(meta?.title ?? r.label, 26), 26);
       const cells = [

@@ -5,7 +5,11 @@
  */
 
 import type {
+  FamilyUsageRow,
   ModelCostMultipliers,
+  SessionTraceReport,
+  ToolPatternRow,
+  UsageAnomaly,
   UsageBreakdownSnapshot,
   UsageMatrixSort,
   UsageStatsRollupRow,
@@ -17,12 +21,14 @@ import type { LiteBrowserModel } from "./model.js";
 import { resolveStatsViewData, sortStatsRollupRows } from "./stats-query.js";
 export { resolveStatsViewData, sortStatsRollupRows };
 
-export type LiteStatsView = "quad" | "matrix" | "sessions" | "multipliers";
+export type LiteStatsView = "quad" | "matrix" | "sessions" | "anomalies" | "trace" | "multipliers";
+export type LiteStatsAnomaliesTab = "anomalies" | "families" | "tools";
 export type LiteStatsQuadrant = "source" | "project" | "model" | "day";
 export type LiteStatsMatrixGroup = "project_model" | "model_time" | "project_time" | "all_4";
 export type LiteStatsMultiplierColumn = "model" | "input" | "cache_read" | "cache_write" | "output" | "reasoning";
 
 export const STATS_QUADRANTS: readonly LiteStatsQuadrant[] = ["source", "project", "model", "day"];
+export const STATS_ANOMALIES_TABS: readonly LiteStatsAnomaliesTab[] = ["anomalies", "families", "tools"];
 export const STATS_MATRIX_GROUPS: readonly LiteStatsMatrixGroup[] = [
   "project_model",
   "model_time",
@@ -62,6 +68,10 @@ export interface LiteStatsCursors {
   day: number;
   matrix: number;
   sessions: number;
+  anomalies: number;
+  families: number;
+  tools: number;
+  trace: number;
   multipliers: number;
 }
 
@@ -84,6 +94,13 @@ export interface LiteStatsState {
   sortBy: UsageMatrixSort;
   matrixGroup: LiteStatsMatrixGroup;
   matrixColPage: 0 | 1;
+  anomaliesTab: LiteStatsAnomaliesTab;
+  traceSessionId?: string;
+  traceReturnView: Exclude<LiteStatsView, "trace">;
+  traceReturnOverlay: "stats" | "none";
+  traceIncludeSubagents: boolean;
+  traceOnlyAnomalies: boolean;
+  traceColPage: 0 | 1;
   filters: LiteStatsFilters;
   cursors: LiteStatsCursors;
   multiplierColIndex: number;
@@ -97,7 +114,12 @@ export type LiteStatsAction =
   | { type: "stats-cycle-quadrant"; reverse?: boolean }
   | { type: "stats-focus-quadrant"; quadrant: LiteStatsQuadrant }
   | { type: "stats-set-view"; view: LiteStatsView }
-  | { type: "stats-toggle-view"; view: Exclude<LiteStatsView, "quad"> }
+  | { type: "stats-toggle-view"; view: Exclude<LiteStatsView, "quad" | "trace"> }
+  | { type: "stats-cycle-anomalies-tab" }
+  | { type: "stats-open-trace"; sessionId: string; returnView?: Exclude<LiteStatsView, "trace">; returnOverlay?: "stats" | "none" }
+  | { type: "stats-toggle-trace-subagents" }
+  | { type: "stats-toggle-trace-anomalies" }
+  | { type: "stats-trace-col-page"; delta: number }
   | { type: "stats-move"; delta: number }
   | { type: "stats-jump"; edge: "first" | "last" }
   | { type: "stats-toggle-selection" }
@@ -124,6 +146,10 @@ export interface LiteStatsResolvedViewData {
   quadrantRows: Record<LiteStatsQuadrant, UsageStatsRollupRow[]>;
   matrixRows: NonNullable<UsageBreakdownSnapshot["matrix"]>["rows"];
   sessionRows: UsageStatsRollupRow[];
+  anomalies: readonly UsageAnomaly[];
+  families: readonly FamilyUsageRow[];
+  toolPatterns: readonly ToolPatternRow[];
+  traceReport?: SessionTraceReport;
   modelResolutions: UsageBreakdownSnapshot["model_resolutions"];
 }
 
@@ -138,8 +164,27 @@ export function createLiteStatsState(model?: LiteBrowserModel): LiteStatsState {
     sortBy: "adjusted_cost",
     matrixGroup: "project_model",
     matrixColPage: 0,
+    anomaliesTab: "anomalies",
+    traceSessionId: undefined,
+    traceReturnView: "anomalies",
+    traceReturnOverlay: "stats",
+    traceIncludeSubagents: true,
+    traceOnlyAnomalies: false,
+    traceColPage: 0,
     filters: { projectIds: [], models: [], sourceIds: [], timeKeys: [] },
-    cursors: { source: 0, project: 0, model: 0, day: 0, matrix: 0, sessions: 0, multipliers: 0 },
+    cursors: {
+      source: 0,
+      project: 0,
+      model: 0,
+      day: 0,
+      matrix: 0,
+      sessions: 0,
+      anomalies: 0,
+      families: 0,
+      tools: 0,
+      trace: 0,
+      multipliers: 0,
+    },
     multiplierColIndex: 0,
     customAliases: {},
     multiplierOverrides: {},
@@ -178,6 +223,12 @@ function toggleKey(list: readonly string[], key: string): string[] {
 function activeListLength(data: LiteStatsResolvedViewData, stats: LiteStatsState): number {
   if (stats.view === "matrix") return data.matrixRows.length;
   if (stats.view === "sessions") return data.sessionRows.length;
+  if (stats.view === "anomalies") {
+    if (stats.anomaliesTab === "families") return data.families.length;
+    if (stats.anomaliesTab === "tools") return data.toolPatterns.length;
+    return data.anomalies.length;
+  }
+  if (stats.view === "trace") return data.traceReport?.calls.length ?? 0;
   if (stats.view === "multipliers") return data.modelResolutions.length;
   return data.quadrantRows[stats.activeQuadrant].length;
 }
@@ -185,6 +236,8 @@ function activeListLength(data: LiteStatsResolvedViewData, stats: LiteStatsState
 function activeCursorKey(stats: LiteStatsState): keyof LiteStatsCursors {
   if (stats.view === "matrix") return "matrix";
   if (stats.view === "sessions") return "sessions";
+  if (stats.view === "anomalies") return stats.anomaliesTab;
+  if (stats.view === "trace") return "trace";
   if (stats.view === "multipliers") return "multipliers";
   return stats.activeQuadrant;
 }
@@ -200,6 +253,10 @@ function clampStatsCursors(stats: LiteStatsState, data: LiteStatsResolvedViewDat
       day: clamp(stats.cursors.day, data.quadrantRows.day.length),
       matrix: clamp(stats.cursors.matrix, data.matrixRows.length),
       sessions: clamp(stats.cursors.sessions, data.sessionRows.length),
+      anomalies: clamp(stats.cursors.anomalies, data.anomalies.length),
+      families: clamp(stats.cursors.families, data.families.length),
+      tools: clamp(stats.cursors.tools, data.toolPatterns.length),
+      trace: clamp(stats.cursors.trace, data.traceReport?.calls.length ?? 0),
       multipliers: clamp(stats.cursors.multipliers, data.modelResolutions.length),
     },
   };
@@ -234,6 +291,47 @@ export function reduceLiteStatsState(
       return { ...clamped, view: action.view, editing: undefined };
     case "stats-toggle-view":
       return { ...clamped, view: clamped.view === action.view ? "quad" : action.view, editing: undefined };
+    case "stats-cycle-anomalies-tab": {
+      const idx = STATS_ANOMALIES_TABS.indexOf(clamped.anomaliesTab);
+      const nextTab = STATS_ANOMALIES_TABS[(idx + 1) % STATS_ANOMALIES_TABS.length] ?? "anomalies";
+      return { ...clamped, anomaliesTab: nextTab };
+    }
+    case "stats-open-trace": {
+      const returnView =
+        action.returnView ?? (clamped.view === "trace" ? clamped.traceReturnView : clamped.view);
+      const updated: LiteStatsState = {
+        ...clamped,
+        view: "trace",
+        traceSessionId: action.sessionId,
+        traceReturnView: returnView,
+        traceReturnOverlay: action.returnOverlay ?? "stats",
+        traceOnlyAnomalies: false,
+        traceColPage: 0,
+        cursors: { ...clamped.cursors, trace: 0 },
+        editing: undefined,
+      };
+      return clampStatsCursors(updated, resolveStatsViewData(model, updated));
+    }
+    case "stats-toggle-trace-subagents": {
+      const updated: LiteStatsState = {
+        ...clamped,
+        traceIncludeSubagents: !clamped.traceIncludeSubagents,
+        cursors: { ...clamped.cursors, trace: 0 },
+      };
+      return clampStatsCursors(updated, resolveStatsViewData(model, updated));
+    }
+    case "stats-toggle-trace-anomalies": {
+      const updated: LiteStatsState = {
+        ...clamped,
+        traceOnlyAnomalies: !clamped.traceOnlyAnomalies,
+        cursors: { ...clamped.cursors, trace: 0 },
+      };
+      return clampStatsCursors(updated, resolveStatsViewData(model, updated));
+    }
+    case "stats-trace-col-page": {
+      const nextPage: 0 | 1 = ((clamped.traceColPage + action.delta + 2) % 2) as 0 | 1;
+      return { ...clamped, traceColPage: nextPage };
+    }
     case "stats-move": {
       const key = activeCursorKey(clamped);
       const len = activeListLength(data, clamped);

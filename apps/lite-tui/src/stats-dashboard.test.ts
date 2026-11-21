@@ -280,3 +280,143 @@ test("fractional bars separate $200 vs $3 cleanly and quad columns align every r
     assert.equal(displayWidth(line.slice(0, line.indexOf("│"))), displayWidth(modelHeaderLine.slice(0, rightDividerIdx)));
   }
 });
+
+test("TUI a:Anomalies cycles Anomalies/Families/Tools, drills into interactive Trace waterfall, and preserves S:Sessions Enter vs T", async () => {
+  configureColorPolicy({ color: false });
+  const claudeRoot = path.join(repoRoot, "mock_data", ".claude", "projects");
+  const snapshot = await scanLiteHistory({
+    homeDir: path.join(repoRoot, "mock_data", "empty-home"),
+    hostname: "cchistory-lite-tui-trace-test",
+    sourceRefs: ["claude_code", "codex"],
+    sourceRoots: [
+      { sourceRef: "claude_code", baseDir: claudeRoot },
+      { sourceRef: "codex", baseDir: codexRoot },
+    ],
+    contextMode: "none",
+    safeMode: true,
+  });
+  const model = new LiteBrowserModel(snapshot);
+  const press = (st: LiteBrowserState, key: Parameters<typeof resolveLiteInputEffect>[1]): LiteBrowserState => {
+    const eff = resolveLiteInputEffect(st, key);
+    assert.equal(eff.type, "action", `Expected action for key ${JSON.stringify(key)}, got ${eff.type}`);
+    return reduceLiteBrowserState(model, st, eff.action);
+  };
+
+  // 1. Open stats (i) → verify anomaly badge → press `a` to open Anomalies view
+  let state = press(createLiteBrowserState(model), { input: "i", ctrl: false, shift: false });
+  const quadFrame = renderLiteFrame(model, state, { width: 128, height: 30 });
+  assert.match(quadFrame, /a:Anom\(\d+\)/);
+
+  state = press(state, { input: "a", ctrl: false, shift: false });
+  assert.equal(state.stats.view, "anomalies");
+  const anomFrame = renderLiteFrame(model, state, { width: 128, height: 30 });
+  assert.match(anomFrame, /▸ Diagnostics/);
+  assert.match(anomFrame, /Cache:/);
+  assert.match(anomFrame, /Main \d+s/);
+  assert.match(anomFrame, /polling_loop|cache_miss_cliff/);
+  assert.match(anomFrame, /Selected:/);
+
+  // 2. Press `g` to cycle Families and Tools tabs
+  state = press(state, { input: "g", ctrl: false, shift: false });
+  assert.equal(state.stats.anomaliesTab, "families");
+  const famFrame = renderLiteFrame(model, state, { width: 128, height: 30 });
+  assert.match(famFrame, /\[Families \d+\]/);
+  assert.match(famFrame, /Family:/);
+
+  state = press(state, { input: "g", ctrl: false, shift: false });
+  assert.equal(state.stats.anomaliesTab, "tools");
+  const toolsFrame = renderLiteFrame(model, state, { width: 128, height: 30 });
+  assert.match(toolsFrame, /\[Tools \d+\]/);
+  assert.match(toolsFrame, /Pattern:/);
+
+  // Cycle back to Anomalies tab and drill with Enter into Trace waterfall
+  state = press(state, { input: "g", ctrl: false, shift: false });
+  assert.equal(state.stats.anomaliesTab, "anomalies");
+  state = press(state, { input: "", name: "return", ctrl: false, shift: false });
+  assert.equal(state.stats.view, "trace");
+  assert.equal(state.stats.traceReturnView, "anomalies");
+
+  const wideTrace = renderLiteFrame(model, state, { width: 132, height: 30 });
+  assert.match(wideTrace, /▸ Trace/);
+  assert.match(wideTrace, /call\]/);
+  assert.match(wideTrace, /CtxIn/);
+  assert.match(wideTrace, /Cause \/ Tools/);
+  // Pinned 2-line Selected Call Inspector shows #1 call details and causal tools
+  assert.match(wideTrace, /#\d+ \d{2}:\d{2}:\d{2}/);
+
+  // Narrow trace supports ←/→ column paging cleanly without overflowing width
+  const narrowCore = renderLiteFrame(model, state, { width: 88, height: 22 });
+  assert.match(narrowCore, /←\/→\[Core\]\|Tok/);
+  state = press(state, { input: "", name: "right", ctrl: false, shift: false });
+  assert.equal(state.stats.traceColPage, 1);
+  const narrowTok = renderLiteFrame(model, state, { width: 88, height: 22 });
+  assert.match(narrowTok, /←\/→Core\|\[Tok\]/);
+  for (const line of narrowTok.split("\n")) {
+    assert.ok(displayWidth(line) <= 88, `Narrow trace line exceeded 88 cols: ${line}`);
+  }
+
+  // Toggle `f` (anomalies-only) and `u` (subagents)
+  state = press(state, { input: "f", ctrl: false, shift: false });
+  assert.equal(state.stats.traceOnlyAnomalies, true);
+  assert.match(renderLiteFrame(model, state, { width: 120, height: 26 }), /\[f:AnomOnly\]/);
+  state = press(state, { input: "u", ctrl: false, shift: false });
+  assert.equal(state.stats.traceIncludeSubagents, false);
+  assert.match(renderLiteFrame(model, state, { width: 120, height: 26 }), /u:NoSub/);
+
+  // Esc returns from Trace back to Anomalies
+  state = press(state, { input: "", name: "escape", ctrl: false, shift: false });
+  assert.equal(state.stats.view, "anomalies");
+
+  // O from Anomalies opens the session in browse view
+  const openedFromAnom = press(state, { input: "O", ctrl: false, shift: true });
+  assert.equal(openedFromAnom.overlay, "none");
+
+  // 3. S:Sessions preserves Enter -> open session, while T -> open Trace
+  let sessState = press(state, { input: "S", ctrl: false, shift: true });
+  assert.equal(sessState.stats.view, "sessions");
+  const tracedFromSess = press(sessState, { input: "T", ctrl: false, shift: true });
+  assert.equal(tracedFromSess.stats.view, "trace");
+  assert.equal(tracedFromSess.stats.traceReturnView, "sessions");
+  const backToSess = press(tracedFromSess, { input: "", name: "escape", ctrl: false, shift: false });
+  assert.equal(backToSess.stats.view, "sessions");
+  const openedFromSess = press(sessState, { input: "", name: "return", ctrl: false, shift: false });
+  assert.equal(openedFromSess.overlay, "none");
+
+  // 4. Browse view `T` opens Trace directly and `Esc` returns straight to browse view
+  const fromBrowse = press(openedFromSess, { input: "T", ctrl: false, shift: true });
+  assert.equal(fromBrowse.overlay, "stats");
+  assert.equal(fromBrowse.stats.view, "trace");
+  assert.equal(fromBrowse.stats.traceReturnOverlay, "none");
+  const backToBrowse = press(fromBrowse, { input: "", name: "escape", ctrl: false, shift: false });
+  assert.equal(backToBrowse.overlay, "none");
+
+  // 5. Date/time quadrant renders Hit column, Reas replaces bare R, and bottom Legend stays pinned at identical line index across filters & views
+  const dims = { width: 128, height: 28 };
+  const quadBase = press(createLiteBrowserState(model), { input: "i", ctrl: false, shift: false });
+  const quadFiltered = press(quadBase, { input: " ", ctrl: false, shift: false });
+  const matrixSt = press(quadBase, { input: "v", ctrl: false, shift: false });
+  const sessSt = press(quadBase, { input: "S", ctrl: false, shift: true });
+  const anomSt = press(quadBase, { input: "a", ctrl: false, shift: false });
+  const traceSt = press(anomSt, { input: "", name: "return", ctrl: false, shift: false });
+
+  const quadBaseFrame = renderLiteFrame(model, quadBase, dims);
+  assert.match(quadBaseFrame, /Time\s+Bar \(max\)\s+Tok\s+Adj\$\s+Hit/, "By day quadrant should include Hit column");
+  assert.match(quadBaseFrame, /\bReas \d/);
+  assert.doesNotMatch(quadBaseFrame, /· R \d/);
+
+  const legendLineIndex = (st: LiteBrowserState): number => {
+    const lines = renderLiteFrame(model, st, dims).split("\n");
+    return lines.findIndex((line) => line.includes("Legend: In=Input") && line.includes("Reas=Reasoning"));
+  };
+  const expectedIdx = legendLineIndex(quadBase);
+  assert.ok(expectedIdx > 0, "Expected pinned Legend line in stats dashboard");
+  for (const [label, st] of [
+    ["quadFiltered", quadFiltered],
+    ["matrix", matrixSt],
+    ["sessions", sessSt],
+    ["anomalies", anomSt],
+    ["trace", traceSt],
+  ] as const) {
+    assert.equal(legendLineIndex(st), expectedIdx, `Legend line index drifted in ${label} view`);
+  }
+});

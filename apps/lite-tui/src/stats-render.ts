@@ -24,7 +24,9 @@ import {
 import type { LiteBrowserModel } from "./model.js";
 import { viewportWindow } from "./render.js";
 import type { LiteBrowserState } from "./state.js";
+import { renderAnomaliesView } from "./stats-anomalies-render.js";
 import { renderMatrixView } from "./stats-matrix-render.js";
+import { renderTraceView } from "./stats-trace-render.js";
 import {
   STATS_MULTIPLIER_COLUMNS,
   activeFilterSelection,
@@ -83,39 +85,70 @@ export function renderStatsDashboard(
   const data = resolveStatsViewData(model, stats, now);
   const lines: string[] = [];
 
-  lines.push(renderHeaderLine(stats, width));
+  lines.push(renderHeaderLine(stats, data, width));
   lines.push(dim("─".repeat(Math.max(10, width))));
-  lines.push(renderTotalsBar(data, width));
-  if (contentHeight >= 15) {
-    const diagLine = renderTuiDiagnosticsBar(data, width);
-    if (diagLine) lines.push(diagLine);
+  if (stats.view !== "trace") {
+    lines.push(renderTotalsBar(data, width));
+    if (contentHeight >= 15) {
+      const diagLine = renderTuiDiagnosticsBar(data, width);
+      if (diagLine) lines.push(diagLine);
+    }
+    lines.push(renderFilterOrEditBar(data, stats, width));
   }
-  lines.push(renderFilterOrEditBar(data, stats, width));
 
-  const bodyBudget = Math.max(4, contentHeight - lines.length);
+  const reserveLegend = contentHeight >= 10;
+  const bodyBudget = Math.max(4, contentHeight - lines.length - (reserveLegend ? 1 : 0));
   if (stats.view === "matrix") {
     lines.push(...renderMatrixView(data, stats, width, bodyBudget));
   } else if (stats.view === "sessions") {
     lines.push(...renderTopSessionsView(data, stats, width, bodyBudget));
+  } else if (stats.view === "anomalies") {
+    lines.push(...renderAnomaliesView(data, stats, width, bodyBudget));
+  } else if (stats.view === "trace") {
+    lines.push(...renderTraceView(data, stats, width, bodyBudget));
   } else if (stats.view === "multipliers") {
     lines.push(...renderMultipliersView(data, stats, width, bodyBudget));
   } else {
     lines.push(...renderQuadDashboard(data, stats, width, bodyBudget));
   }
+  if (reserveLegend) {
+    while (lines.length < contentHeight - 1) lines.push("");
+    lines.splice(contentHeight - 1);
+    lines.push(renderAbbrevLegendLine(width));
+  }
   return lines.slice(0, contentHeight);
 }
 
-function renderHeaderLine(stats: LiteStatsState, width: number): string {
+function renderAbbrevLegendLine(width: number): string {
+  const text =
+    width >= 106
+      ? "  Legend: In=Input · CR=CacheRead · CW=CacheWrite · Out=Output · Reas=Reasoning · Hit=CacheHit · List/Adj=List/Adjusted$"
+      : width >= 76
+        ? "  In=Input · CR=CacheRead · CW=CacheWrite · Out=Output · Reas=Reasoning · Hit=CacheHit · Adj=Adjusted$"
+        : "  In=Input CR=CacheR CW=CacheW Out=Out Reas=Reasoning Hit=CacheHit";
+  return dim(clipLine(text, width));
+}
+
+function renderHeaderLine(stats: LiteStatsState, data: LiteStatsResolvedViewData, width: number): string {
   const quadTab = stats.view === "quad" ? bold(cyan("[Quad]")) : dim("Quad");
   const matrixTab = stats.view === "matrix" ? bold(cyan("[v:Matrix]")) : dim("v:Matrix");
   const sessionsTab = stats.view === "sessions" ? bold(cyan("[S:Sessions]")) : dim("S:Sessions");
+  const anomCount = data.anomalies.length;
+  const anomText = anomCount > 0 ? `a:Anom(${anomCount})` : "a:Anom";
+  const anomTab =
+    stats.view === "anomalies"
+      ? bold(cyan(`[${anomText}]`))
+      : anomCount > 0
+        ? yellow(anomText)
+        : dim(anomText);
+  const traceTab = stats.view === "trace" ? ` ${bold(cyan("[Trace]"))}` : "";
   const multTab = stats.view === "multipliers" ? bold(cyan("[m:Calibrate]")) : dim("m:Calibrate");
   const timeBadge = yellow(`t:${stats.timePreset}`);
   const bucketBadge = green(`b:${stats.timeBucket}`);
   const weekBadge = dim(`w:${stats.weekMode}`);
   const sortBadge = dim(`o:${stats.sortBy}`);
-  const head = `${activeSectionTitle("▸ Statistics")}  ${quadTab} ${matrixTab} ${sessionsTab} ${multTab}  ${timeBadge} ${bucketBadge}`;
-  const tail = width >= 108 ? ` ${weekBadge} ${sortBadge}  ${dim("(i/Esc close)")}` : ` ${dim("(i close)")}`;
+  const head = `${activeSectionTitle("▸ Statistics")}  ${quadTab} ${matrixTab} ${sessionsTab} ${anomTab}${traceTab} ${multTab}  ${timeBadge} ${bucketBadge}`;
+  const tail = width >= 116 ? ` ${weekBadge} ${sortBadge}  ${dim("(i/Esc close)")}` : ` ${dim("(i close)")}`;
   return clipLine(`${head}${tail}`, width);
 }
 
@@ -130,7 +163,7 @@ function renderTotalsBar(data: LiteStatsResolvedViewData, width: number): string
     ...(!compactTok ? [`CW ${formatCompactCount(ov.total_cache_creation_input_tokens ?? 0) || "0"}`] : []),
     `Out ${formatCompactCount(ov.total_output_tokens) || "0"}`,
     ...(!compactTok && ov.total_reasoning_output_tokens > 0
-      ? [`R ${formatCompactCount(ov.total_reasoning_output_tokens)}`]
+      ? [`Reas ${formatCompactCount(ov.total_reasoning_output_tokens)}`]
       : []),
   ];
   const costParts = [
@@ -176,7 +209,7 @@ function renderFilterOrEditBar(
 
   const unpriced = data.breakdown.overview.cost?.unpriced_models ?? [];
   if (hasActiveStatsFilters(stats)) {
-    const hint = dim(" (Space toggle · c clear · S sessions · v matrix · m calibrate · E export)");
+    const hint = dim(" (Space toggle · c clear · S sessions · a anom · v matrix · m calibrate · E export)");
     return clipLine(`  ${cyan(`Filters: ${chips.join(" · ")}`)}${hint}`, width);
   }
   if (unpriced.length > 0) {
@@ -186,7 +219,7 @@ function renderFilterOrEditBar(
     );
   }
   return clipLine(
-    dim("  Tab/1-4 quadrant · Space filter · S top sessions · v matrix · m calibrate · E export · t/b window · $ quota"),
+    dim("  Tab/1-4 quadrant · Space filter · S sessions · a anomalies · v matrix · m calibrate · E export · t/b window"),
     width,
   );
 }
@@ -287,7 +320,7 @@ function renderQuadrantBox(
 
   // Compute strict fixed column widths once so every single row aligns to exact terminal columns.
   const prefixW = 2 + (selectedKeys.size > 0 ? 4 : 0);
-  const showHit = width >= 54 && quadrant !== "day";
+  const showHit = quadrant === "day" ? width >= 48 : width >= 54;
   const hitW = showHit ? 5 : 0;
   const costW = 8;
   const tokW = 6;

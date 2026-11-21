@@ -12,6 +12,7 @@ import type {
   ProjectIdentity,
   SessionProjection,
   SessionRelatedWorkProjection,
+  SessionTraceReport,
   SourceStatus,
   TurnContextProjection,
   TurnSearchResult,
@@ -344,6 +345,43 @@ export class LiteBrowserModel {
       time_dimension: timeBucket,
       matrix_dimensions: options.matrixDimensions ?? ["project", "model", "source", timeBucket],
       sort_by: options.sortBy ?? "adjusted_cost",
+    });
+  }
+
+  getSessionTrace(options: {
+    sessionId: string;
+    includeSubagents?: boolean;
+    onlyAnomalies?: boolean;
+    timezone?: string;
+    weekMode?: UsageWeekMode;
+    customAliases?: Readonly<Record<string, string>>;
+    multiplierOverrides?: Readonly<Record<string, ModelCostMultipliers>>;
+    quotaUsdOverride?: number;
+  }): SessionTraceReport | undefined {
+    const timeZone = resolveUsageTimezone(options.timezone ?? this.defaultTimezone);
+    const weekMode = options.weekMode ?? this.pricingConfig?.quota?.week_mode ?? "rolling_7d";
+    const effectiveQuotaUsd = options.quotaUsdOverride ?? this.quotaLimitUsd;
+    const effectivePricing = mergeUsagePricingConfigs(this.pricingConfig, {
+      schema: "cchistory-lite-pricing/v1",
+      timezone: timeZone,
+      aliases: options.customAliases ? { ...options.customAliases } : undefined,
+      multipliers: options.multiplierOverrides ? { ...options.multiplierOverrides } : undefined,
+      quota: {
+        week_mode: weekMode,
+        ...(effectiveQuotaUsd !== undefined ? { custom_usd: effectiveQuotaUsd } : {}),
+      },
+    });
+    return this.snapshot.getSessionTrace({
+      sessionId: options.sessionId,
+      includeSubagents: options.includeSubagents ?? true,
+      onlyAnomalies: options.onlyAnomalies ?? false,
+      limit: 1000,
+      offset: 0,
+      filters: {
+        timezone: timeZone,
+        week_mode: weekMode,
+        pricing: effectivePricing,
+      },
     });
   }
 }

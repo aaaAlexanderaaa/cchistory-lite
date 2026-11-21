@@ -9,12 +9,16 @@ JSONL while preserving stdout; see the [diagnostic contract](agent-evidence.md#o
 
 Use a finite PostgreSQL-style SELECT to combine conditions over canonical history. `sessions`
 contains every addressable session, including empty sessions and delegated children. `turns`
-contains every resolved turn, including a child's work on its own session. The source and directory
-options establish the scope; SQL filters that scope. The default directory is the current directory.
+contains every resolved turn, including a child's work on its own session. `calls` contains
+every per-call usage row (falling back to turn-level rows on adapters without independent call
+telemetry), enriched with cache-hit status, miss cause, subagent role, primary tool signature,
+and anomaly tags. The source and directory options establish the scope; SQL filters that scope.
+The default directory is the current directory.
 
 ```sh
 cchistory-lite query --sql 'SELECT id, title, last_message_at FROM sessions WHERE is_top_level = TRUE AND turn_count > 0 ORDER BY last_message_at DESC NULLS LAST LIMIT $1' --params '[10]'
 cchistory-lite query --sql 'SELECT id, session_id, text FROM turns WHERE project_id = $1 AND submitted_at >= $2 ORDER BY submitted_at DESC LIMIT 10' --params '["project-id", "2026-04-15T00:00:00Z"]'
+cchistory-lite query --sql 'SELECT session_id, seq, role, cache_hit_ratio, miss_cause, primary_tool, adjusted_cost_usd FROM calls WHERE anomaly_kinds IS NOT NULL ORDER BY adjusted_cost_usd DESC LIMIT 20' --no-dir
 ```
 
 Use complete canonical IDs for equality. A project can share a working directory with another
@@ -24,8 +28,8 @@ existing browser: a delegated child with a resolving parent is false; orphan wor
 
 ## Templates and values
 
-[Latest sessions](queries/latest-sessions.sql), [list sessions](queries/list-sessions.sql), and
-[latest turns](queries/latest-turns.sql) are ordinary editable SQL files. After saving a template:
+[Latest sessions](queries/latest-sessions.sql), [list sessions](queries/list-sessions.sql),
+[latest turns](queries/latest-turns.sql), and [anomaly calls](queries/anomaly-calls.sql) are ordinary editable SQL files. After saving a template:
 
 ```sh
 cchistory-lite query --sql-file latest-sessions.sql --params '[10]'
@@ -46,6 +50,7 @@ Missing selected values are explicit JSON nulls. Text and titles are canonical m
 | --- | --- |
 | sessions | `id`, `source_id`, `source_platform`, `title`, `created_at`, `last_message_at`, `turn_count`, `is_top_level`, `primary_project_id`, `working_directory`, `model`, `total_tokens` |
 | turns | `id`, `session_id`, `source_id`, `source_platform`, `project_id`, `submitted_at`, `last_message_at`, `text`, `model`, `total_tokens`, `has_errors`, `link_state` |
+| calls | `id`, `session_id`, `parent_session_id`, `turn_id`, `source_id`, `source_platform`, `project_id`, `role`, `subagent_key`, `granularity`, `seq`, `created_at`, `gap_ms`, `model`, `input_tokens`, `cache_read_tokens`, `cache_write_tokens`, `output_tokens`, `reasoning_tokens`, `total_tokens`, `context_input_tokens`, `context_delta_tokens`, `cache_hit_ratio`, `cache_status`, `miss_cause`, `adjusted_cost_usd`, `high_context_tier`, `tool_count`, `tool_error_count`, `primary_tool`, `anomaly_kinds` |
 
 Timestamps are RFC3339 strings with a timezone, accepting up to millisecond precision and returning
 normalized UTC values. `submitted_at` is submission recency; `last_message_at` is real-message

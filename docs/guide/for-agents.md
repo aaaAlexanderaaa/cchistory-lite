@@ -155,7 +155,7 @@ error lines on stdout and leave the shell available for subsequent commands.
 
 ## Composable SQL and templates
 
-Use the [finite query guide](query.md) for `SELECT` over sessions or turns. Bind `$1`…`$N`
+Use the [finite query guide](query.md) for `SELECT` over sessions, turns, or calls. Bind `$1`…`$N`
 through `--params` JSON arrays or v3 SQL request operations. Do not interpolate retrieved text
 into SQL. Unsupported queries fail before scanning; a whole v3 batch is validated first.
 `LIMIT` bounds returned rows, not native scan work. SQL returns `total: null` by default;

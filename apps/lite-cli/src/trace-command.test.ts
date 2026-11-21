@@ -254,7 +254,66 @@ test("CLI stats, trace, query, and shell expose per-call cache misses, loops, bl
   assert.ok(slowTool, "show turn --json should expose native Claude tool_result is_error");
   assert.equal(slowTool.duration_ms, 370_000);
 
-  // 5. `shell --no-dir --json` executes `diagnose` + `trace` in one process
+  // 5. `query --sql` over the `calls` table exposes per-call cache misses, subagents, tools, and anomalies
+  const sqlMiss = captureIo(tempRoot);
+  assert.equal(
+    await runLiteCli(
+      [
+        "query",
+        "--sql",
+        "SELECT session_id, seq, role, subagent_key, cache_status, miss_cause, primary_tool, anomaly_kinds, adjusted_cost_usd FROM calls WHERE anomaly_kinds IS NOT NULL ORDER BY adjusted_cost_usd DESC LIMIT 10",
+        ...sourceArgs,
+        "--no-dir",
+      ],
+      sqlMiss.io,
+    ),
+    0,
+  );
+  const sqlMissPayload = JSON.parse(sqlMiss.stdout.join("")) as {
+    schema: string;
+    operations: Array<{
+      status: string;
+      result: {
+        rows: Array<{
+          session_id: string;
+          seq: number;
+          role: string;
+          miss_cause: string | null;
+          primary_tool: string | null;
+          anomaly_kinds: string | null;
+        }>;
+      };
+    }>;
+  };
+  assert.equal(sqlMissPayload.schema, "cchistory-lite-query-result/v3");
+  const sqlRows = sqlMissPayload.operations[0]?.result.rows ?? [];
+  assert.ok(sqlRows.some((r) => r.miss_cause === "idle_ttl_gap" && r.primary_tool === "Bash:npm test"));
+  assert.ok(sqlRows.some((r) => r.anomaly_kinds?.includes("polling_loop")));
+
+  const sqlSub = captureIo(tempRoot);
+  assert.equal(
+    await runLiteCli(
+      [
+        "query",
+        "--sql",
+        "SELECT parent_session_id, subagent_key, role, cache_hit_ratio FROM calls WHERE role = $1 LIMIT 10",
+        "--params",
+        '["subagent"]',
+        ...sourceArgs,
+        "--no-dir",
+      ],
+      sqlSub.io,
+    ),
+    0,
+  );
+  const sqlSubRows = (JSON.parse(sqlSub.stdout.join("")) as {
+    operations: Array<{ result: { rows: Array<{ parent_session_id: string | null; subagent_key: string | null; role: string }> } }>;
+  }).operations[0]?.result.rows ?? [];
+  assert.equal(sqlSubRows.length, 1);
+  assert.equal(sqlSubRows[0]?.parent_session_id, "sess:claude_code:diag-main-1");
+  assert.equal(sqlSubRows[0]?.subagent_key, "agent-explore-1");
+
+  // 6. `shell --no-dir --json` executes `diagnose` + `trace` in one process
   const shellLines = [
     JSON.stringify({ id: "d1", kind: "diagnose", anomaly_limit: 10 }),
     JSON.stringify({ id: "t1", kind: "trace", session_ref: "sess:claude_code:diag-main-1", only_anomalies: true, limit: 20 }),

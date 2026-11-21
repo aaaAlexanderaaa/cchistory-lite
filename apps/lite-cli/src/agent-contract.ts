@@ -252,7 +252,7 @@ function buildCommands(): Record<string, AgentCommandContract> {
         DIAGNOSTICS,
         { ...JSON_NO_CANONICAL, summary: "Accepted; query output is always JSON. =canonical is rejected." },
         { name: "--request", kind: "value", summary: "JSON batch query request (v2 operations or v3 SQL); - reads stdin" },
-        { name: "--sql", kind: "value", summary: "Finite SELECT over sessions or turns; explicit LIMIT required" },
+        { name: "--sql", kind: "value", summary: "Finite SELECT over sessions, turns, or calls; explicit LIMIT required" },
         { name: "--sql-file", kind: "value", summary: "SQL template file; - reads stdin" },
         { name: "--params", kind: "value", summary: "JSON array binding positional $1…$N values" },
         { name: "--complete", kind: "boolean", summary: "Request exact SQL total and exhaustive diagnostics" },

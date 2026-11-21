@@ -177,13 +177,18 @@ function renderStatusBar(model: LiteBrowserModel, state: LiteBrowserState): stri
       state.stats.view === "matrix"
         ? "g group │ ←/→ cols"
         : state.stats.view === "sessions"
-          ? "Enter open"
-          : "Space filter";
+          ? "Enter open │ T trace"
+          : state.stats.view === "anomalies"
+            ? "g tab │ Enter trace │ O open"
+            : state.stats.view === "trace"
+              ? "f anom │ u sub │ ←/→ cols │ O open │ Esc back"
+              : "Space filter";
     return dim(
       [
         `stats/${state.stats.view}`,
         modeHint,
         "S sessions",
+        "a anom",
         "v matrix",
         "m calibrate",
         "E export",
@@ -700,9 +705,9 @@ function renderHelpOverlay(width: number, contentHeight: number): string[] {
     "",
     bold("  Actions"),
     `    ${bold("/")} search (${bold("Ctrl+F")} toggle +replies)   ${bold("i")} stats    ${bold("s")} sources   ${bold("?")} help`,
-    `    ${bold("y")} copy resume cmd    ${bold("Y")} copy turn Q&A    ${bold("R")} quit & print resume`,
+    `    ${bold("y")} copy resume cmd    ${bold("Y")} copy turn Q&A    ${bold("R")} quit & print resume   ${bold("T")} call trace`,
     `    ${bold("r")} refresh the snapshot from disk   ${bold("q")} quit`,
-    `    ${bold("Stats (i)")}: ${bold("Tab/1-4")} quadrant · ${bold("Space")} filter · ${bold("S")} sessions (Enter open) · ${bold("v")} matrix · ${bold("m")} calibrate · ${bold("E")} export · ${bold("t/b/w")} window · ${bold("$")} quota · ${bold("c")} clear`,
+    `    ${bold("Stats (i)")}: ${bold("Tab/1-4")} quad · ${bold("Space")} filter · ${bold("S")} sessions (Enter/T) · ${bold("a")} anomalies (g tab, Enter trace) · ${bold("v")} matrix · ${bold("m")} calibrate · ${bold("E")} export`,
     "",
     bold("  Lite guarantees"),
     muted("    Reads native tool history only. Never opens or creates ~/.cchistory."),

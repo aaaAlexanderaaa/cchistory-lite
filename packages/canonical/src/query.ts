@@ -1,11 +1,13 @@
 import type {
-  CanonicalQueryResult, LogicalQuery, QueryCollection, QueryColumn, QueryPredicate, QueryValue,
-  SessionProjection, UserTurnProjection, SessionRelatedWorkProjection,
+  CanonicalQueryResult, LogicalQuery, ProjectIdentity, QueryCollection, QueryColumn, QueryPredicate, QueryValue,
+  SessionFamilyProjection, SessionProjection, SessionRelatedWorkProjection, SourceStatus, UsageToolSummary,
+  UserTurnProjection,
 } from "@cchistory/domain";
 import { buildSessionLastMessageIndex } from "./read-order.js";
 import { filterSessionsByDirectoryScope, filterTurnsByDirectoryScope } from "./directory-scope.js";
 import { filterTopLevelSessions } from "./session-collections.js";
-import { resolveTurnUsage, summarizeSessionUsage } from "./usage.js";
+import { extractUnfilteredUsageRows, resolveTurnUsage, summarizeSessionUsage, type UsageSourceData } from "./usage.js";
+import { computeUsageDiagnosticsReport } from "./usage-anomalies.js";
 
 const column = (name: string, type: QueryColumn["type"] = "string", nullable = false): QueryColumn => ({ name, type, nullable });
 export const QUERY_COLUMNS: Readonly<Record<QueryCollection, readonly QueryColumn[]>> = {
@@ -16,6 +18,19 @@ export const QUERY_COLUMNS: Readonly<Record<QueryCollection, readonly QueryColum
   turns: [column("id"), column("session_id"), column("source_id"), column("source_platform"), column("project_id", "string", true),
     column("submitted_at", "timestamp"), column("last_message_at", "timestamp"), column("text"), column("model", "string", true),
     column("total_tokens", "number", true), column("has_errors", "boolean"), column("link_state")],
+  calls: [
+    column("id"), column("session_id"), column("parent_session_id", "string", true), column("turn_id", "string", true),
+    column("source_id"), column("source_platform"), column("project_id", "string", true), column("role"),
+    column("subagent_key", "string", true), column("granularity"), column("seq", "number"),
+    column("created_at", "timestamp", true), column("gap_ms", "number", true), column("model", "string", true),
+    column("input_tokens", "number"), column("cache_read_tokens", "number"), column("cache_write_tokens", "number"),
+    column("output_tokens", "number"), column("reasoning_tokens", "number"), column("total_tokens", "number"),
+    column("context_input_tokens", "number"), column("context_delta_tokens", "number", true),
+    column("cache_hit_ratio", "number", true), column("cache_status"), column("miss_cause", "string", true),
+    column("adjusted_cost_usd", "number"), column("high_context_tier", "boolean"),
+    column("tool_count", "number"), column("tool_error_count", "number"),
+    column("primary_tool", "string", true), column("anomaly_kinds", "string", true),
+  ],
 };
 
 /** Command frontends only choose a template and page. These are also the SQL selection semantics. */
@@ -38,9 +53,15 @@ export interface QuerySnapshotData {
   sessions: readonly SessionProjection[];
   turns: readonly UserTurnProjection[];
   related_work: readonly SessionRelatedWorkProjection[];
+  sources?: readonly SourceStatus[];
+  projects?: readonly ProjectIdentity[];
+  families?: readonly SessionFamilyProjection[];
 }
 
 export function executeCanonicalQuery(data: QuerySnapshotData, query: LogicalQuery, directoryScope?: string): CanonicalQueryResult {
+  if (query.collection === "calls") {
+    return executeQueryRows(projectCallQueryRows(data, directoryScope), query);
+  }
   const needed = new Set([...query.columns, ...query.order.map(x => x.field), "id"]);
   const collect = (p?: QueryPredicate): void => {
     if (!p) return;
@@ -190,4 +211,122 @@ export function selectSampleSessions(data: QuerySnapshotData, perSource: number,
   const query = collectionQueryTemplate("latest-sessions", Infinity);
   query.predicate = { kind: "in", field: "id", values: admitted, negate: false };
   return executeCanonicalQuery(data, query, directoryScope);
+}
+
+function selectPrimaryCallTool(
+  preceding: readonly UsageToolSummary[] | undefined,
+  emitted: readonly UsageToolSummary[] | undefined,
+): string | null {
+  const format = (tool: UsageToolSummary): string =>
+    tool.target_signature ? `${tool.tool_name}:${tool.target_signature}` : tool.tool_name;
+  const precList = preceding ?? [];
+  const errTool = precList.find((t) => t.status === "error");
+  if (errTool) return format(errTool);
+  let salient: UsageToolSummary | undefined;
+  for (const t of precList) {
+    if (
+      !salient ||
+      (t.output_bytes ?? 0) > (salient.output_bytes ?? 0) ||
+      ((t.output_bytes ?? 0) === (salient.output_bytes ?? 0) && (t.duration_ms ?? 0) > (salient.duration_ms ?? 0))
+    ) {
+      salient = t;
+    }
+  }
+  if (salient) return format(salient);
+  if (emitted && emitted.length > 0) return format(emitted[0]!);
+  return null;
+}
+
+function countCallTools(
+  preceding: readonly UsageToolSummary[] | undefined,
+  emitted: readonly UsageToolSummary[] | undefined,
+): { total: number; errors: number } {
+  const seen = new Set<string>();
+  let total = 0;
+  let errors = 0;
+  const add = (tool: UsageToolSummary, countErrors: boolean) => {
+    const key = tool.call_id ?? `${tool.tool_name}:${tool.target_signature ?? ""}:${total}`;
+    if (tool.call_id && seen.has(key)) return;
+    seen.add(key);
+    total += 1;
+    if (countErrors && tool.status === "error") errors += 1;
+  };
+  for (const t of preceding ?? []) add(t, true);
+  for (const t of emitted ?? []) add(t, (preceding?.length ?? 0) === 0);
+  return { total, errors };
+}
+
+function projectCallQueryRows(data: QuerySnapshotData, directoryScope?: string): Record<string, QueryValue>[] {
+  const scopedSessions = filterSessionsByDirectoryScope(data.sessions, directoryScope);
+  const scopedTurns = filterTurnsByDirectoryScope(data.turns, data.sessions, directoryScope);
+  const sessionsById = new Map(data.sessions.map((s) => [s.id, s]));
+  const scopedSourceData: UsageSourceData = {
+    listResolvedTurns: () => [...scopedTurns],
+    listResolvedSessions: () => [...scopedSessions],
+    listSources: () => [...(data.sources ?? [])],
+    listProjects: () => [...(data.projects ?? [])],
+    listSessionFamilies: () => [...(data.families ?? [])],
+    listRelatedWork: () => [...data.related_work],
+  };
+  const delegationSourceData: UsageSourceData = {
+    ...scopedSourceData,
+    listResolvedSessions: () => [...data.sessions],
+  };
+  const rawRows = extractUnfilteredUsageRows(scopedSourceData);
+  const { evaluated } = computeUsageDiagnosticsReport({
+    rows: rawRows,
+    filters: {},
+    sourceData: delegationSourceData,
+  });
+
+  // Canonical tie order for calls matches sessions/turns recency descending.
+  const ordered = [...evaluated].sort((a, b) => {
+    const at = Number.isFinite(a.row.timestamp_ms) ? a.row.timestamp_ms : Number.NEGATIVE_INFINITY;
+    const bt = Number.isFinite(b.row.timestamp_ms) ? b.row.timestamp_ms : Number.NEGATIVE_INFINITY;
+    if (at !== bt) return bt - at;
+    const sc = a.row.session_id.localeCompare(b.row.session_id);
+    if (sc !== 0) return sc;
+    return (b.row.seq ?? b.rowIndex) - (a.row.seq ?? a.rowIndex);
+  });
+
+  return ordered.map((item): Record<string, QueryValue> => {
+    const r = item.row;
+    const seq = r.seq ?? item.rowIndex + 1;
+    const tools = countCallTools(r.preceding_tool_results, r.emitted_tool_calls);
+    const createdAt =
+      r.created_at ?? (Number.isFinite(r.timestamp_ms) ? new Date(r.timestamp_ms).toISOString() : null);
+    return {
+      id: r.event_id ?? `${r.session_id}#${seq}`,
+      session_id: r.session_id,
+      parent_session_id: item.parentSessionId ?? null,
+      turn_id: r.turn_id,
+      source_id: r.source_id,
+      source_platform: sessionsById.get(r.session_id)?.source_platform ?? r.source_label,
+      project_id: r.project_id === "__unassigned__" ? null : (r.project_id ?? null),
+      role: item.isSubagent ? "subagent" : "main",
+      subagent_key: r.subagent_key ?? null,
+      granularity: r.is_call_event ? "call" : "turn",
+      seq,
+      created_at: createdAt,
+      gap_ms: item.gapMs,
+      model: r.model === "unknown" ? null : r.model,
+      input_tokens: r.input_tokens,
+      cache_read_tokens: r.cache_read_input_tokens,
+      cache_write_tokens: r.cache_creation_input_tokens,
+      output_tokens: r.output_tokens,
+      reasoning_tokens: r.reasoning_output_tokens,
+      total_tokens: r.total_tokens,
+      context_input_tokens: item.contextInputTokens,
+      context_delta_tokens: item.contextDeltaTokens,
+      cache_hit_ratio: item.cacheHitRatio,
+      cache_status: item.cacheStatus,
+      miss_cause: item.missCause ?? null,
+      adjusted_cost_usd: item.adjustedCostUsd,
+      high_context_tier: item.highContextTier,
+      tool_count: tools.total,
+      tool_error_count: tools.errors,
+      primary_tool: selectPrimaryCallTool(r.preceding_tool_results, r.emitted_tool_calls),
+      anomaly_kinds: item.anomalyKinds.length > 0 ? [...item.anomalyKinds].sort().join(",") : null,
+    };
+  });
 }

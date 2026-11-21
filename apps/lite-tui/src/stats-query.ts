@@ -142,6 +142,20 @@ export function resolveStatsViewData(
       ? densifyShortHourlyRollupRows(timeRows, { timezone: breakdown.timezone, maxSpanHours: 48 })
       : timeRows;
 
+  const diagnostics = breakdown.diagnostics;
+  const traceReport =
+    stats.view === "trace" && stats.traceSessionId
+      ? model.getSessionTrace({
+          sessionId: stats.traceSessionId,
+          includeSubagents: stats.traceIncludeSubagents,
+          onlyAnomalies: stats.traceOnlyAnomalies,
+          weekMode: stats.weekMode,
+          customAliases: stats.customAliases,
+          multiplierOverrides: stats.multiplierOverrides,
+          quotaUsdOverride: stats.quotaUsdOverride,
+        })
+      : undefined;
+
   return {
     breakdown,
     quadrantRows: {
@@ -152,6 +166,10 @@ export function resolveStatsViewData(
     },
     matrixRows: breakdown.matrix?.rows ?? [],
     sessionRows: sortStatsRollupRows(breakdown.by_session?.rows ?? [], stats.sortBy, false),
+    anomalies: diagnostics?.anomalies ?? [],
+    families: diagnostics?.families ?? [],
+    toolPatterns: diagnostics?.tool_patterns ?? [],
+    traceReport,
     modelResolutions: breakdown.model_resolutions,
   };
 }

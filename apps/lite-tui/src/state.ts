@@ -98,6 +98,8 @@ export type LiteBrowserAction =
   | { type: "open-search"; query: string }
   | { type: "open-stats"; timePreset?: UsageTimePreset }
   | { type: "open-stats-session" }
+  | { type: "open-stats-trace" }
+  | { type: "exit-stats-trace" }
   | LiteStatsAction;
 
 export interface LiteSearchGroup {
@@ -284,14 +286,88 @@ export function reduceLiteBrowserState(
     }
     case "open-stats-session":
       return openSelectedStatsSession(model, state);
+    case "open-stats-trace":
+      return openSelectedStatsTrace(model, state);
+    case "exit-stats-trace":
+      if (state.stats.traceReturnOverlay === "none") {
+        return {
+          ...state,
+          overlay: "none",
+          overlayScrollOffset: 0,
+          stats: { ...state.stats, view: "quad", traceReturnOverlay: "stats" },
+        };
+      }
+      return {
+        ...state,
+        stats: { ...state.stats, view: state.stats.traceReturnView },
+      };
   }
 }
 
-function openSelectedStatsSession(model: LiteBrowserModel, state: LiteBrowserState): LiteBrowserState {
+function resolveTargetSessionFromStats(
+  model: LiteBrowserModel,
+  state: LiteBrowserState,
+): { sessionId: string; label: string } | undefined {
   const data = resolveStatsViewData(model, state.stats);
+  if (state.stats.view === "trace" && state.stats.traceSessionId) {
+    return { sessionId: state.stats.traceSessionId, label: data.traceReport?.title ?? state.stats.traceSessionId };
+  }
+  if (state.stats.view === "anomalies") {
+    if (state.stats.anomaliesTab === "families") {
+      const fam = data.families[state.stats.cursors.families];
+      return fam ? { sessionId: fam.parent_session_id, label: fam.title } : undefined;
+    }
+    if (state.stats.anomaliesTab === "tools") {
+      const tool = data.toolPatterns[state.stats.cursors.tools];
+      const sid = tool?.session_ids[0];
+      return sid ? { sessionId: sid, label: `${tool.tool_name}:${tool.target_signature}` } : undefined;
+    }
+    const anom = data.anomalies[state.stats.cursors.anomalies];
+    return anom ? { sessionId: anom.session_id, label: anom.session_title ?? anom.session_id } : undefined;
+  }
   const row = data.sessionRows[state.stats.cursors.sessions];
-  if (!row) return state;
-  const sessionId = row.session_meta?.session_id ?? row.key;
+  if (!row) return undefined;
+  return { sessionId: row.session_meta?.session_id ?? row.key, label: row.label };
+}
+
+function openSelectedStatsTrace(model: LiteBrowserModel, state: LiteBrowserState): LiteBrowserState {
+  if (state.overlay === "none") {
+    const turn = getSelectedTurn(model, state);
+    const session = turn?.session ?? (state.browseScope === "sessions" ? getSelectedSession(model, state)?.session : undefined);
+    if (!session) return withError(state, "No session selected to trace.");
+    const nextStats = reduceLiteStatsState(model, state.stats, {
+      type: "stats-open-trace",
+      sessionId: session.id,
+      returnView: "quad",
+      returnOverlay: "none",
+    });
+    return {
+      ...state,
+      overlay: "stats",
+      overlayScrollOffset: 0,
+      stats: nextStats,
+    };
+  }
+  const target = resolveTargetSessionFromStats(model, state);
+  if (!target) return withError(state, "No session available to trace.");
+  const returnView = state.stats.view === "trace" ? state.stats.traceReturnView : state.stats.view;
+  const nextStats = reduceLiteStatsState(model, state.stats, {
+    type: "stats-open-trace",
+    sessionId: target.sessionId,
+    returnView,
+    returnOverlay: "stats",
+  });
+  return {
+    ...state,
+    stats: nextStats,
+    overlayScrollOffset: 0,
+  };
+}
+
+function openSelectedStatsSession(model: LiteBrowserModel, state: LiteBrowserState): LiteBrowserState {
+  const target = resolveTargetSessionFromStats(model, state);
+  if (!target) return state;
+  const { sessionId, label } = target;
 
   const directIndex = model.sessions.findIndex((entry) => entry.session.id === sessionId);
   if (directIndex >= 0) {
@@ -312,7 +388,7 @@ function openSelectedStatsSession(model: LiteBrowserModel, state: LiteBrowserSta
       status: { kind: "info", text: "Opened parent of delegated child · press i to return to stats." },
     };
   }
-  return withError(state, `Session is not browsable in top-level list: ${row.label}.`);
+  return withError(state, `Session is not browsable in top-level list: ${label}.`);
 }
 
 function toggleOverlay(state: LiteBrowserState, overlay: Exclude<LiteOverlay, "none">): LiteBrowserState {

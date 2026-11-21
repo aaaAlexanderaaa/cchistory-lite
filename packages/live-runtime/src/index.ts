@@ -435,7 +435,11 @@ export class LiveHistorySnapshot {
   }
 
   executeCollectionQuery(query: LogicalQuery, options: LiveDirectoryScopeOptions = {}) {
-    return executeCanonicalQuery(this.data, query, options.directoryScope);
+    const data =
+      query.collection === "calls"
+        ? { ...this.data, families: this.listSessionFamilies() }
+        : this.data;
+    return executeCanonicalQuery(data, query, options.directoryScope);
   }
 
   selectCollectionTemplate(kind: "latest-sessions" | "latest-turns" | "list-sessions", limit = 20, offset = 0, options: LiveDirectoryScopeOptions = {}) {

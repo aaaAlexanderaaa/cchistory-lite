@@ -11,8 +11,11 @@ const fixture = JSON.parse(await readFile(new URL("../../../mock_data/fixtures/q
   queries: { id: string; sql: string; params: QueryValue[]; expected_ids: string[]; expected_rows?: Record<string, QueryValue>[] }[];
   rejections: { id: string; sql: string; params: QueryValue[]; expected_rejection: string }[];
 };
-const rows = (collection: QueryCollection) => (collection === "sessions" ? fixture.canonical_session_order : fixture.canonical_turn_order)
-  .map(id => fixture[collection].find(row => row.id === id)!);
+const rows = (collection: QueryCollection) => {
+  if (collection === "calls") return [];
+  return (collection === "sessions" ? fixture.canonical_session_order : fixture.canonical_turn_order)
+    .map(id => fixture[collection].find(row => row.id === id)!);
+};
 
 test("Q1–Q5: the reviewed SQL corpus executes with fixed IDs, values, and canonical ties", async () => {
   const request = await compileSqlRequest({ schema: SQL_REQUEST_SCHEMA, operations: fixture.queries.map(({ id, sql, params }) => ({ id, kind: "sql" as const, sql, params, complete: false })) });
@@ -70,4 +73,50 @@ test("Scalar semantics: timezone normalization, null order, Unicode patterns, an
   await assert.rejects(compileSql('SELECT id FROM sessions WHERE title LIKE $1 LIMIT 10', ['x\\']), QueryValidationError);
   await assert.rejects(compileSql('SELECT id FROM sessions WHERE created_at = $1 LIMIT 10', ['2026-04-15']), QueryValidationError);
   await assert.rejects(compileSql('SELECT id FROM sessions WHERE turn_count > $1 LIMIT 10', ['1']), QueryValidationError);
+});
+
+test("SQL calls collection compiles typed predicates and evaluates call-level telemetry rows", async () => {
+  const query = await compileSql(
+    "SELECT id, session_id, role, cache_hit_ratio, miss_cause, primary_tool, anomaly_kinds, adjusted_cost_usd FROM calls WHERE cache_status = $1 AND context_input_tokens >= $2 ORDER BY adjusted_cost_usd DESC LIMIT $3",
+    ["miss", 20000, 5],
+    true,
+  );
+  assert.equal(query.collection, "calls");
+  const sampleCalls: Record<string, QueryValue>[] = [
+    {
+      id: "call-1", session_id: "s1", parent_session_id: null, turn_id: "t1", source_id: "src-1",
+      source_platform: "claude_code", project_id: "p1", role: "main", subagent_key: null, granularity: "call",
+      seq: 1, created_at: "2026-11-20T14:00:01.000Z", gap_ms: null, model: "claude-sonnet-4-5",
+      input_tokens: 100, cache_read_tokens: 49000, cache_write_tokens: 0, output_tokens: 100, reasoning_tokens: 0,
+      total_tokens: 49200, context_input_tokens: 49100, context_delta_tokens: 0, cache_hit_ratio: 0.998,
+      cache_status: "hit", miss_cause: null, adjusted_cost_usd: 0.02, high_context_tier: false,
+      tool_count: 1, tool_error_count: 0, primary_tool: "Bash:kubectl get pod api-<id>", anomaly_kinds: "polling_loop",
+    },
+    {
+      id: "call-2", session_id: "s1", parent_session_id: null, turn_id: "t1", source_id: "src-1",
+      source_platform: "claude_code", project_id: "p1", role: "main", subagent_key: null, granularity: "call",
+      seq: 2, created_at: "2026-11-20T14:06:17.000Z", gap_ms: 372000, model: "claude-sonnet-4-5",
+      input_tokens: 100, cache_read_tokens: 0, cache_write_tokens: 49000, output_tokens: 200, reasoning_tokens: 0,
+      total_tokens: 49300, context_input_tokens: 49100, context_delta_tokens: 1000, cache_hit_ratio: 0,
+      cache_status: "miss", miss_cause: "idle_ttl_gap", adjusted_cost_usd: 0.19, high_context_tier: false,
+      tool_count: 1, tool_error_count: 1, primary_tool: "Bash:npm test", anomaly_kinds: "cache_miss_cliff",
+    },
+    {
+      id: "call-3", session_id: "s1", parent_session_id: "s1", turn_id: "t1", source_id: "src-1",
+      source_platform: "claude_code", project_id: "p1", role: "subagent", subagent_key: "agent-explore-1", granularity: "call",
+      seq: 3, created_at: "2026-11-20T14:01:00.000Z", gap_ms: null, model: "claude-sonnet-4-5",
+      input_tokens: 100, cache_read_tokens: 0, cache_write_tokens: 16000, output_tokens: 300, reasoning_tokens: 0,
+      total_tokens: 16400, context_input_tokens: 16100, context_delta_tokens: null, cache_hit_ratio: 0,
+      cache_status: "miss", miss_cause: "cold_start", adjusted_cost_usd: 0.06, high_context_tier: false,
+      tool_count: 0, tool_error_count: 0, primary_tool: null, anomaly_kinds: null,
+    },
+  ];
+  const res = executeQueryRows(sampleCalls, query);
+  assert.deepEqual(res.ids, ["call-2"]);
+  assert.equal(res.total, 1);
+  assert.equal(res.rows[0]?.miss_cause, "idle_ttl_gap");
+  assert.equal(res.rows[0]?.primary_tool, "Bash:npm test");
+
+  await assert.rejects(compileSql("SELECT unknown_col FROM calls LIMIT 1"), QueryValidationError);
+  await assert.rejects(compileSql("SELECT id FROM calls WHERE high_context_tier = 'yes' LIMIT 1"), QueryValidationError);
 });
