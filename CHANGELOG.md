@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-11-21
+
 ### Added
 
 - Per-call `SessionUsageEvent` telemetry across `codex`, `claude_code`, and
