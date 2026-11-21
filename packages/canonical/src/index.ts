@@ -66,6 +66,33 @@ export {
   type DenseTimePoint,
 } from "./usage-diagnostics.js";
 export {
+  buildDelegationIndex,
+  computeCacheHitDistribution,
+  computeFamilyUsageRows,
+  computeToolPatternsAndLoops,
+  computeUsageDiagnosticsReport,
+  computeUsageRoleSplit,
+  detectUsageAnomalies,
+  evaluateUsageRowsForDiagnostics,
+  type DelegationIndex,
+  type EvaluatedUsageRow,
+} from "./usage-anomalies.js";
+export {
+  buildSessionTraceReport,
+  type SessionTraceOptions,
+} from "./usage-trace.js";
+export {
+  MAX_TOOL_SIGNATURE_CHARS,
+  MAX_TOOL_SUMMARIES_PER_CALL,
+  buildSessionUsageEvents,
+  buildUsageToolSummary,
+  detectToolResultStatus,
+  extractSidecarSubagentKey,
+  isCompactionBoundaryAtom,
+  normalizeToolTargetSignature,
+  resolveToolCallDurationMs,
+} from "./tool-call-summary.js";
+export {
   extractLocalTimeParts,
   localWallTimeToEpochMs,
   parseDateEnd,

@@ -17,6 +17,15 @@ export function parseClaudeRecord(
   const lossAudits: LossAuditRecord[] = [];
   const timeKey = helpers.coerceIso(parsed.timestamp) ?? record.observed_at;
   const recordType = helpers.asString(parsed.type) ?? "unknown";
+  const recordSubtype = helpers.asString(parsed.subtype);
+  if (recordType === "system" && (recordSubtype === "compact_boundary" || recordSubtype === "microcompact_boundary")) {
+    fragments.push(
+      helpers.createFragment(context, record, fragments.length, "unknown", timeKey, {
+        signal_kind: "compact_boundary",
+        source_event_type: recordSubtype,
+      }),
+    );
+  }
   if (helpers.asString(parsed.cwd)) {
     draft.working_directory = helpers.asString(parsed.cwd) ?? draft.working_directory;
     fragments.push(
@@ -61,11 +70,12 @@ export function parseClaudeRecord(
     helpers.asString(message?.requestId) ??
     helpers.asString(message?.request_id);
   const isSidechain = helpers.asBoolean(parsed.isSidechain);
+  const agentId = helpers.asString(parsed.agentId) ?? helpers.asString(parsed.agent_id);
+  const assistantMessageId = actorKind === "assistant" ? helpers.asString(message?.id) : undefined;
   let usageApplied = false;
   let localSeq = 0;
 
   if (directMessageText) {
-    const messageId = helpers.asString(message?.id);
     const appended = helpers.appendChunkedTextFragments(
       context,
       record,
@@ -74,7 +84,7 @@ export function parseClaudeRecord(
       actorKind,
       directMessageText,
       localSeq,
-      { stopReason, usageApplied, messageId: actorKind === "assistant" ? messageId : undefined, model: messageModel },
+      { stopReason, usageApplied, messageId: assistantMessageId, model: messageModel },
     );
     localSeq = appended.nextSeq;
     usageApplied = appended.usageApplied;
@@ -91,16 +101,23 @@ export function parseClaudeRecord(
           call_id: helpers.asString(item.id),
           tool_name: helpers.asString(item.name) ?? itemType,
           input: helpers.isObject(item.input) ? item.input : {},
+          ...(assistantMessageId ? { message_id: assistantMessageId } : {}),
+          ...(agentId ? { agent_id: agentId } : {}),
+          ...(isSidechain !== undefined ? { is_sidechain: isSidechain } : {}),
           source_event_type: itemType === "server_tool_use" ? itemType : undefined,
         }),
       );
       continue;
     }
     if (itemType === "tool_result") {
+      const isError = helpers.asBoolean(item.is_error ?? item.isError);
       fragments.push(
         helpers.createFragment(context, record, localSeq++, "tool_result", timeKey, {
           call_id: helpers.asString(item.tool_use_id),
           output: helpers.stringifyToolContent(item.content),
+          ...(isError !== undefined ? { is_error: isError } : {}),
+          ...(agentId ? { agent_id: agentId } : {}),
+          ...(isSidechain !== undefined ? { is_sidechain: isSidechain } : {}),
         }),
       );
       continue;
@@ -176,6 +193,7 @@ export function parseClaudeRecord(
       ...(messageId ? { message_id: messageId } : {}),
       ...(requestId ? { request_id: requestId } : {}),
       ...(isSidechain !== undefined ? { is_sidechain: isSidechain } : {}),
+      ...(agentId ? { agent_id: agentId } : {}),
     };
     fragments.push(
       helpers.createTokenUsageFragment(

@@ -9,6 +9,7 @@ import type {
   QuotaPaceStatus,
   UsageCostBreakdown,
   UsageCostShares,
+  UsageDiagnosticsReport,
   UsageEfficiencyMetrics,
   UsageHourlyProfileCell,
   UsageSessionRollupMeta,
@@ -17,6 +18,7 @@ import type {
   UsageTimeBucket,
 } from "@cchistory/domain";
 import type { UsageAggregationRow, UsageFilters, UsageSourceData } from "./usage.js";
+import { buildDelegationIndex } from "./usage-anomalies.js";
 import { createEmptyCostBreakdown } from "./usage-pricing.js";
 import {
   extractLocalTimeParts,
@@ -167,6 +169,7 @@ export function enrichSessionRollup(
   rollup: UsageStatsRollup,
   rowsBySession: ReadonlyMap<string, readonly UsageAggregationRow[]>,
   sourceData: UsageSourceData,
+  diagnostics?: UsageDiagnosticsReport,
 ): UsageStatsRollup {
   if (rollup.dimension !== "session") return rollup;
 
@@ -177,6 +180,28 @@ export function enrichSessionRollup(
   const familiesByParentId = new Map(
     (sourceData.listSessionFamilies?.() ?? []).map((f) => [f.parent_session_ref, f]),
   );
+  const delegation = buildDelegationIndex(
+    sourceData.listResolvedSessions(),
+    sourceData.listSessionFamilies?.() ?? [],
+    sourceData.listRelatedWork?.() ?? [],
+  );
+  const familyUsageByParent = new Map(
+    (diagnostics?.families ?? []).map((f) => [f.parent_session_id, f]),
+  );
+  const anomaliesBySession = new Map<string, number>();
+  const missBySession = new Map<string, number>();
+  const loopBySession = new Map<string, string>();
+  for (const anomaly of diagnostics?.anomalies ?? []) {
+    anomaliesBySession.set(anomaly.session_id, (anomaliesBySession.get(anomaly.session_id) ?? 0) + 1);
+    if (anomaly.kind === "cache_miss_cliff") {
+      missBySession.set(anomaly.session_id, (missBySession.get(anomaly.session_id) ?? 0) + 1);
+    }
+  }
+  for (const loop of diagnostics?.loops ?? []) {
+    if (!loopBySession.has(loop.session_id)) {
+      loopBySession.set(loop.session_id, `loop:${loop.tool_name}×${loop.exec_count}`);
+    }
+  }
 
   const enrichedRows: UsageStatsRollupRow[] = rollup.rows.map((row) => {
     const members = rowsBySession.get(row.key) ?? [];
@@ -184,16 +209,25 @@ export function enrichSessionRollup(
     const session = sessionsById.get(row.key);
     const contribution = contributionsById.get(row.key);
     const family = familiesByParentId.get(row.key);
+    const familyUsage = familyUsageByParent.get(row.key);
+    const parentId = delegation.parentByChild.get(row.key);
+    const agentKey = delegation.agentKeyByChild.get(row.key);
 
     // Pick the model with the highest token total inside this session window.
     const tokensByModel = new Map<string, number>();
     let latestTs = Number.NEGATIVE_INFINITY;
+    let minHit: number | null = null;
     for (const member of members) {
       if (member.model && member.model !== "unknown") {
         tokensByModel.set(member.model, (tokensByModel.get(member.model) ?? 0) + member.total_tokens);
       }
       if (Number.isFinite(member.timestamp_ms) && member.timestamp_ms > latestTs) {
         latestTs = member.timestamp_ms;
+      }
+      const totalIn = member.input_tokens + member.cache_read_input_tokens + member.cache_creation_input_tokens;
+      if (totalIn > 0) {
+        const hit = member.cache_read_input_tokens / totalIn;
+        minHit = minHit === null ? hit : Math.min(minHit, hit);
       }
     }
     let primaryModel = session?.model;
@@ -206,16 +240,32 @@ export function enrichSessionRollup(
     }
 
     const stats = contribution?.stats;
+    const missCount = missBySession.get(row.key) ?? 0;
+    const signals: string[] = [];
+    if (parentId) signals.push("subagent");
+    if (missCount > 0) signals.push(`${missCount}miss`);
+    const loopSig = loopBySession.get(row.key);
+    if (loopSig) signals.push(loopSig);
+
     const meta: UsageSessionRollupMeta = {
       session_id: row.key,
       title: row.label,
       project_label: first?.project_label ?? "Unassigned",
       source_label: first?.source_label ?? session?.source_platform ?? "unknown",
       primary_model: primaryModel,
-      delegated_child_count: family?.child_count ?? 0,
+      delegated_child_count: family?.child_count ?? familyUsage?.subagent_count ?? 0,
       tool_call_count: stats?.tool_call_count ?? 0,
       tool_error_count: stats?.tool_error_count ?? 0,
       last_activity_at: Number.isFinite(latestTs) ? new Date(latestTs).toISOString() : session?.updated_at,
+      ...(parentId ? { parent_session_id: parentId } : {}),
+      role: parentId ? "subagent" : "main",
+      ...(agentKey ? { agent_key: agentKey } : {}),
+      min_cache_hit_ratio: minHit,
+      ...(missCount > 0 ? { miss_call_count: missCount } : {}),
+      ...(signals.length > 0 ? { anomaly_signals: signals } : {}),
+      ...(familyUsage && familyUsage.subagent_count > 0
+        ? { family_cost_usd: familyUsage.total_cost_usd, family_tokens: familyUsage.total_tokens }
+        : {}),
     };
 
     return {

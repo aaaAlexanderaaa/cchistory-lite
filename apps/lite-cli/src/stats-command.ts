@@ -9,6 +9,8 @@ import os from "node:os";
 import path from "node:path";
 import type {
   ProjectIdentity,
+  SessionProjection,
+  SessionTraceTurnRow,
   SourceStatus,
   UsageBreakdownSnapshot,
   UsageMatrixResult,
@@ -54,6 +56,7 @@ export interface StatsCommandDeps {
   UsageError: new (message: string, code?: string) => Error;
   requireSource: (snapshot: LiveHistorySnapshot, ref: string) => SourceStatus;
   requireProject: (snapshot: LiveHistorySnapshot, ref: string) => ProjectIdentity;
+  requireSession?: (snapshot: LiveHistorySnapshot, ref: string) => SessionProjection;
   assertSafeExportDestination: (outputPath: string, snapshot: LiveHistorySnapshot, homeDir: string | undefined) => Promise<void>;
   renderMeta: (line: string) => string;
   renderDashRow: (line: string) => string;
@@ -68,7 +71,10 @@ export interface StatsCommandDeps {
   jsonSchema: string;
 }
 
+export type DiagnosticStatsByView = "family" | "tool" | "turn";
+
 const VALID_DIMENSIONS = new Set<UsageStatsDimension>(["source", "project", "model", "session", "hour", "hour_of_day", "day", "week", "month"]);
+const DIAGNOSTIC_BY_VIEWS = new Set<DiagnosticStatsByView>(["family", "tool", "turn"]);
 const VALID_WEEK_MODES = new Set<UsageWeekMode>(["rolling_7d", "iso_week", "custom_reset"]);
 const VALID_SORTS = new Set<UsageMatrixSort>(["adjusted_cost", "list_cost", "tokens", "turns", "label"]);
 
@@ -88,29 +94,48 @@ function parseSingleValue(
   return entries.at(-1);
 }
 
+export function parseStatsByOption(
+  rawValues: readonly string[],
+  UsageError: StatsCommandDeps["UsageError"],
+): { dimensions: UsageStatsDimension[]; diagnosticView?: DiagnosticStatsByView } {
+  const result: UsageStatsDimension[] = [];
+  const seen = new Set<UsageStatsDimension>();
+  const diagnosticViews: DiagnosticStatsByView[] = [];
+  for (const raw of rawValues) {
+    for (const part of raw.split(",")) {
+      const normalized = part.trim().toLowerCase();
+      if (!normalized) continue;
+      if (DIAGNOSTIC_BY_VIEWS.has(normalized as DiagnosticStatsByView)) {
+        const view = normalized as DiagnosticStatsByView;
+        if (!diagnosticViews.includes(view)) diagnosticViews.push(view);
+        continue;
+      }
+      if (!VALID_DIMENSIONS.has(normalized as UsageStatsDimension)) {
+        throw new UsageError(
+          `--by dimensions must be source, project, model, session, family, tool, turn, hour, hour_of_day, day, week, or month; received ${JSON.stringify(part.trim())}.`,
+        );
+      }
+      const dim = normalized as UsageStatsDimension;
+      if (!seen.has(dim)) {
+        seen.add(dim);
+        result.push(dim);
+      }
+    }
+  }
+  if (rawValues.length > 0 && result.length === 0 && diagnosticViews.length === 0) {
+    throw new UsageError("--by requires at least one dimension.");
+  }
+  if (diagnosticViews.length > 1 || (diagnosticViews.length === 1 && result.length > 0)) {
+    throw new UsageError("--by family, tool, and turn are standalone diagnostic views and cannot be combined with matrix dimensions.");
+  }
+  return { dimensions: result, diagnosticView: diagnosticViews[0] };
+}
+
 export function parseStatsDimensions(
   rawValues: readonly string[],
   UsageError: StatsCommandDeps["UsageError"],
 ): UsageStatsDimension[] {
-  const result: UsageStatsDimension[] = [];
-  const seen = new Set<UsageStatsDimension>();
-  for (const raw of rawValues) {
-    for (const part of raw.split(",")) {
-      const normalized = part.trim().toLowerCase() as UsageStatsDimension;
-      if (!normalized) continue;
-      if (!VALID_DIMENSIONS.has(normalized)) {
-        throw new UsageError(`--by dimensions must be source, project, model, session, hour, hour_of_day, day, week, or month; received ${JSON.stringify(part.trim())}.`);
-      }
-      if (!seen.has(normalized)) {
-        seen.add(normalized);
-        result.push(normalized);
-      }
-    }
-  }
-  if (rawValues.length > 0 && result.length === 0) {
-    throw new UsageError("--by requires at least one dimension.");
-  }
-  return result;
+  return parseStatsByOption(rawValues, UsageError).dimensions;
 }
 
 function parseModelMultiplierArg(
@@ -251,7 +276,7 @@ export async function runStatsCommand(options: {
   deps: StatsCommandDeps;
 }): Promise<void> {
   const { parsed, snapshot, io, jsonMode, directoryScope, deps } = options;
-  const { UsageError, requireProject, requireSource, assertSafeExportDestination, emitOutput, jsonSchema } = deps;
+  const { UsageError, requireProject, requireSource, requireSession, assertSafeExportDestination, emitOutput, jsonSchema } = deps;
 
   const sortRaw = parseSingleValue(parsed, "sort", UsageError);
   const sortBy: UsageMatrixSort = sortRaw
@@ -262,12 +287,23 @@ export async function runStatsCommand(options: {
         })()
     : "adjusted_cost";
 
-  const dimensions = parseStatsDimensions(parsed.values.get("by") ?? [], UsageError);
+  const { dimensions, diagnosticView } = parseStatsByOption(parsed.values.get("by") ?? [], UsageError);
+  const anomaliesOnly = parsed.booleans.has("anomalies");
   const projectRefs = parsed.values.get("project") ?? [];
   const projectIds = projectRefs.map((ref) =>
     ref.trim().toLowerCase() === UNASSIGNED_PROJECT_KEY ? UNASSIGNED_PROJECT_KEY : requireProject(snapshot, ref).project_id,
   );
   const sourceIds = (parsed.values.get("source") ?? []).map((ref) => requireSource(snapshot, ref).id);
+  const sessionRefs = parsed.values.get("session") ?? [];
+  const resolvedRootSessions = sessionRefs.map((ref) => {
+    const session = requireSession ? requireSession(snapshot, ref) : snapshot.getSession(ref);
+    if (!session) throw new UsageError(`Session not found: ${ref}.`, "reference_not_found");
+    return session;
+  });
+  const sessionIds =
+    resolvedRootSessions.length > 0
+      ? [...new Set(resolvedRootSessions.flatMap((s) => snapshot.expandSessionFamilyIds(s.id)))]
+      : undefined;
   const modelQueries = parsed.values.get("model") ?? [];
 
   const { config: pricingConfig, explicitQuotaUsd } = await loadCliPricingConfig({
@@ -340,9 +376,10 @@ export async function runStatsCommand(options: {
 
   const filters: UsageFilters = {
     project_ids: projectIds.length > 0 ? projectIds : undefined,
+    session_ids: sessionIds,
     source_ids: sourceIds.length > 0 ? sourceIds : undefined,
     model_queries: modelQueries.length > 0 ? modelQueries : undefined,
-    directory_scope: directoryScope,
+    directory_scope: sessionIds ? undefined : directoryScope,
     timezone: timeZone,
     week_mode: weekMode,
     now_ms: nowMs,
@@ -386,6 +423,10 @@ export async function runStatsCommand(options: {
     : undefined;
   const matrix: UsageMatrixResult | undefined = dimensions.length >= 2 ? breakdown.matrix : undefined;
   const explainPricing = parsed.booleans.has("explain-pricing");
+  const turnRows: Array<SessionTraceTurnRow & { session_id: string }> | undefined =
+    diagnosticView === "turn"
+      ? collectTurnDiagnosticRows(snapshot, resolvedRootSessions, breakdown, filters)
+      : undefined;
 
   const payload: Record<string, unknown> = {
     schema: jsonSchema,
@@ -394,8 +435,15 @@ export async function runStatsCommand(options: {
     rollup,
     ...(breakdown.efficiency ? { efficiency: breakdown.efficiency } : {}),
     ...(breakdown.quota_pace ? { quota_pace: breakdown.quota_pace } : {}),
+    ...(breakdown.diagnostics ? { diagnostics: breakdown.diagnostics } : {}),
+    ...(diagnosticView === "family" && breakdown.diagnostics ? { families: breakdown.diagnostics.families } : {}),
+    ...(diagnosticView === "tool" && breakdown.diagnostics
+      ? { tool_patterns: breakdown.diagnostics.tool_patterns, loops: breakdown.diagnostics.loops }
+      : {}),
+    ...(turnRows ? { turns: turnRows } : {}),
+    ...(anomaliesOnly && breakdown.diagnostics ? { anomalies: breakdown.diagnostics.anomalies } : {}),
     ...(matrix ? { matrix } : {}),
-    ...(dimensions.length === 0 ? { breakdown } : {}),
+    ...(dimensions.length === 0 && !diagnosticView && !anomaliesOnly ? { breakdown } : {}),
     ...(explainPricing ? { model_resolutions: breakdown.model_resolutions } : {}),
   };
 
@@ -406,10 +454,14 @@ export async function runStatsCommand(options: {
     breakdown,
     rollup,
     matrix,
-    directoryScope,
+    diagnosticView,
+    anomaliesOnly,
+    turnRows,
+    directoryScope: sessionIds ? undefined : directoryScope,
     cwd: io.cwd,
     modelQueries,
     projectRefs,
+    sessionRefs,
     sourceIds,
     explainPricing,
     exportNotice,
@@ -419,7 +471,36 @@ export async function runStatsCommand(options: {
     columns: io.columns ?? 120,
   });
 
-  emitOutput(io, jsonMode, payload, rendered, snapshot, directoryScope);
+  emitOutput(io, jsonMode, payload, rendered, snapshot, sessionIds ? undefined : directoryScope);
+}
+
+function collectTurnDiagnosticRows(
+  snapshot: LiveHistorySnapshot,
+  rootSessions: readonly SessionProjection[],
+  breakdown: UsageBreakdownSnapshot,
+  filters: UsageFilters,
+): Array<SessionTraceTurnRow & { session_id: string }> {
+  const targetSessionIds =
+    rootSessions.length > 0
+      ? rootSessions.map((s) => s.id)
+      : (breakdown.by_session?.rows ?? []).slice(0, 20).map((r) => r.key);
+  const rows: Array<SessionTraceTurnRow & { session_id: string }> = [];
+  for (const sessionId of targetSessionIds) {
+    const trace = snapshot.getSessionTrace({
+      sessionId,
+      includeSubagents: rootSessions.length > 0,
+      filters,
+      limit: 1,
+    });
+    if (!trace) continue;
+    for (const t of trace.turns) {
+      rows.push({ ...t, session_id: sessionId });
+    }
+  }
+  if (rootSessions.length === 0) {
+    rows.sort((a, b) => b.adjusted_cost_usd - a.adjusted_cost_usd || b.total_tokens - a.total_tokens);
+  }
+  return rows;
 }
 
 function selectRollup(

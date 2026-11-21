@@ -1296,8 +1296,11 @@ export function createTokenUsageFragment(
     scope: "turn",
     ...extraPayload,
   };
-  if (context.source.platform === "antigravity" &&
-    (/^sqlite:gen_metadata\[/u.test(record.record_path_or_offset) || /^sqlite:steps\[\d+\]:usage$/u.test(record.record_path_or_offset))) {
+  if (
+    (context.source.platform === "antigravity" &&
+      (/^sqlite:gen_metadata\[/u.test(record.record_path_or_offset) || /^sqlite:steps\[\d+\]:usage$/u.test(record.record_path_or_offset))) ||
+    context.source.platform === "claude_code"
+  ) {
     payload.independent_usage_event_id = record.id;
   }
   if (typeof usage.total_tokens === "number") {

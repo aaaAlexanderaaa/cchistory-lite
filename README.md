@@ -44,8 +44,10 @@ on `PATH`.
 
 CLI `search` checks titles, user prompts, and assistant replies by default (`--prompts-only`
 limits matching to titles and prompts; `--group-by message` lists every matching message).
-`stats` defaults to machine-wide usage, cost mix, cache hit rate, estimated cache savings,
-quota pace, and hourly or session rollups (`--dir <path>` scopes to one directory).
+`stats` defaults to machine-wide usage, cost mix, cache hit rate, cache-hit distribution,
+main vs subagent role split, ranked anomalies, and hourly, session, family, tool, or turn
+rollups (`--dir <path>` scopes to one directory; `trace <session_ref|turn_ref>` inspects
+one session or turn's per-call waterfall and causal tool summaries).
 
 Agents: [`skills/using-cchistory-lite/SKILL.md`](skills/using-cchistory-lite/SKILL.md).
 Copy-paste recipes: [`docs/guide/lite.md`](docs/guide/lite.md).

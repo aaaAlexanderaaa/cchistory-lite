@@ -1,6 +1,40 @@
 # Project work
 
-## Current work — 2026-11-19 Usability, diagnostics, and terminal visualization
+## Current work — 2026-11-21 Per-call usage telemetry, anomaly diagnostics, and `trace`
+
+Status: Stage 1 implementation and full repository verification complete; commit and push to `origin/main` authorized. Stage 2 (TUI interactive call waterfall & finite SQL `calls` table) authorized next.
+
+Owner requests (verbatim):
+> 我让远程的agent用了一下这个工具，让它去排查异常token开销，它感觉有点摩擦，因为只到了session级别，没有subagent或者每句话/每个工具调用的情况，它举了一个例子，可能某些工具调用的缓存命中是0,但是其他会话都是99%，结果综合下来变成了70%或者50%，就缺少了可观测性。它建议最省事的改进会是直接列出“哪条命令被反复查询、查了几次、持续多久、同期用了多少 token”，但我认为可以做得更好，你想想
+>
+> B，同意1/2/ codex/claude code/antigravity
+
+Approved design & surface choices (2026-11-21):
+- **Direction B (Canonical call-level telemetry + 4-layer progressive diagnostics)**: Stage 1 first (`codex`, `claude_code`, and `antigravity` prioritized for per-call telemetry; other adapters report honest `usage_granularity: "turn" | "session" | "unavailable"`); Stage 2 (TUI interactive waterfall & SQL `calls` table) deferred until after Stage 1 review.
+- **A1 (CLI entrypoints)**: Dedicated `cchistory-lite trace <session_ref|turn_ref>` (`--include-subagents`, `--only-anomalies`, `--limit`, `--offset`, `--pricing`, `--tz`, `--json`) plus `stats` extended with `--session <ref>`, `--by family`, `--by tool`, `--by turn`, and `--anomalies`; `query` and `shell --json` add `diagnose` and `trace` operations.
+- **A2 (Default `stats` diagnostic summary)**: Default `cchistory-lite stats` displays `Cache dist` (`≥90%` / `50–90%` / `<50%` with zero-hit call count), `Role split` (Main vs Subagents), and top-5 `Anomalies` when anomalies exist (`--anomalies` renders the full ranked table).
+
+Pre-code judgment:
+- Executor: preserve zero-store, read-only sources, offline pricing, `auditProjectionConsistency` (zero issues across all 17 adapters), compact JSON non-leakage (compact `show turn --json` emits masked `tool_summaries`, retaining raw `tool_calls` exclusion), and additive JSON schema compatibility.
+- Collaborator: eliminate bimodal cache-average blind spots and multi-scan friction by surfacing cache-hit distribution, subagent role split, causal tool attribution (`preceding_tool_results` vs `emitted_tool_calls`), repeated command loops, and a 2-step `stats`/`diagnose` → `trace` workflow for both humans and remote agents.
+- Architect: keep adapters at the parse boundary (native `is_error`, Codex exit codes, Claude Code compaction/message/sidecar metadata, Antigravity step timing & `covered_step_indices`); own all tool normalization, causal call-event building, thread-isolated continuity analysis, loop clustering, anomaly synthesis, and trace assembly inside pure `packages/canonical` modules (`tool-call-summary.ts`, `usage-call-evaluation.ts`, `usage-tool-patterns.ts`, `usage-anomalies.ts`, `usage-trace.ts`).
+
+Scope & module ownership:
+- `packages/domain/src/usage-trace.ts`, `packages/domain/src/index.ts`, `packages/domain/src/usage-pricing.ts`: pure contracts for `UsageGranularity`, `UsageToolSummary`, `CacheHitDistribution`, `UsageRoleSplit`, `UsageAnomaly`, `ToolPatternRow`, `ToolLoopCluster`, `FamilyUsageRow`, `UsageDiagnosticsReport`, `SessionTraceReport`, and additive per-call fields on `SessionUsageEvent` and `UsageSessionRollupMeta`.
+- `packages/source-adapters/src/platforms/claude-code/runtime.ts`, `packages/source-adapters/src/core/parser.ts`, `packages/source-adapters/src/platforms/codex/runtime.ts`, `packages/source-adapters/src/platforms/antigravity/sqlite.ts`, `packages/source-adapters/src/platforms/generic/runtime.ts`: native tool error status, step/tool timing, Claude Code compaction boundaries, sidecar `agent_id`, and unique per-call `independent_usage_event_id`.
+- `packages/canonical/src/tool-call-summary.ts`, `packages/canonical/src/session-interpreter.ts`, `packages/canonical/src/usage.ts`, `packages/canonical/src/usage-call-evaluation.ts`, `packages/canonical/src/usage-tool-patterns.ts`, `packages/canonical/src/usage-anomalies.ts`, `packages/canonical/src/usage-trace.ts`, `packages/canonical/src/usage-breakdown.ts`, `packages/canonical/src/usage-diagnostics.ts`: causal `SessionUsageEvent` construction (masked & capped at 16 tools/call), sidecar thread isolation, cache-hit distribution, role split, family rollups, normalized tool/command loop clustering, 6 typed anomalies, and single-session/turn call waterfall trace.
+- `packages/live-runtime/src/index.ts`: exposes `getUsageDiagnostics`, `getSessionTrace`, `expandSessionFamilyIds`, and wires `listRelatedWork` into canonical usage analysis.
+- `apps/lite-cli/src/trace-command.ts`, `apps/lite-cli/src/stats-diagnostics-render.ts`, `apps/lite-cli/src/stats-visuals.ts`, `apps/lite-cli/src/stats-command.ts`, `apps/lite-cli/src/stats-render.ts`, `apps/lite-cli/src/json-v2.ts`, `apps/lite-cli/src/query.ts`, `apps/lite-cli/src/shell.ts`, `apps/lite-cli/src/index.ts`, `apps/lite-cli/src/help.ts`, `apps/lite-cli/src/agent-contract.ts`: CLI `trace` command, `stats` diagnostic views, compact masked `tool_summaries`, `query`/`shell` `diagnose` & `trace`, JSON schemas (`schemas/`), `skills/using-cchistory-lite/SKILL.md`, and docs (`docs/guide/lite.md`, `docs/guide/for-agents.md`, `README.md`, `CHANGELOG.md`).
+
+Verification (2026-11-21):
+- `pnpm run build:lite` passed across all 6 workspace packages.
+- `pnpm test` passed: 881 package tests (`@cchistory/domain` 103, `@cchistory/canonical` 184, `@cchistory/source-adapters` 283, `@cchistory/live-runtime` 132, `@cchistory/lite-cli` 79, `@cchistory/lite-tui` 100), 4 catalog-refresh tests, and `verify-lite-boundaries.mjs` (zero store/server leaks).
+- `pnpm run verify:governance` passed: 14 JS governance tests, 5 Python doc-checker tests, `verify-architecture-boundaries.mjs` (5 rules across 152 matches), and `scripts/check_docs.py` (37 docs, 17 adapters, 0 errors, 27 advisories).
+- `pnpm run verify:lite-artifact` passed (temporary npm cache) for both the standalone tarball and `npm pack` + local prefix install.
+- `pnpm run mock-data:validate` passed across 198 fixture files; `git diff --check` passed.
+- Direct built-binary fixture checks verified `stats` (`Cache dist`, `Role split`, top `Anomalies`), `stats --by family`, `stats --by tool`, `trace` on Claude Code (sidecar `subagent_key`, idle TTL miss, polling loop), Codex (prefix invalidation), and Antigravity SQLite (delegated child `[sub:...]` waterfall), plus `shell --json` `diagnose` + `trace`.
+
+## Previous work — 2026-11-19 Usability, diagnostics, and terminal visualization
 
 Status: implementation and full repository verification complete; commit and push to `origin/main` authorized.
 

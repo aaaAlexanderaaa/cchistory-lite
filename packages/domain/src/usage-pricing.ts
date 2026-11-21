@@ -145,6 +145,14 @@ export interface UsageSessionRollupMeta {
   tool_call_count: number;
   tool_error_count: number;
   last_activity_at?: string;
+  parent_session_id?: string;
+  role?: "main" | "subagent";
+  agent_key?: string;
+  min_cache_hit_ratio?: number | null;
+  miss_call_count?: number;
+  anomaly_signals?: string[];
+  family_cost_usd?: number;
+  family_tokens?: number;
 }
 
 export interface UsageHourlyProfileCell {
@@ -245,4 +253,5 @@ export interface UsageBreakdownSnapshot {
   efficiency?: UsageEfficiencyMetrics;
   quota_pace?: QuotaPaceProjection;
   hourly_profile?: UsageHourlyProfileCell[];
+  diagnostics?: import("./usage-trace.js").UsageDiagnosticsReport;
 }

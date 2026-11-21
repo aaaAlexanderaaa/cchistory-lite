@@ -18,7 +18,7 @@
     },
     "commands": {
       "type": "object",
-      "required": ["sources", "ls", "latest", "sample", "tree", "search", "show", "stats", "query", "shell", "export", "tui", "help", "agent"],
+      "required": ["sources", "ls", "latest", "sample", "tree", "search", "show", "stats", "trace", "query", "shell", "export", "tui", "help", "agent"],
       "properties": {
         "sources": { "$ref": "#/$defs/command" },
         "ls": { "$ref": "#/$defs/command" },
@@ -28,6 +28,7 @@
         "search": { "$ref": "#/$defs/command" },
         "show": { "$ref": "#/$defs/command" },
         "stats": { "$ref": "#/$defs/command" },
+        "trace": { "$ref": "#/$defs/command" },
         "query": { "$ref": "#/$defs/command" },
         "shell": { "$ref": "#/$defs/command" },
         "export": { "$ref": "#/$defs/command" },

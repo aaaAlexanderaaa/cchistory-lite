@@ -13,6 +13,7 @@ interface Step {
   metadata: ProtoField[];
   executionId?: string;
   observedAt?: string;
+  durationMs?: number;
   record: Record<string, unknown>;
 }
 
@@ -41,10 +42,19 @@ export function extractAntigravitySqliteSeeds(filePath: string, budget?: SourceR
         const metadata = protobuf(bytes(row.metadata));
         const payload = protobuf(bytes(row.step_payload));
         const type = Number(row.step_type);
-        const observedAt = timestamp(metadata, 1) ?? timestamp(metadata, 8);
+        const startedAt = timestamp(metadata, 1);
+        const completedAt = timestamp(metadata, 8);
+        const observedAt = startedAt ?? completedAt;
+        const durationMs =
+          startedAt && completedAt
+            ? (() => {
+                const diff = Date.parse(completedAt) - Date.parse(startedAt);
+                return Number.isFinite(diff) && diff >= 0 ? diff : undefined;
+              })()
+            : undefined;
         const executionId = string(metadata, 12);
-        const record = decodeStep(type, payload, metadata);
-        steps.push({ index, type, metadata, observedAt, executionId, record });
+        const record = decodeStep(type, payload, metadata, index, durationMs);
+        steps.push({ index, type, metadata, observedAt, durationMs, executionId, record });
       } catch (error) {
         loss("invalid_step", `Step ${index}: ${error instanceof Error ? error.message : String(error)}`);
         records.push({ pointer: `sqlite:steps[${index}]:opaque`, rawJson: JSON.stringify({ antigravitySqlite: {
@@ -57,7 +67,7 @@ export function extractAntigravitySqliteSeeds(filePath: string, budget?: SourceR
     const byIndex = new Map(steps.map(step => [step.index, step]));
     const covered = new Set<number>();
     const executions = new Set<string>();
-    const usageAtStep = new Map<number, Array<{ usage: TokenUsageMetrics; pointer: string }>>();
+    const usageAtStep = new Map<number, Array<{ usage: TokenUsageMetrics; pointer: string; coveredStepIndices?: number[] }>>();
     for (const row of generations) {
       try {
         const fields = protobuf(bytes(row.data));
@@ -78,7 +88,11 @@ export function extractAntigravitySqliteSeeds(filePath: string, budget?: SourceR
           continue;
         }
         const usages = usageAtStep.get(target.index) ?? [];
-        usages.push({ usage, pointer: `sqlite:gen_metadata[${row.idx}]` });
+        usages.push({
+          usage,
+          pointer: `sqlite:gen_metadata[${row.idx}]`,
+          coveredStepIndices: stepIndices.length > 0 ? stepIndices : undefined,
+        });
         usageAtStep.set(target.index, usages);
       } catch (error) {
         loss("invalid_generation", `Generation ${row.idx}: ${error instanceof Error ? error.message : String(error)}`);
@@ -123,20 +137,27 @@ export function extractAntigravitySqliteSeeds(filePath: string, budget?: SourceR
         try {
           const usage = decodeAntigravityUsage(message(step.metadata, 9));
           if (usage) {
-            usages.push({ usage, pointer: `sqlite:steps[${step.index}]:usage` });
+            usages.push({ usage, pointer: `sqlite:steps[${step.index}]:usage`, coveredStepIndices: [step.index] });
             if (step.executionId) executions.add(step.executionId);
           }
         } catch { loss("invalid_step_usage", `Step ${step.index} has malformed model usage`); }
       }
       for (const entry of usages) records.push({ pointer: entry.pointer, observedAt: step.observedAt ?? createdAt,
         rawJson: JSON.stringify({ timestamp: step.observedAt, model: entry.usage.model,
+          ...(entry.coveredStepIndices ? { covered_step_indices: entry.coveredStepIndices } : {}),
           message: { role: "assistant", content: [], usage: entry.usage } }) });
     }
     return [{ sessionId, title, createdAt, updatedAt, workingDirectory: cwd, records, diagnostics }];
   } finally { db.close(); }
 }
 
-function decodeStep(type: number, payload: ProtoField[], metadata: ProtoField[]): Record<string, unknown> {
+function decodeStep(
+  type: number,
+  payload: ProtoField[],
+  metadata: ProtoField[],
+  stepIndex: number,
+  durationMs?: number,
+): Record<string, unknown> {
   if (type === 14) {
     const input = message(payload, 19);
     // user_response is the literal request; items/query can be rewritten context.
@@ -152,7 +173,8 @@ function decodeStep(type: number, payload: ProtoField[], metadata: ProtoField[])
   const call = message(metadata, 4);
   const name = string(call, 2);
   if (name) return { message: { role: "assistant", content: [{ type: "tool_use", id: string(call, 1),
-    name, input: parseArguments(string(call, 3)) }] } };
+    name, input: parseArguments(string(call, 3)), step_index: stepIndex,
+    ...(durationMs !== undefined ? { duration_ms: durationMs } : {}) }] } };
   // Preserve opaque non-conversation steps for future format investigation.
   // Known lifecycle/context records stay system evidence; future types receive
   // the generic parser's unknown-record diagnostic with their payload retained.

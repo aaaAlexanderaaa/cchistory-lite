@@ -19,8 +19,10 @@ Common commands:
       Search titles, user prompts, and assistant replies.
   cchistory-lite show session|turn|project|source <ref> [--full|--compact]
       Inspect one session, full prompt + assistant replies, or source diagnostics.
-  cchistory-lite stats [--since today|7d|30d|week|month] [--by project,model,source,hour|day|session] [--quota <usd>]
-      Machine-wide token, cost, cache-hit, and quota diagnostics (pass --dir . for one directory).
+  cchistory-lite stats [--since today|7d|30d] [--by project,model,source,hour|day|session|family|tool|turn] [--session <ref>] [--anomalies]
+      Machine-wide token, cost, cache-hit distribution, anomaly, and quota diagnostics (pass --dir . for one directory).
+  cchistory-lite trace <session_ref|turn_ref> [--only-anomalies] [--include-subagents] [--limit <n>]
+      Step-by-step call waterfall, subagent family breakdown, tool loops, and cache-miss attribution.
   cchistory-lite ls [projects|sessions|families|sources] [--limit <n>|--all]
   cchistory-lite tree [projects|project <ref>|session <ref>]
   cchistory-lite sources [--complete]

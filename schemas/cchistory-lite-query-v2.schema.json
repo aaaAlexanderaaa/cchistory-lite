@@ -16,7 +16,9 @@
           { "$ref": "#/$defs/session" },
           { "$ref": "#/$defs/replies" },
           { "$ref": "#/$defs/latest" },
-          { "$ref": "#/$defs/list" }
+          { "$ref": "#/$defs/list" },
+          { "$ref": "#/$defs/diagnose" },
+          { "$ref": "#/$defs/trace" }
         ]
       }
     }
@@ -215,6 +217,44 @@
         "kind": { "const": "list" },
         "collection": { "enum": ["sessions", "projects", "families"] },
         "limit": { "type": "integer", "minimum": 1 },
+        "offset": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "diagnose": {
+      "type": "object",
+      "required": ["id", "kind"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "diagnose" },
+        "since": { "type": "string", "minLength": 1 },
+        "from": { "type": "string", "minLength": 1 },
+        "to": { "type": "string", "minLength": 1 },
+        "tz": { "type": "string", "minLength": 1 },
+        "project_ref": { "type": "string", "minLength": 1 },
+        "session_ref": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "anomaly_limit": { "type": "integer", "minimum": 1 },
+        "tool_limit": { "type": "integer", "minimum": 1 },
+        "family_limit": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "trace": {
+      "type": "object",
+      "required": ["id", "kind"],
+      "oneOf": [
+        { "required": ["session_ref"], "not": { "required": ["turn_ref"] } },
+        { "required": ["turn_ref"], "not": { "required": ["session_ref"] } }
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "const": "trace" },
+        "session_ref": { "type": "string", "minLength": 1 },
+        "turn_ref": { "type": "string", "minLength": 1 },
+        "only_anomalies": { "type": "boolean" },
+        "include_subagents": { "type": "boolean" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 500 },
         "offset": { "type": "integer", "minimum": 0 }
       },
       "additionalProperties": false

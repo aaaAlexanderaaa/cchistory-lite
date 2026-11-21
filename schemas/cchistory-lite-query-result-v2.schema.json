@@ -42,7 +42,9 @@
               "replies",
               "latest",
               "list",
-              "read"
+              "read",
+              "diagnose",
+              "trace"
             ]
           },
           "status": {

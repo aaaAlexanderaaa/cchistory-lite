@@ -54,6 +54,7 @@ import { runLiteShell } from "./shell.js";
 import { buildAgentContract } from "./agent-contract.js";
 import { renderLiteHelp } from "./help.js";
 import { runStatsCommand } from "./stats-command.js";
+import { runTraceCommand } from "./trace-command.js";
 import { VERSION } from "./version.js";
 
 export { VERSION } from "./version.js";
@@ -102,7 +103,11 @@ const VALUE_FLAGS = new Set([
   "dir",
   "request", "sql", "sql-file", "params", "idle-timeout",
 ]);
-const BOOLEAN_FLAGS = new Set(["safe", "json", "help", "version", "all", "no-dir", "complete", "diagnostics", "explain-pricing", "prompts-only", "full", "compact", "stats", "color", "no-color"]);
+const BOOLEAN_FLAGS = new Set([
+  "safe", "json", "help", "version", "all", "no-dir", "complete", "diagnostics",
+  "explain-pricing", "anomalies", "only-anomalies", "include-subagents",
+  "prompts-only", "full", "compact", "stats", "color", "no-color",
+]);
 const FORBIDDEN_COMMANDS = new Set([
   "sync",
   "import",
@@ -113,7 +118,7 @@ const FORBIDDEN_COMMANDS = new Set([
   "gc",
   "migration",
 ]);
-const KNOWN_COMMANDS = new Set(["sources", "ls", "latest", "sample", "tree", "search", "show", "stats", "export", "query", "shell", "tui", "agent"]);
+const KNOWN_COMMANDS = new Set(["sources", "ls", "latest", "sample", "tree", "search", "show", "stats", "trace", "export", "query", "shell", "tui", "agent"]);
 
 export interface LiteCliIo {
   cwd: string;
@@ -211,6 +216,10 @@ export async function runLiteCli(argv: string[], io: LiteCliIo = defaultIo()): P
       await runShowWithContext(parsed, io, jsonMode);
       return 0;
     }
+    if (parsed.command === "trace") {
+      await runTraceWithTargetScan(parsed, io, jsonMode);
+      return 0;
+    }
     if ((parsed.command === "sources" || (parsed.command === "ls" && parsed.positionals[0] === "sources")) && !parsed.booleans.has("complete")) {
       const sources = await resolveLiteSources({ homeDir: io.homeDir, hostname: io.hostname,
         sourceRoots: values(parsed, "source-root").map(entry => parseSourceRoot(entry, io.cwd)), sourceRefs: values(parsed, "source") });
@@ -223,12 +232,25 @@ export async function runLiteCli(argv: string[], io: LiteCliIo = defaultIo()): P
       else io.stdout(`Sources · ${sources.length} adapters · history not read\n${inventory.map(source => `${source.display_name} [${source.slot_id}] ${source.availability}\n  ${source.base_dir}`).join("\n")}\n`);
       return 0;
     }
+    const exactStatsSessions =
+      parsed.command === "stats"
+        ? values(parsed, "session").filter((ref) => /^sess:[^:]+:.+$/u.test(ref))
+        : [];
+    const statsSessionBypass =
+      parsed.command === "stats" &&
+      exactStatsSessions.length > 0 &&
+      exactStatsSessions.length === values(parsed, "session").length;
     const snapshot = await scan(
       parsed,
       io,
       requiresFullContextSnapshot(parsed) ? "full" : "none",
       jsonMode !== "none",
-      requiresConversationEvidence(parsed) ? { retainConversationEvidence: true } : {},
+      {
+        ...(requiresConversationEvidence(parsed) ? { retainConversationEvidence: true } : {}),
+        ...(statsSessionBypass
+          ? { sessionRefs: exactStatsSessions, limitFiles: undefined, scanGuard: { profile: "light", bypass: true } }
+          : {}),
+      },
     );
 
     switch (parsed.command) {
@@ -420,6 +442,38 @@ function scanGuardRequestFor(
   // with collection/search/stats (the probe still builds context transiently).
   if (contextMode === "full") return { profile: "full" };
   return { profile: "light" };
+}
+
+async function runTraceWithTargetScan(parsed: ParsedArgs, io: LiteCliIo, jsonMode: JsonOutputMode): Promise<void> {
+  const ref = parsed.positionals[0]!;
+  const isExactSession = /^sess:[^:]+:.+$/u.test(ref);
+  const snapshot = await scan(
+    parsed,
+    io,
+    "none",
+    jsonMode !== "none",
+    isExactSession
+      ? {
+          sessionRefs: [ref],
+          limitFiles: undefined,
+          scanGuard: { profile: "light", bypass: true },
+        }
+      : {},
+  );
+  await runTraceCommand({
+    ref,
+    parsed,
+    snapshot,
+    io,
+    jsonMode,
+    deps: {
+      UsageError,
+      renderMeta: styleMeta,
+      renderDashRow: styleDashRow,
+      emitOutput: output,
+      jsonSchema: JSON_SCHEMA,
+    },
+  });
 }
 
 async function runShowWithContext(parsed: ParsedArgs, io: LiteCliIo, jsonMode: JsonOutputMode): Promise<void> {
@@ -904,6 +958,7 @@ async function runStats(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: L
       UsageError,
       requireSource,
       requireProject,
+      requireSession,
       assertSafeExportDestination,
       renderMeta: styleMeta,
       renderDashRow: styleDashRow,
@@ -2097,6 +2152,9 @@ function validateCommandShape(parsed: ParsedArgs): void {
     case "show":
       if (parsed.positionals.length !== 2) throw new UsageError("show requires exactly a kind and reference.");
       break;
+    case "trace":
+      if (parsed.positionals.length !== 1) throw new UsageError("trace requires exactly one session or turn reference.");
+      break;
     case "stats":
     case "export":
     case "query":
@@ -2128,6 +2186,7 @@ function validateCommandOptions(parsed: ParsedArgs): void {
   } else if (parsed.command === "stats") {
     for (const name of [
       "project",
+      "session",
       "by",
       "dir",
       "model",
@@ -2144,6 +2203,17 @@ function validateCommandOptions(parsed: ParsedArgs): void {
       "cache-write-multiplier",
       "quota",
       "export-pricing",
+    ]) allowedValues.add(name);
+  } else if (parsed.command === "trace") {
+    for (const name of [
+      "limit",
+      "offset",
+      "tz",
+      "pricing",
+      "alias",
+      "multiplier",
+      "cache-read-multiplier",
+      "cache-write-multiplier",
     ]) allowedValues.add(name);
   } else if (parsed.command === "tui") {
     for (const name of ["pricing", "quota", "dir", "project", "session", "turn", "search", "since"]) allowedValues.add(name);
@@ -2162,6 +2232,15 @@ function validateCommandOptions(parsed: ParsedArgs): void {
   }
   if (parsed.booleans.has("explain-pricing") && parsed.command !== "stats") {
     throw new UsageError(`--explain-pricing is only valid for stats.`);
+  }
+  if (parsed.booleans.has("anomalies") && parsed.command !== "stats") {
+    throw new UsageError(`--anomalies is only valid for stats.`);
+  }
+  if (parsed.booleans.has("only-anomalies") && parsed.command !== "trace") {
+    throw new UsageError(`--only-anomalies is only valid for trace.`);
+  }
+  if (parsed.booleans.has("include-subagents") && parsed.command !== "trace") {
+    throw new UsageError(`--include-subagents is only valid for trace.`);
   }
   if (parsed.booleans.has("prompts-only") && parsed.command !== "search") {
     throw new UsageError(`--prompts-only is only valid for search.`);

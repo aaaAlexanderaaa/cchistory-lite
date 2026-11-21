@@ -194,10 +194,26 @@ export function parseCodexRecord(
     }
 
     if (payloadType === "function_call_output" || payloadType === "custom_tool_call_output") {
+      const output = helpers.asString(payload.output) ?? JSON.stringify(payload.output ?? {});
+      const status = helpers.asString(payload.status);
+      const parsedOut = helpers.safeJsonParse(output);
+      const exitCode =
+        helpers.asNumber(payload.exit_code) ??
+        (helpers.isObject(parsedOut)
+          ? helpers.asNumber(parsedOut.exit_code ?? parsedOut.exitCode ?? (helpers.isObject(parsedOut.metadata) ? parsedOut.metadata.exit_code : undefined))
+          : undefined) ??
+        extractExitCodeFromText(output);
+      const isError =
+        status?.toLowerCase() === "error" ||
+        status?.toLowerCase() === "failed" ||
+        (exitCode !== undefined && exitCode !== 0);
       fragments.push(
         helpers.createFragment(context, record, 0, "tool_result", timeKey, {
           call_id: helpers.asString(payload.call_id),
-          output: helpers.asString(payload.output) ?? JSON.stringify(payload.output ?? {}),
+          output,
+          ...(status ? { status } : {}),
+          ...(exitCode !== undefined ? { exit_code: exitCode } : {}),
+          ...(isError ? { is_error: true } : {}),
         }),
       );
       return { fragments, lossAudits };
@@ -767,4 +783,11 @@ function codexDurationMs(value: unknown, helpers: CodexParseRuntimeHelpers): num
 
 function stableEventCallId(prefix: string, record: RawRecord): string {
   return `${prefix}:${record.id}`;
+}
+
+function extractExitCodeFromText(output: string): number | undefined {
+  const match = /\b(?:Process exited with code|Exit code:?|exit_code"?\s*:\s*)\s*(-?\d+)\b/iu.exec(output);
+  if (!match?.[1]) return undefined;
+  const code = Number(match[1]);
+  return Number.isSafeInteger(code) ? code : undefined;
 }

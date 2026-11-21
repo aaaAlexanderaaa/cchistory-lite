@@ -9,7 +9,7 @@
     "kind": {
       "enum": [
         "sources", "projects", "sessions", "families", "turns", "search", "project_tree",
-        "session_tree", "project_detail", "session_detail", "turn_detail", "source_detail", "stats"
+        "session_tree", "project_detail", "session_detail", "turn_detail", "source_detail", "stats", "trace"
       ]
     },
     "content_trust": { "const": "untrusted_history" },

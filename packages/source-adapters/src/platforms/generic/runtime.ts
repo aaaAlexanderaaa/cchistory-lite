@@ -125,20 +125,28 @@ export function parseGenericConversationRecord(
   for (const item of contentItems) {
     const itemType = normalizeGenericContentItemType(helpers.asString(item.type));
     if (itemType === "tool_use" || itemType === "tool_call" || itemType === "function_call") {
+      const stepIndex = typeof item.step_index === "number" ? item.step_index : undefined;
+      const durationMs = typeof item.duration_ms === "number" ? item.duration_ms : undefined;
       fragments.push(
         helpers.createFragment(context, record, localSeq++, "tool_call", timeKey, {
           call_id: helpers.asString(item.id) ?? helpers.asString(item.call_id) ?? helpers.asString(item.tool_call_id),
           tool_name: helpers.asString(item.name) ?? helpers.asString(item.tool_name) ?? itemType,
           input: normalizeToolInput(item.input ?? item.arguments ?? item.args, helpers),
+          ...(stepIndex !== undefined ? { step_index: stepIndex } : {}),
+          ...(durationMs !== undefined ? { duration_ms: durationMs } : {}),
         }),
       );
       continue;
     }
     if (itemType === "tool_result" || itemType === "function_result" || itemType === "function_call_output") {
+      const isError = helpers.asBoolean(item.is_error ?? item.isError);
+      const durationMs = typeof item.duration_ms === "number" ? item.duration_ms : undefined;
       fragments.push(
         helpers.createFragment(context, record, localSeq++, "tool_result", timeKey, {
           call_id: helpers.asString(item.tool_use_id) ?? helpers.asString(item.call_id) ?? helpers.asString(item.id),
           output: helpers.stringifyToolContent(item.content ?? item.output ?? item.result ?? item.text),
+          ...(isError !== undefined ? { is_error: isError } : {}),
+          ...(durationMs !== undefined ? { duration_ms: durationMs } : {}),
         }),
       );
       continue;
@@ -186,7 +194,20 @@ export function parseGenericConversationRecord(
   }
 
   if (!usageApplied && usage && actorKind === "assistant") {
-    fragments.push(helpers.createTokenUsageFragment(context, record, localSeq++, timeKey, usage, stopReason));
+    const coveredStepIndices = Array.isArray(parsed.covered_step_indices)
+      ? parsed.covered_step_indices.filter((value): value is number => typeof value === "number")
+      : undefined;
+    fragments.push(
+      helpers.createTokenUsageFragment(
+        context,
+        record,
+        localSeq++,
+        timeKey,
+        usage,
+        stopReason,
+        coveredStepIndices?.length ? { covered_step_indices: coveredStepIndices } : {},
+      ),
+    );
   }
 
   return { fragments, lossAudits };

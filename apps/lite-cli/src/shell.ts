@@ -133,7 +133,7 @@ async function runHumanShell(
     try {
       if (command === "exit" || command === "quit") break;
       if (command === "help") {
-        input.io.stdout("Commands: search <query>, latest [sessions|turns] [N], ls sessions|projects|families, show session|turn <ref>, SELECT ... LIMIT N, refresh, exit\n");
+        input.io.stdout("Commands: search <query>, latest [sessions|turns] [N], ls sessions|projects|families, show session|turn <ref>, diagnose [since], trace <ref>, SELECT ... LIMIT N, refresh, exit\n");
         continue;
       }
       if (command === "refresh") {
@@ -214,6 +214,28 @@ async function runHumanShell(
           }, detail);
           input.io.stdout(`${JSON.stringify(compact, null, 2)}\n`);
         }
+        continue;
+      }
+      if (command === "diagnose") {
+        const since = tokens[1];
+        const snapshot = await getSnapshot();
+        const request = await prepareQueryRequest(JSON.stringify({
+          schema: QUERY_REQUEST_SCHEMA,
+          operations: [{ id: "diagnose", kind: "diagnose", ...(since ? { since } : {}) }],
+        }));
+        input.io.stdout(`${JSON.stringify(executePreparedQuery(request, snapshot, input.directoryScope).payload, null, 2)}\n`);
+        continue;
+      }
+      if (command === "trace") {
+        const ref = tokens[1];
+        if (!ref) throw new Error("trace requires a session or turn reference.");
+        const snapshot = await getSnapshot();
+        const isTurn = !snapshot.getSession(ref) && Boolean(snapshot.getTurn(ref));
+        const request = await prepareQueryRequest(JSON.stringify({
+          schema: QUERY_REQUEST_SCHEMA,
+          operations: [{ id: "trace", kind: "trace", ...(isTurn ? { turn_ref: ref } : { session_ref: ref }) }],
+        }));
+        input.io.stdout(`${JSON.stringify(executePreparedQuery(request, snapshot, input.directoryScope).payload, null, 2)}\n`);
         continue;
       }
       if (/^\s*(?:SELECT\b|--|\/\*)/iu.test(line)) {

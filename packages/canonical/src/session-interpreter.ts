@@ -1,5 +1,10 @@
 import path from "node:path";
 import { resolveCodexUsageAtoms } from "./codex-usage.js";
+import {
+  buildSessionUsageEvents,
+  detectToolResultStatus,
+  resolveToolCallDurationMs,
+} from "./tool-call-summary.js";
 import type {
   AtomEdge, CapturedBlob, ConversationAtom, DerivedCandidate, RawRecord, SourceFragment,
   SessionProjection, UserTurnProjection, TurnContextProjection, ToolCallProjection,
@@ -462,14 +467,17 @@ export function buildTurnsAndContext(
     turn_count: turns.length,
     sync_axis: "current",
   };
-  const calls = independentUsageAtoms(atoms);
-  if (calls.length) {
-    const turnByAtom = new Map(turns.flatMap(turn => turn.lineage.atom_refs.map(ref => [ref, turn.id] as const)));
-    session.usage_events = calls.map(atom => ({
-      id: asString(atom.payload.independent_usage_event_id)!, turn_id: turnByAtom.get(atom.id) ?? null,
-      created_at: atom.time_key, model: asString(atom.payload.model),
-      token_usage: extractTokenUsageFromPayload(atom.payload)!,
-    }));
+  const usageEvents = buildSessionUsageEvents({
+    draft,
+    atoms,
+    fragments,
+    records,
+    blobs,
+    turns,
+    edges,
+  });
+  if (usageEvents.length) {
+    session.usage_events = usageEvents;
   }
 
   return { session, turnCandidates, contextCandidates, turns, contexts };
@@ -757,23 +765,27 @@ export function buildTurnContext(
     const replyId = spawnedFromAtomId ? replyIdByAtomId.get(spawnedFromAtomId) ?? lastAssistantReplyId() : lastAssistantReplyId();
     const inputJson = contextIndex.formatContextBodies === false ? "" : JSON.stringify(atom.payload.input ?? {});
     const maskedInput = contextIndex.formatContextBodies === false ? undefined : applyMaskTemplates(inputJson, "tool_input");
+    const resultAtomId = contextIndex.edgeIndex.toolResultAtomIdByToolAtomId.get(atom.id);
+    const resultAtom =
+      resultAtomId && contextIndex.contextAtomIds.has(resultAtomId)
+        ? contextIndex.atomById.get(resultAtomId)
+        : undefined;
+    const statusInfo = detectToolResultStatus(resultAtom);
+    const durationMs = resolveToolCallDurationMs(atom, resultAtom);
     const toolCall: ToolCallProjection = {
       id: stableId("tool-call", draft.source_id, draft.id, atom.id),
       tool_name: asString(atom.payload.tool_name) ?? "tool_call",
       input: isObject(atom.payload.input) ? atom.payload.input : {},
       input_summary: truncate(maskedInput?.canonical_text || inputJson, 140),
       input_display_segments: maskedInput?.display_segments ?? [],
-      status: "success",
+      status: statusInfo.status,
+      ...(statusInfo.errorMessage ? { error_message: statusInfo.errorMessage } : {}),
+      ...(durationMs !== undefined ? { duration_ms: durationMs } : {}),
       reply_id: replyId,
       sequence: toolSequence++,
       created_at: atom.time_key,
     };
 
-    const resultAtomId = contextIndex.edgeIndex.toolResultAtomIdByToolAtomId.get(atom.id);
-    const resultAtom =
-      resultAtomId && contextIndex.contextAtomIds.has(resultAtomId)
-        ? contextIndex.atomById.get(resultAtomId)
-        : undefined;
     if (resultAtom) {
       const output = asString(resultAtom.payload.output) ?? "";
       const maskedOutput = contextIndex.formatContextBodies === false ? undefined : applyMaskTemplates(output, "tool_output");

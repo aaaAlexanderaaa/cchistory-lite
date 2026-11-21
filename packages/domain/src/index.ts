@@ -659,6 +659,19 @@ export interface SessionUsageEvent {
   created_at: string;
   model?: string;
   token_usage: TokenUsageSummary;
+  /** 1-based chronological sequence ordinal within the session when known. */
+  seq?: number;
+  stop_reason?: import("./parsed-session.js").AssistantStopReason;
+  /** Sidecar subagent identifier (e.g. Claude Code subagents/agent-*.jsonl) when calls share a parent session ID. */
+  subagent_key?: string;
+  /** True when a compaction boundary occurred on this thread immediately before this call. */
+  compaction_before?: boolean;
+  /** Bounded masked summaries of tool results that arrived since the previous model call on this thread. */
+  preceding_tool_results?: import("./usage-trace.js").UsageToolSummary[];
+  /** Bounded masked summaries of tool calls emitted by this model call. */
+  emitted_tool_calls?: import("./usage-trace.js").UsageToolSummary[];
+  /** Count of additional tools omitted when capping per-call summaries. */
+  truncated_tool_count?: number;
 }
 
 export type SessionRelatedWorkKind = "delegated_session" | "automation_run";
@@ -1404,6 +1417,7 @@ export * from "./token-evidence.js";
 export * from "./evidence-atoms.js";
 export * from "./masks.js";
 export * from "./usage-pricing.js";
+export * from "./usage-trace.js";
 
 export type { QueryCollection, QueryValue, QueryValueType, QueryColumn, QueryPredicate, LogicalQuery, CanonicalQueryResult } from "./query.js";
 export type { ConversationEvidence, EvidenceReadOptions, ReadStatus } from "./conversation-evidence.js";

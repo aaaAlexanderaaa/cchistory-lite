@@ -20,6 +20,7 @@ import {
   type SessionContributionProjection,
   type DelegatedChildProjection,
   type SessionFamilyProjection,
+  type SessionTraceReport,
   type SourceFragment,
   type SourceDefinition,
   type SourcePlatform,
@@ -29,6 +30,7 @@ import {
   type SessionSearchResult,
   type TurnSearchResult,
   type UsageBreakdownSnapshot,
+  type UsageDiagnosticsReport,
   type UsageMatrixResult,
   type UsageMatrixSort,
   type UsageStatsDimension,
@@ -52,14 +54,17 @@ import {
   buildFallbackProjectObservationCandidates,
   buildProjectDisplayList,
   buildSessionRelatedWorkIndex,
+  buildSessionTraceReport,
   compareTurnsByChronology,
   compareTurnsByRecency,
   computeUsageBreakdown,
+  computeUsageDiagnosticsReport,
   computeUsageMatrix,
   computeUsageOverview,
   computeUsageRollup,
   deriveProjectLinkSnapshot,
   extractUnfilteredUsageRows,
+  filterUsageRows,
   filterProjectsByDirectoryScope,
   selectSampleSessions,
   summarizeDirectoryScope,
@@ -81,6 +86,7 @@ import {
   resolveTurnUsage,
   summarizeSessionUsage,
   type ProjectionAuditIssue,
+  type SessionTraceOptions,
   type SessionUsageProjection,
   type TurnUsageProjection,
   type UsageAggregationRow,
@@ -730,6 +736,7 @@ export class LiveHistorySnapshot {
       listProjects: () => this.data.projects,
       listSessionContributions: () => this.data.session_contributions,
       listSessionFamilies: () => this.families,
+      listRelatedWork: () => this.data.related_work,
     });
   }
 
@@ -803,7 +810,81 @@ export class LiveHistorySnapshot {
       listProjects: () => this.data.projects,
       listSessionContributions: () => this.data.session_contributions,
       listSessionFamilies: () => this.families,
+      listRelatedWork: () => this.data.related_work,
     });
+  }
+
+  getUsageDiagnostics(filters: UsageFilters = {}): UsageDiagnosticsReport {
+    const baseRows = this.getCachedUsageBaseRows(filters);
+    const filteredRows = filterUsageRows(baseRows, filters, this.sessionsById);
+    return computeUsageDiagnosticsReport({
+      rows: filteredRows,
+      filters,
+      sourceData: {
+        listResolvedTurns: () => this.data.turns,
+        listResolvedSessions: () => this.data.sessions,
+        listSources: () => this.data.sources,
+        listProjects: () => this.data.projects,
+        listSessionContributions: () => this.data.session_contributions,
+        listSessionFamilies: () => this.families,
+        listRelatedWork: () => this.data.related_work,
+      },
+    }).report;
+  }
+
+  getSessionTrace(
+    options: Omit<SessionTraceOptions, "sessionId"> & { sessionId?: string; sessionRef?: string; turnRef?: string },
+  ): SessionTraceReport | undefined {
+    let resolvedSessionId = options.sessionId;
+    let resolvedTurnId = options.turnId;
+    if (!resolvedTurnId && options.turnRef) {
+      const turn = this.getTurn(options.turnRef);
+      if (!turn) return undefined;
+      resolvedTurnId = turn.id;
+      resolvedSessionId ??= turn.session_id;
+    }
+    if (!resolvedSessionId && options.sessionRef) {
+      const session = this.getSession(options.sessionRef);
+      if (!session) return undefined;
+      resolvedSessionId = session.id;
+    }
+    if (!resolvedSessionId) return undefined;
+    return buildSessionTraceReport(
+      {
+        listResolvedTurns: () => this.data.turns,
+        listResolvedSessions: () => this.data.sessions,
+        listSources: () => this.data.sources,
+        listProjects: () => this.data.projects,
+        listSessionContributions: () => this.data.session_contributions,
+        listSessionFamilies: () => this.families,
+        listRelatedWork: () => this.data.related_work,
+      },
+      {
+        sessionId: resolvedSessionId,
+        turnId: resolvedTurnId,
+        includeSubagents: options.includeSubagents,
+        onlyAnomalies: options.onlyAnomalies,
+        limit: options.limit,
+        offset: options.offset,
+        filters: options.filters,
+      },
+    );
+  }
+
+  expandSessionFamilyIds(sessionId: string): string[] {
+    const ids = new Set<string>([sessionId]);
+    const family = this.familiesByParentId.get(sessionId);
+    if (family) {
+      for (const child of family.children) {
+        if (child.child_session_ref) ids.add(child.child_session_ref);
+      }
+    }
+    for (const rel of this.data.related_work) {
+      if (rel.relation_kind === "delegated_session" && rel.parent_session_ref === sessionId && rel.child_session_ref) {
+        ids.add(rel.child_session_ref);
+      }
+    }
+    return [...ids];
   }
 }
 
@@ -2217,6 +2298,8 @@ export {
   resolveUsageTimezone,
   resolveWeekBucket,
   buildDenseTimeSeries,
+  buildSessionTraceReport,
+  computeUsageDiagnosticsReport,
   computeUsageEfficiency,
   computeQuotaPace,
   densifyHourOfDayRollupRows,
@@ -2224,6 +2307,7 @@ export {
 } from "@cchistory/canonical";
 export type {
   DenseTimePoint,
+  SessionTraceOptions,
   UsageFilters,
   ResolvedModelPricing,
   UsageTimeOptions,

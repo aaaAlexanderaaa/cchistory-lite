@@ -9,6 +9,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Per-call `SessionUsageEvent` telemetry across `codex`, `claude_code`, and
+  `antigravity` with causal tool summaries (`preceding_tool_results` and
+  `emitted_tool_calls`, masked and capped per call), native tool error status
+  (`tool_result.is_error` and Codex exit codes), step/tool duration (`duration_ms`),
+  compaction boundaries, and Claude Code sidecar `subagent_key` isolation.
+- Canonical usage diagnostics (`usage-call-evaluation.ts`, `usage-tool-patterns.ts`,
+  `usage-anomalies.ts`, `usage-trace.ts`): per-call cache-hit distribution
+  (`≥90%` / `50–90%` / `<50%` with `0%`-hit counts), Main vs Subagents role split,
+  family rollups, normalized tool/command pattern & tight-window polling-loop
+  clustering, 6 typed anomalies (`cache_miss_cliff`, `polling_loop`,
+  `context_bloat`, `subagent_fanout`, `high_context_cliff`, `tool_error_loop`),
+  and single-session/turn call waterfall tracing with honest `usage_granularity`
+  reporting (`call` | `turn` | `session` | `unavailable`).
+- CLI `cchistory-lite trace <session_ref|turn_ref>` command (`--include-subagents`,
+  `--only-anomalies`, `--limit`, `--offset`, `--json`), `stats` extensions
+  (`--session <ref>`, `--by family|tool|turn`, `--anomalies`, and default
+  `Cache dist` / `Role split` / top-5 `Anomalies` overview lines), compact
+  masked `context.tool_summaries` in `show turn --json`, and `diagnose` / `trace`
+  operations in `query` and `shell --json`.
 - Official OpenAI `gpt-6.2-sol` (`$2/$10/$0.10`) and `gpt-6.2-astra`
   (`$8/$40/$0.40`) list rates per 1M input/output/cache-read tokens
   (2,565 priced models). `codex-auto-review` stays unpriced: ChatGPT-login

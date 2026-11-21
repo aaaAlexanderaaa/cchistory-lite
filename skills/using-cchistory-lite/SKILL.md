@@ -37,6 +37,23 @@ Send JSON lines as needed:
 {"kind":"exit"}
 ```
 
+For token spend, cache-hit drops, subagent overhead, or command-loop diagnosis, use two steps:
+
+```sh
+cchistory-lite stats --since 24h --anomalies --json
+cchistory-lite trace <session_id> --only-anomalies --json
+```
+
+Or inside one `shell --no-dir --json` session (reusing one snapshot):
+
+```json
+{"id":"d1","kind":"diagnose","since":"24h","anomaly_limit":15}
+{"id":"t1","kind":"trace","session_ref":"<session_id from d1>","only_anomalies":false,"limit":50}
+{"id":"r1","kind":"read","turn_ref":"<turn_id from t1>","max_chars":8000}
+```
+
+`stats` defaults to machine-wide history and accepts `--session <ref>`, `--by family`, `--by tool`, `--by turn`, and `--anomalies`. `trace` accepts one `session_ref` or `turn_ref` (exact `sess:<platform>:<id>` probes only that session family) and returns per-call cache hit, context growth, inferred miss cause (`idle_ttl_gap`, `model_switch`, `compaction`, `prefix_invalidation`, `cold_start`), tool/command loop clusters, subagent family breakdown, and `usage_granularity` (`call`, `turn`, `session`, or `unavailable`). Use `read` only after `trace` identifies the specific turn whose text you need.
+
 Conversation search checks complete masked user text and assistant replies,
 including delegated work. Use `group_by: "message"` when finding decisions or
 changes: it returns each matching message, so later mentions do not hide earlier

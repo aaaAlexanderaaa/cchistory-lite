@@ -1236,17 +1236,19 @@ test("compact queries retain assistant usage and errors without expanding body s
   assert.equal(toolOnly.context_summary.assistant_reply_count, 0);
   assert.equal(toolOnly.context_summary.tool_call_count, 1);
   assert.equal(toolOnly.context_summary.zero_token_reason, "no_assistant_reply");
-  // Preserve this known limitation during structural changes. Correcting unanchored
-  // token signals is a separate usage-semantics change, not a detail optimization.
-  assert.equal(toolOnly.context_summary.total_tokens, undefined);
+  // Claude Code now emits independent per-call usage events, so tool-only turns
+  // preserve their native API call tokens instead of dropping them.
+  assert.equal(toolOnly.context_summary.total_tokens, 8);
+  assert.equal(session.usage_events?.length, 5);
   assert.equal(unanswered.context_summary.zero_token_reason, "no_assistant_reply");
   assert.equal(unanswered.context_summary.tool_call_count, 0);
   assert.notEqual(unanswered.project_id, answered.project_id);
   assert.equal(compact.getSession(unanswered.session_id)?.title, session.title);
-  // The current Claude parser omits the native is_error flag from tool-result
-  // atoms. Assistant stop errors must not silently become family tool errors.
-  assert.equal(compact.getSessionContribution(session.id)?.stats.tool_error_count, 0);
+  // The Claude parser preserves native tool_result.is_error (1 error on call-1),
+  // while assistant stop_reason: "error" stays separate and does not inflate tool_error_count.
+  assert.equal(compact.getSessionContribution(session.id)?.stats.tool_error_count, 1);
   assert.equal(compact.getTurnUsage(answered.id)?.total_tokens, 32);
+  assert.equal(compact.getTurnUsage(toolOnly.id)?.total_tokens, 8);
   assert.equal(compact.getTurnContext(unanswered.id), undefined);
   assert.deepEqual(full.getTurnContext(unanswered.id)?.assistant_replies, []);
 

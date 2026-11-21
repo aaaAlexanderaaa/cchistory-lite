@@ -119,9 +119,20 @@ export function compactPayload(
         rollup: payload.rollup ?? null,
         ...(payload.efficiency !== undefined ? { efficiency: payload.efficiency } : {}),
         ...(payload.quota_pace !== undefined ? { quota_pace: payload.quota_pace } : {}),
+        ...(payload.diagnostics !== undefined ? { diagnostics: payload.diagnostics } : {}),
+        ...(payload.families !== undefined ? { families: payload.families } : {}),
+        ...(payload.tool_patterns !== undefined ? { tool_patterns: payload.tool_patterns } : {}),
+        ...(payload.loops !== undefined ? { loops: payload.loops } : {}),
+        ...(payload.turns !== undefined ? { turns: payload.turns } : {}),
+        ...(payload.anomalies !== undefined ? { anomalies: payload.anomalies } : {}),
         ...(payload.matrix !== undefined ? { matrix: payload.matrix } : {}),
         ...(payload.breakdown !== undefined ? { breakdown: payload.breakdown } : {}),
         ...(payload.model_resolutions !== undefined ? { model_resolutions: payload.model_resolutions } : {}),
+      };
+    case "trace":
+      return {
+        ...base,
+        trace: payload.trace,
       };
     default:
       return { ...base };
@@ -352,6 +363,20 @@ function contextSummary(context: TurnContextProjection | undefined, includeRepli
     assistant_reply_count: context.assistant_replies.length,
     tool_call_count: context.tool_calls.length,
     assistant_replies: includeReplies ? context.assistant_replies.map(assistantReplySummary) : [],
+    ...(includeReplies
+      ? {
+          tool_summaries: context.tool_calls.map((tool) => ({
+            id: tool.id,
+            tool_name: tool.tool_name,
+            status: tool.status,
+            duration_ms: tool.duration_ms ?? null,
+            input_summary: maskCompactPreview(tool.input_summary, "tool_input") ?? tool.input_summary,
+            output_bytes: tool.output !== undefined ? Buffer.byteLength(tool.output, "utf8") : null,
+            error_message: maskCompactPreview(tool.error_message, "tool_output") ?? null,
+            created_at: tool.created_at,
+          })),
+        }
+      : {}),
   };
 }
 

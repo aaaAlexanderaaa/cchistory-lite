@@ -130,6 +130,11 @@ error lines on stdout and leave the shell available for subsequent commands.
   `{"kind":"read","turn_ref":"<turn_id>"}`. If the hit has a null turn ID,
   read `matched_session_id` with `session_ref`. Legacy `show session --json`
   omits reply bodies; bounded reads return both questions and answers.
+- **Diagnose token/cache spikes**: run `stats --anomalies --json` (or shell
+  `{"kind":"diagnose","since":"24h"}`) to get cache-hit distribution, main vs
+  subagent role split, ranked anomalies, and repeated tool-loop clusters, then
+  inspect one culprit with `trace <session_ref|turn_ref> --only-anomalies --json`
+  (or shell `{"kind":"trace","session_ref":"<id>","only_anomalies":true}`).
 - **Optional preview**: `sample --json` selects file/groups and caps rendered sessions;
   containers can still require substantial parsing. It is not a first-use prerequisite.
 - **Many reads, one scan**: batch operations into `query --request -`

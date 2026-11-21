@@ -1761,7 +1761,7 @@ test("Lite CLI agent prints the machine-readable contract without scanning", asy
   assert.equal(contract.cli.name, "cchistory-lite");
   assert.match(contract.cli.version, /^\d+\.\d+\.\d+/u);
 
-  const commandNames = ["sources", "ls", "latest", "sample", "tree", "search", "show", "stats", "query", "shell", "export", "tui", "help", "agent"];
+  const commandNames = ["sources", "ls", "latest", "sample", "tree", "search", "show", "stats", "trace", "query", "shell", "export", "tui", "help", "agent"];
   assert.deepEqual(Object.keys(contract.commands).sort(), [...commandNames].sort());
   for (const name of commandNames) {
     const command = contract.commands[name]!;
@@ -1885,7 +1885,7 @@ test("Lite CLI agent contract flags match the parser in both directions", async 
     "--source-root", "--source", "--limit-files", "--limit", "--offset", "--project",
     "--session", "--turn", "--search", "--content", "--group-by", "--prompts-only",
     "--full", "--compact", "--stats", "--color", "--no-color",
-    "--by",
+    "--by", "--anomalies", "--include-subagents", "--only-anomalies",
     "--model", "--from", "--to", "--since", "--tz", "--week-mode", "--sort",
     "--pricing", "--alias", "--multiplier", "--cache-read-multiplier", "--cache-write-multiplier",
     "--quota", "--export-pricing", "--explain-pricing",
@@ -1903,6 +1903,7 @@ test("Lite CLI agent contract flags match the parser in both directions", async 
     search: ["mock"],
     show: ["session", session.id],
     stats: [],
+    trace: [session.id],
     query: ["--request", "-"],
     shell: [],
     export: ["--format", "jsonl", "--out", "-"],

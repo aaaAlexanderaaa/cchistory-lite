@@ -6,7 +6,12 @@ import {
   type LiveHistorySnapshot,
   type LiveQueryRead,
   type LiveHistoryReader,
+  type UsageFilters,
   EvidenceCursorError,
+  UNASSIGNED_PROJECT_KEY,
+  parseDateEnd,
+  parseDateOrRelativeStart,
+  resolveUsageTimezone,
   validateEvidenceBudget,
 } from "@cchistory/live-runtime";
 import {
@@ -29,7 +34,9 @@ export type QueryOperation =
   | SessionOperation
   | RepliesOperation
   | LatestOperation
-  | ListOperation;
+  | ListOperation
+  | DiagnoseOperation
+  | TraceOperation;
 
 export interface QueryRequest {
   schema: typeof QUERY_REQUEST_SCHEMA;
@@ -38,7 +45,31 @@ export interface QueryRequest {
 
 interface QueryOperationBase {
   id: string;
-  kind: "search" | "session" | "replies" | "latest" | "list";
+  kind: "search" | "session" | "replies" | "latest" | "list" | "diagnose" | "trace";
+}
+
+interface DiagnoseOperation extends QueryOperationBase {
+  kind: "diagnose";
+  since?: string;
+  from?: string;
+  to?: string;
+  tz?: string;
+  project_ref?: string;
+  session_ref?: string;
+  model?: string;
+  anomaly_limit?: number;
+  tool_limit?: number;
+  family_limit?: number;
+}
+
+interface TraceOperation extends QueryOperationBase {
+  kind: "trace";
+  session_ref?: string;
+  turn_ref?: string;
+  only_anomalies?: boolean;
+  include_subagents?: boolean;
+  limit?: number;
+  offset?: number;
 }
 
 interface SearchOperation extends QueryOperationBase {
@@ -123,9 +154,11 @@ export function parseQueryRequest(raw: string): QueryRequest {
 }
 
 export function queryContextTargets(request: QueryRequest): LiteContextTarget[] {
-  return request.operations.flatMap((operation): LiteContextTarget[] => operation.kind === "replies"
-    ? operation.turn_refs.map((ref) => ({ kind: "turn", ref }))
-    : operation.kind === "read" ? [readTarget(operation)] : []);
+  return request.operations.flatMap((operation): LiteContextTarget[] => {
+    if (operation.kind === "replies") return operation.turn_refs.map((ref) => ({ kind: "turn", ref }));
+    if (operation.kind === "read") return [readTarget(operation)];
+    return [];
+  });
 }
 
 function readTarget(operation: ReadOperation): LiteContextTarget {
@@ -136,9 +169,21 @@ export async function prepareQuerySnapshot(request: QueryRequest | CompiledSqlRe
   if (request.schema === SQL_REQUEST_SCHEMA) return reader.collection();
   const conversation = request.operations.some(op => op.kind === "read" || op.kind === "search" && op.content === "conversation");
   const targets = queryContextTargets(request);
-  return targets.length ? reader.detail(targets, { conversation,
-    complete: request.operations.some(op => op.kind !== "read" && op.kind !== "replies"),
-    evidenceOnly: request.operations.every(op => op.kind !== "replies") }) : reader.collection(conversation);
+  if (targets.length > 0) {
+    return reader.detail(targets, {
+      conversation,
+      complete: request.operations.some(op => op.kind !== "read" && op.kind !== "replies"),
+      evidenceOnly: request.operations.every(op => op.kind !== "replies"),
+    });
+  }
+  const exactTraceTargets =
+    request.operations.every((op): op is TraceOperation => op.kind === "trace" && Boolean(op.session_ref && /^sess:[^:]+:.+$/u.test(op.session_ref)))
+      ? request.operations.map((op): LiteContextTarget => ({ kind: "session", ref: op.session_ref! }))
+      : [];
+  if (exactTraceTargets.length > 0) {
+    return reader.detail(exactTraceTargets, { conversation: false, complete: false, evidenceOnly: false });
+  }
+  return reader.collection(conversation);
 }
 
 export function executeQuery(
@@ -300,6 +345,14 @@ function executeOperation(
     };
   }
 
+  if (operation.kind === "diagnose") {
+    return executeDiagnoseOperation(operation, snapshot, directoryScope);
+  }
+
+  if (operation.kind === "trace") {
+    return executeTraceOperation(operation, snapshot, directoryScope);
+  }
+
   if (operation.kind === "session") {
     const allowed = directoryScope
       ? new Set(snapshot.listResolvedSessions({ directoryScope }).map((session) => session.id))
@@ -415,7 +468,181 @@ function parseOperation(value: unknown, index: number): QueryOperation {
     if (operation.offset !== undefined) parsed.offset = requireInteger(operation.offset, `operation ${id} offset`, 0);
     return parsed;
   }
+  if (kind === "diagnose") {
+    assertOnlyKeys(
+      operation,
+      new Set(["id", "kind", "since", "from", "to", "tz", "project_ref", "session_ref", "model", "anomaly_limit", "tool_limit", "family_limit"]),
+      `operation ${id}`,
+    );
+    const parsed: DiagnoseOperation = { id, kind };
+    if (operation.since !== undefined) parsed.since = requireNonEmptyString(operation.since, `operation ${id} since`);
+    if (operation.from !== undefined) parsed.from = requireNonEmptyString(operation.from, `operation ${id} from`);
+    if (operation.to !== undefined) parsed.to = requireNonEmptyString(operation.to, `operation ${id} to`);
+    if (operation.tz !== undefined) parsed.tz = requireNonEmptyString(operation.tz, `operation ${id} tz`);
+    if (operation.project_ref !== undefined) parsed.project_ref = requireNonEmptyString(operation.project_ref, `operation ${id} project_ref`);
+    if (operation.session_ref !== undefined) parsed.session_ref = requireNonEmptyString(operation.session_ref, `operation ${id} session_ref`);
+    if (operation.model !== undefined) parsed.model = requireNonEmptyString(operation.model, `operation ${id} model`);
+    if (operation.anomaly_limit !== undefined) parsed.anomaly_limit = requireInteger(operation.anomaly_limit, `operation ${id} anomaly_limit`, 1);
+    if (operation.tool_limit !== undefined) parsed.tool_limit = requireInteger(operation.tool_limit, `operation ${id} tool_limit`, 1);
+    if (operation.family_limit !== undefined) parsed.family_limit = requireInteger(operation.family_limit, `operation ${id} family_limit`, 1);
+    return parsed;
+  }
+  if (kind === "trace") {
+    assertOnlyKeys(
+      operation,
+      new Set(["id", "kind", "session_ref", "turn_ref", "only_anomalies", "include_subagents", "limit", "offset"]),
+      `operation ${id}`,
+    );
+    if ((operation.session_ref !== undefined) === (operation.turn_ref !== undefined)) {
+      throw new QueryRequestError("trace requires exactly one of session_ref or turn_ref.");
+    }
+    const parsed: TraceOperation = { id, kind };
+    if (operation.session_ref !== undefined) parsed.session_ref = requireNonEmptyString(operation.session_ref, `operation ${id} session_ref`);
+    if (operation.turn_ref !== undefined) parsed.turn_ref = requireNonEmptyString(operation.turn_ref, `operation ${id} turn_ref`);
+    if (operation.only_anomalies !== undefined) {
+      if (typeof operation.only_anomalies !== "boolean") throw new QueryRequestError(`operation ${id} only_anomalies must be a boolean.`);
+      parsed.only_anomalies = operation.only_anomalies;
+    }
+    if (operation.include_subagents !== undefined) {
+      if (typeof operation.include_subagents !== "boolean") throw new QueryRequestError(`operation ${id} include_subagents must be a boolean.`);
+      parsed.include_subagents = operation.include_subagents;
+    }
+    if (operation.limit !== undefined) {
+      const limit = requireInteger(operation.limit, `operation ${id} limit`, 1);
+      if (limit > 500) throw new QueryRequestError(`operation ${id} limit must be <= 500.`);
+      parsed.limit = limit;
+    }
+    if (operation.offset !== undefined) parsed.offset = requireInteger(operation.offset, `operation ${id} offset`, 0);
+    return parsed;
+  }
   throw new QueryRequestError(`Unsupported query operation kind: ${JSON.stringify(kind)}.`);
+}
+
+function executeDiagnoseOperation(
+  operation: DiagnoseOperation,
+  snapshot: LiveHistorySnapshot,
+  directoryScope?: string,
+): Record<string, unknown> {
+  const timeZone = resolveUsageTimezone(operation.tz);
+  const nowMs = Date.now();
+  const timeOpts = { timezone: timeZone, week_mode: "rolling_7d" as const, now_ms: nowMs };
+  let afterTs: number | undefined;
+  let beforeTs: number | undefined;
+  let afterDate: string | undefined;
+  let beforeDate: string | undefined;
+  let timePreset: UsageFilters["time_preset"] = "all";
+
+  if (operation.since) {
+    const b = parseDateOrRelativeStart(operation.since, timeOpts);
+    timePreset = b.preset ?? "all";
+    afterTs = b.after_ts;
+    beforeTs = b.before_ts;
+    afterDate = b.after_date;
+    beforeDate = b.before_date;
+  }
+  if (operation.from) {
+    const b = parseDateOrRelativeStart(operation.from, timeOpts);
+    if (!operation.since && b.preset) timePreset = b.preset;
+    afterTs = b.after_ts;
+    afterDate = b.after_date;
+    if (b.before_ts !== undefined) beforeTs = b.before_ts;
+    if (b.before_date !== undefined) beforeDate = b.before_date;
+  }
+  if (operation.to) {
+    const b = parseDateEnd(operation.to, timeOpts);
+    beforeTs = b.before_ts;
+    beforeDate = b.before_date;
+  }
+
+  let projectIds: string[] | undefined;
+  if (operation.project_ref) {
+    if (operation.project_ref.trim().toLowerCase() === UNASSIGNED_PROJECT_KEY) {
+      projectIds = [UNASSIGNED_PROJECT_KEY];
+    } else {
+      const project = snapshot.getProject(operation.project_ref);
+      if (!project) throw new QueryReferenceError(`Project not found: ${operation.project_ref}.`);
+      projectIds = [project.project_id];
+    }
+  }
+
+  let sessionIds: string[] | undefined;
+  if (operation.session_ref) {
+    const session = snapshot.getSession(operation.session_ref);
+    if (!session) throw new QueryReferenceError(`Session not found: ${operation.session_ref}.`);
+    sessionIds = snapshot.expandSessionFamilyIds(session.id);
+  }
+
+  const filters: UsageFilters = {
+    project_ids: projectIds,
+    session_ids: sessionIds,
+    model_queries: operation.model ? [operation.model] : undefined,
+    directory_scope: sessionIds ? undefined : directoryScope,
+    timezone: timeZone,
+    now_ms: nowMs,
+    time_preset: timePreset,
+    after_ts: afterTs,
+    before_ts: beforeTs,
+    after_date: afterDate,
+    before_date: beforeDate,
+  };
+  const breakdown = snapshot.getUsageBreakdown({ filters });
+  const diag = breakdown.diagnostics;
+  const anomalyLimit = operation.anomaly_limit ?? 20;
+  const toolLimit = operation.tool_limit ?? 20;
+  const familyLimit = operation.family_limit ?? 15;
+  return {
+    overview: breakdown.overview,
+    efficiency: breakdown.efficiency ?? null,
+    cache_distribution: diag?.cache_distribution ?? null,
+    role_split: diag?.role_split ?? null,
+    total_anomalies: diag?.anomalies.length ?? 0,
+    anomalies: (diag?.anomalies ?? []).slice(0, anomalyLimit),
+    families: (diag?.families ?? []).slice(0, familyLimit),
+    tool_patterns: (diag?.tool_patterns ?? []).slice(0, toolLimit),
+    loops: (diag?.loops ?? []).slice(0, toolLimit),
+  };
+}
+
+function executeTraceOperation(
+  operation: TraceOperation,
+  snapshot: LiveHistorySnapshot,
+  directoryScope?: string,
+): Record<string, unknown> {
+  if (operation.session_ref) {
+    const allowed = directoryScope
+      ? new Set(snapshot.listResolvedSessions({ directoryScope }).map((s) => s.id))
+      : undefined;
+    const session = snapshot.getSession(operation.session_ref);
+    if (!session || (allowed && !allowed.has(session.id))) {
+      throw new QueryReferenceError(`Session not found: ${operation.session_ref}.`);
+    }
+    const trace = snapshot.getSessionTrace({
+      sessionId: session.id,
+      onlyAnomalies: operation.only_anomalies,
+      includeSubagents: operation.include_subagents,
+      limit: operation.limit ?? 50,
+      offset: operation.offset ?? 0,
+    });
+    if (!trace) throw new QueryReferenceError(`Session not found: ${operation.session_ref}.`);
+    return trace as unknown as Record<string, unknown>;
+  }
+  const allowedTurns = directoryScope
+    ? new Set(snapshot.listResolvedTurns({ directoryScope }).map((t) => t.id))
+    : undefined;
+  const turn = snapshot.getTurn(operation.turn_ref!);
+  if (!turn || (allowedTurns && !allowedTurns.has(turn.id))) {
+    throw new QueryReferenceError(`UserTurn not found: ${operation.turn_ref}.`);
+  }
+  const trace = snapshot.getSessionTrace({
+    sessionId: turn.session_id,
+    turnId: turn.id,
+    onlyAnomalies: operation.only_anomalies,
+    includeSubagents: operation.include_subagents,
+    limit: operation.limit ?? 50,
+    offset: operation.offset ?? 0,
+  });
+  if (!trace) throw new QueryReferenceError(`UserTurn not found: ${operation.turn_ref}.`);
+  return trace as unknown as Record<string, unknown>;
 }
 
 function queryErrorPayload(error: unknown): Record<string, unknown> {

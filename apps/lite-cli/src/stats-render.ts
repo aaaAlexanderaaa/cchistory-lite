@@ -6,6 +6,7 @@
 import path from "node:path";
 import type {
   ModelPricingResolution,
+  SessionTraceTurnRow,
   UsageBreakdownSnapshot,
   UsageCostBreakdown,
   UsageMatrixResult,
@@ -14,6 +15,14 @@ import type {
   UsageStatsRollupRow,
 } from "@cchistory/domain";
 import { buildDenseTimeSeries, densifyShortHourlyRollupRows } from "@cchistory/live-runtime";
+import type { DiagnosticStatsByView } from "./stats-command.js";
+import {
+  renderAnomaliesSection,
+  renderDiagnosticsHeaderLines,
+  renderFamilyUsageSection,
+  renderToolPatternSection,
+  renderTurnUsageSection,
+} from "./stats-diagnostics-render.js";
 import {
   createStatsPalette,
   formatCacheHitText,
@@ -278,9 +287,13 @@ function renderSessionRollupSection(
     const hitCell = styleCacheHit(formatCacheHitText(hitRatio), hitRatio, palette);
     const meta = row.session_meta;
     const signals: string[] = [];
-    if (meta && meta.delegated_child_count > 0) signals.push(`${meta.delegated_child_count}sub`);
-    if (meta && meta.tool_error_count > 0) signals.push(palette.red(`${meta.tool_error_count}err`));
-    else if (meta && meta.tool_call_count > 0) signals.push(palette.dim(`${meta.tool_call_count}tool`));
+    if (meta && meta.role === "subagent") signals.push(palette.cyan("sub"));
+    else if (meta && meta.delegated_child_count > 0) signals.push(`${meta.delegated_child_count}sub`);
+    if (meta && (meta.miss_call_count ?? 0) > 0) signals.push(palette.red(`${meta.miss_call_count}miss`));
+    const loopSig = meta?.anomaly_signals?.find((s) => s.startsWith("loop:"));
+    if (loopSig) signals.push(palette.yellow(loopSig));
+    else if (meta && meta.tool_error_count > 0) signals.push(palette.red(`${meta.tool_error_count}err`));
+    else if (meta && meta.tool_call_count > 0 && signals.length < 2) signals.push(palette.dim(`${meta.tool_call_count}tool`));
     const signalText = signals.length > 0 ? signals.join(" ") : palette.dim("—");
     const shareCell = formatShareCell(barRatio, shareRatio, wide ? 12 : 10, palette);
     if (wide) {
@@ -339,10 +352,14 @@ export function renderEnhancedStats(params: {
   breakdown: UsageBreakdownSnapshot;
   rollup?: UsageStatsRollup;
   matrix?: UsageMatrixResult;
+  diagnosticView?: DiagnosticStatsByView;
+  anomaliesOnly?: boolean;
+  turnRows?: ReadonlyArray<SessionTraceTurnRow & { session_id: string }>;
   directoryScope?: string;
   cwd: string;
   modelQueries: readonly string[];
   projectRefs: readonly string[];
+  sessionRefs?: readonly string[];
   sourceIds: readonly string[];
   explainPricing: boolean;
   exportNotice?: string;
@@ -355,10 +372,14 @@ export function renderEnhancedStats(params: {
     breakdown,
     rollup,
     matrix,
+    diagnosticView,
+    anomaliesOnly,
+    turnRows,
     directoryScope,
     cwd,
     modelQueries,
     projectRefs,
+    sessionRefs = [],
     sourceIds,
     explainPricing,
     exportNotice,
@@ -394,6 +415,7 @@ export function renderEnhancedStats(params: {
       ? `window=${breakdown.effective_after_date ?? "*"}..${breakdown.effective_before_date ?? "*"}`
       : undefined,
     projectRefs.length > 0 ? `projects=${projectRefs.join(",")}` : undefined,
+    sessionRefs.length > 0 ? `sessions=${sessionRefs.join(",")}` : undefined,
     modelQueries.length > 0 ? `models=${modelQueries.join(",")}` : undefined,
     sourceIds.length > 0 ? `sources=${sourceIds.length}` : undefined,
   ].filter(Boolean);
@@ -426,6 +448,7 @@ export function renderEnhancedStats(params: {
       const health = renderEfficiencySummary(efficiency, palette);
       if (health) lines.push(renderDashRow(`- Efficiency: ${health}`));
     }
+    lines.push(...renderDiagnosticsHeaderLines(breakdown.diagnostics, palette, renderDashRow));
     if (cost.unpriced_models.length > 0) {
       lines.push(
         renderDashRow(
@@ -451,7 +474,31 @@ export function renderEnhancedStats(params: {
     lines.push(renderDashRow(`- Exported pricing config: ${exportNotice}`));
   }
 
-  if (rollup) {
+  if (anomaliesOnly) {
+    lines.push(
+      "",
+      ...renderAnomaliesSection(breakdown.diagnostics?.anomalies ?? [], {
+        wide,
+        columns,
+        palette,
+      }),
+    );
+  } else if (diagnosticView === "family") {
+    lines.push(
+      "",
+      ...renderFamilyUsageSection(breakdown.diagnostics?.families ?? [], wide, palette),
+    );
+  } else if (diagnosticView === "tool") {
+    lines.push(
+      "",
+      ...renderToolPatternSection(breakdown.diagnostics?.tool_patterns ?? [], wide, palette),
+    );
+  } else if (diagnosticView === "turn") {
+    lines.push(
+      "",
+      ...renderTurnUsageSection(turnRows ?? [], wide, columns, palette),
+    );
+  } else if (rollup) {
     if (rollup.dimension === "session") {
       lines.push("", ...renderSessionRollupSection("By session", rollup.rows, wide, palette));
     } else {
@@ -508,6 +555,17 @@ export function renderEnhancedStats(params: {
       breakdown.time_dimension === "hour"
         ? densifyShortHourlyRollupRows(breakdown.by_time.rows, { timezone: breakdown.timezone })
         : breakdown.by_time.rows;
+    if (breakdown.diagnostics && breakdown.diagnostics.anomalies.length > 0) {
+      lines.push(
+        "",
+        ...renderAnomaliesSection(breakdown.diagnostics.anomalies, {
+          wide,
+          columns,
+          palette,
+          limit: 5,
+        }),
+      );
+    }
     lines.push(
       "",
       ...renderRollupSection("By project", breakdown.by_project.rows, wide, hasQuota, palette, 10),

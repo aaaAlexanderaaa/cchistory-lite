@@ -46,6 +46,7 @@ import {
   densifyHourOfDayRollupRows,
   enrichSessionRollup,
 } from "./usage-diagnostics.js";
+import { computeUsageDiagnosticsReport } from "./usage-anomalies.js";
 
 export function countUsageTurns(
   rows: readonly UsageAggregationRow[],
@@ -87,7 +88,8 @@ export function computeUsageRollup(
   const rollup = buildRollupFromRows(params.dimension, rows, excludedCount, params.filters);
   if (params.dimension === "session") {
     const bySession = groupRowsByKey(rows, "session");
-    return enrichSessionRollup(rollup, bySession, params);
+    const { report } = computeUsageDiagnosticsReport({ rows, filters: params.filters, sourceData: params });
+    return enrichSessionRollup(rollup, bySession, params, report);
   }
   return rollup;
 }
@@ -317,13 +319,19 @@ export function computeUsageBreakdown(
     params.filters.quota_limit_usd,
   );
 
+  const { report: diagnostics } = computeUsageDiagnosticsReport({
+    rows,
+    filters: params.filters,
+    sourceData: params,
+  });
+
   const overview = buildOverviewFromRows(rows, excludedCount, params.filters);
   const by_project = buildRollupFromRows("project", rows, excludedCount, params.filters);
   const by_model = buildRollupFromRows("model", rows, excludedCount, params.filters);
   const by_source = buildRollupFromRows("source", rows, excludedCount, params.filters);
   const by_time = buildRollupFromRows(timeDimension, rows, excludedCount, params.filters);
   const rawBySession = buildRollupFromRows("session", rows, excludedCount, params.filters);
-  const by_session = enrichSessionRollup(rawBySession, groupRowsByKey(rows, "session"), params);
+  const by_session = enrichSessionRollup(rawBySession, groupRowsByKey(rows, "session"), params, diagnostics);
   const matrix = params.matrix_dimensions?.length
     ? buildMatrixFromRows(params.matrix_dimensions, rows, excludedCount, params.filters, params.sort_by)
     : undefined;
@@ -371,6 +379,7 @@ export function computeUsageBreakdown(
     efficiency: overview.efficiency,
     quota_pace,
     hourly_profile,
+    diagnostics,
   };
 }
 

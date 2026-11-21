@@ -299,3 +299,102 @@ export function renderEfficiencySummary(
   }
   return parts.join(" · ");
 }
+
+const ANSI_PATTERN = /\u001b\[[0-9;]*m/gu;
+
+export function stripAnsi(value: string): string {
+  return value.replace(ANSI_PATTERN, "");
+}
+
+function isWideCode(code: number): boolean {
+  return (
+    (code >= 0x1100 && code <= 0x115f) ||
+    (code >= 0x2e80 && code <= 0x303e) ||
+    (code >= 0x3040 && code <= 0x33bf) ||
+    (code >= 0x3400 && code <= 0x4dbf) ||
+    (code >= 0x4e00 && code <= 0xa4cf) ||
+    (code >= 0xac00 && code <= 0xd7af) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe30 && code <= 0xfe6f) ||
+    (code >= 0xff01 && code <= 0xff60) ||
+    (code >= 0xffe0 && code <= 0xffe6) ||
+    (code >= 0x20000 && code <= 0x2fa1f)
+  );
+}
+
+export function displayWidth(value: string): number {
+  let width = 0;
+  for (const ch of stripAnsi(value)) {
+    width += isWideCode(ch.codePointAt(0) ?? 0) ? 2 : 1;
+  }
+  return width;
+}
+
+export function clipVisible(value: string, maxWidth: number): string {
+  if (displayWidth(value) <= maxWidth) return value;
+  if (maxWidth <= 1) return "…";
+  let width = 0;
+  let result = "";
+  let idx = 0;
+  while (idx < value.length) {
+    if (value[idx] === "\u001b" && value[idx + 1] === "[") {
+      const end = value.indexOf("m", idx);
+      if (end !== -1) {
+        result += value.slice(idx, end + 1);
+        idx = end + 1;
+        continue;
+      }
+    }
+    const cp = value.codePointAt(idx) ?? 0;
+    const ch = String.fromCodePoint(cp);
+    const chW = isWideCode(cp) ? 2 : 1;
+    if (width + chW > maxWidth - 1) {
+      result += "…";
+      break;
+    }
+    result += ch;
+    width += chW;
+    idx += ch.length;
+  }
+  return result.includes("\u001b[") ? `${result}\u001b[0m` : result;
+}
+
+export function padCell(value: string, width: number, rightAlign = false): string {
+  const clipped = clipVisible(value, width);
+  const gap = Math.max(0, width - displayWidth(clipped));
+  return rightAlign ? `${" ".repeat(gap)}${clipped}` : `${clipped}${" ".repeat(gap)}`;
+}
+
+export function renderAlignedTable(
+  headers: readonly { title: string; width: number; right?: boolean }[],
+  rows: ReadonlyArray<readonly string[]>,
+): string[] {
+  const lines = [
+    `  ${headers.map((h) => padCell(h.title, h.width, h.right)).join("  ")}`,
+    `  ${headers.map((h) => "-".repeat(h.width)).join("  ")}`,
+  ];
+  for (const row of rows) {
+    lines.push(`  ${headers.map((h, i) => padCell(row[i] ?? "", h.width, h.right)).join("  ")}`);
+  }
+  return lines;
+}
+
+export function formatCompactTokens(value: number): string {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`;
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return String(Math.round(value));
+}
+
+export function formatDurationBrief(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return "—";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const secs = Math.round(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  const rem = secs % 60;
+  if (mins < 60) return rem > 0 ? `${mins}m${rem}s` : `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return remMins > 0 ? `${hrs}h${remMins}m` : `${hrs}h`;
+}

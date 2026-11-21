@@ -5,10 +5,12 @@
  */
 
 import type {
+  AssistantStopReason,
   ProjectIdentity,
   SessionContributionProjection,
   SessionFamilyProjection,
   SessionProjection,
+  SessionRelatedWorkProjection,
   SessionUsageEvent,
   SourceStatus,
   TokenUsageSummary,
@@ -17,6 +19,7 @@ import type {
   UsageStatsRollupRow,
   UsageTimeBucket,
   UsageTimePreset,
+  UsageToolSummary,
   UsageWeekMode,
   UserTurnProjection,
 } from "@cchistory/domain";
@@ -27,6 +30,7 @@ import { extractLocalTimeParts, resolveUsageTimezone, resolveWeekBucket } from "
 export interface UsageFilters {
   project_id?: string;
   project_ids?: string[];
+  session_ids?: string[];
   source_ids?: string[];
   host_ids?: string[];
   models?: string[];
@@ -51,6 +55,15 @@ export interface UsageFilters {
 
 export interface UsageAggregationRow {
   context_input_tokens?: number;
+  event_id?: string;
+  seq?: number;
+  created_at?: string;
+  subagent_key?: string;
+  stop_reason?: AssistantStopReason;
+  compaction_before?: boolean;
+  preceding_tool_results?: readonly UsageToolSummary[];
+  emitted_tool_calls?: readonly UsageToolSummary[];
+  is_call_event?: boolean;
   turn_id: string | null;
   session_id: string;
   session_label: string;
@@ -105,6 +118,7 @@ export interface UsageSourceData {
   listProjects: () => readonly ProjectIdentity[];
   listSessionContributions?: () => readonly SessionContributionProjection[];
   listSessionFamilies?: () => readonly SessionFamilyProjection[];
+  listRelatedWork?: () => readonly SessionRelatedWorkProjection[];
 }
 
 export const UNASSIGNED_PROJECT_KEY = "unassigned";
@@ -370,6 +384,8 @@ export function extractUnfilteredUsageRows(
     };
 
     const baseRow: UsageAggregationRow = {
+      created_at: turn.submission_started_at,
+      is_call_event: false,
       turn_id: turn.id,
       session_id: turn.session_id,
       session_label: resolveSessionLabel(session, turn.session_id),
@@ -387,8 +403,21 @@ export function extractUnfilteredUsageRows(
 
     const events = eventsByTurn.get(turn.id);
     if (!events?.length) return [baseRow];
-    return events.map(event => ({ ...baseRow, model: event.model ?? "unknown",
-      ...bucketTime(event.created_at), ...usageAmounts(event.token_usage, true) }));
+    return events.map((event) => ({
+      ...baseRow,
+      event_id: event.id,
+      seq: event.seq,
+      created_at: event.created_at,
+      subagent_key: event.subagent_key,
+      stop_reason: event.stop_reason,
+      compaction_before: event.compaction_before,
+      preceding_tool_results: event.preceding_tool_results,
+      emitted_tool_calls: event.emitted_tool_calls,
+      is_call_event: true,
+      model: event.model ?? "unknown",
+      ...bucketTime(event.created_at),
+      ...usageAmounts(event.token_usage, true),
+    }));
   });
 
   for (const session of sessionsById.values()) {
@@ -398,6 +427,15 @@ export function extractUnfilteredUsageRows(
       if (event.turn_id !== null) continue;
       const time = bucketTime(event.created_at);
       rows.push({
+        event_id: event.id,
+        seq: event.seq,
+        created_at: event.created_at,
+        subagent_key: event.subagent_key,
+        stop_reason: event.stop_reason,
+        compaction_before: event.compaction_before,
+        preceding_tool_results: event.preceding_tool_results,
+        emitted_tool_calls: event.emitted_tool_calls,
+        is_call_event: true,
         turn_id: null,
         session_id: session.id,
         session_label: resolveSessionLabel(session, session.id),
@@ -423,6 +461,7 @@ export function filterUsageRows(
   sessionsById?: ReadonlyMap<string, SessionProjection>,
 ): UsageAggregationRow[] {
   const projectFilterSet = buildProjectFilterSet(filters);
+  const sessionFilterSet = filters.session_ids?.length ? new Set(filters.session_ids) : undefined;
   const modelExactSet = filters.models?.length
     ? new Set(filters.models.map((entry) => entry.trim().toLowerCase()).filter(Boolean))
     : undefined;
@@ -431,6 +470,7 @@ export function filterUsageRows(
   const timeDimension = filters.time_dimension ?? "day";
 
   return rows.filter((row) => {
+    if (sessionFilterSet && !sessionFilterSet.has(row.session_id)) return false;
     if (filters.directory_scope && sessionsById && !sessionMatchesDirectoryScope(sessionsById.get(row.session_id), filters.directory_scope)) {
       return false;
     }
