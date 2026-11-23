@@ -98,6 +98,8 @@ ALLOWED_FILE_PATTERNS = [
     re.compile(r"Library/Application Support/openclaw/cron/runs/[0-9a-f-]+\.jsonl"),
     re.compile(r"fixtures/opencode-sqlite/(?:v1|v2|v2-presplit)\.sql"),
     re.compile(r"fixtures/hermes/state\.sql"),
+    re.compile(r"\.pi/agent/sessions/[^/]+/[^/]+\.jsonl"),
+    re.compile(r"\.omp/agent/sessions/[^/]+/[^/]+\.jsonl"),
     re.compile(r"\.local/share/opencode/storage/project/global\.json"),
     re.compile(r"\.local/share/opencode/storage/session/global/ses_[^/]+\.json"),
     re.compile(r"\.local/share/opencode/storage/message/ses_[^/]+/msg_[^/]+\.json"),

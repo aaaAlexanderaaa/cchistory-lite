@@ -32,6 +32,7 @@ CREATE TABLE messages (
   reasoning TEXT,
   reasoning_content TEXT,
   display_kind TEXT,
+  _compressed_summary INTEGER NOT NULL DEFAULT 0,
   active INTEGER NOT NULL DEFAULT 1,
   timestamp REAL NOT NULL
 );
@@ -80,12 +81,19 @@ INSERT INTO messages (session_id, role, content, timestamp) VALUES
   ('sess_fixture_hermes_main', 'user',
    char(0) || 'json:[{"type":"text","text":"Now compare providers."},{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]',
    1770000004.0);
-INSERT INTO messages (session_id, role, content, timestamp) VALUES
-  ('sess_fixture_hermes_main', 'assistant', 'Provider A and B both record usage per session.', 1770000005.0);
+INSERT INTO messages (session_id, role, content, finish_reason, timestamp) VALUES
+  ('sess_fixture_hermes_main', 'assistant', 'Provider A and B both record usage per session.', 'stop', 1770000005.0);
 INSERT INTO messages (session_id, role, content, display_kind, timestamp) VALUES
   ('sess_fixture_hermes_main', 'assistant', 'hidden audit note', 'hidden', 1770000005.5);
 INSERT INTO messages (session_id, role, content, active, timestamp) VALUES
   ('sess_fixture_hermes_main', 'user', 'rewound prompt', 0, 1770000005.8);
+INSERT INTO messages (session_id, role, content, _compressed_summary, timestamp) VALUES
+  ('sess_fixture_hermes_main', 'user',
+   '[CONTEXT COMPACTION - REFERENCE ONLY] Earlier discussion of the retry helper.', 1, 1770000000.5);
+INSERT INTO messages (session_id, role, content, display_kind, timestamp) VALUES
+  ('sess_fixture_hermes_main', 'assistant', 'Turn failed: provider timeout.', 'failed_turn', 1770000005.6);
+INSERT INTO messages (session_id, role, content, timestamp) VALUES
+  ('sess_fixture_hermes_main', 'system', 'You are a helpful coding agent.', 1770000000.2);
 
 INSERT INTO messages (session_id, role, content, timestamp) VALUES
   ('sess_fixture_hermes_child', 'user', 'Audit the delegated log output.', 1770000101.0);

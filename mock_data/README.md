@@ -85,6 +85,8 @@ table/part shape stays reviewable and no native store is copied:
 - `fixtures/opencode-sqlite/v1.sql` is the 1.2-era `session` / `message` / `part` shape with a delegated child and a file part carrying a data URL that must never become prompt text.
 - `fixtures/opencode-sqlite/v2-presplit.sql` is the pre-split v2 shape: metadata still in `session`, `session_message` without `seq`, and empty legacy `message`/`part` tables.
 - `fixtures/hermes/state.sql` is a sanitized Hermes Agent `state.db`: live message rows, hidden and rewound rows, collapsed reasoning, OpenAI-style tool calls, per-model session usage, and delegate/branch/reset lineage markers.
+- `.pi/agent/sessions/<encoded-cwd>/*.jsonl` is a Pi session tree with a model change, per-call usage, a compaction entry, and an abandoned branch that must not be projected.
+- `.omp/agent/sessions/<encoded-cwd>/*.jsonl` is an Oh My Pi session with the fixed-width title slot, `title_change`/`model_usage`/`reset_boundary` entries, plus a task child (delegated) and an ordinary fork (top-level).
 
 > Full-fidelity Antigravity extraction on a real machine still requires the Antigravity desktop app to be running. Without the app, that is not way to recover raw prompts or real conversation turns.
 

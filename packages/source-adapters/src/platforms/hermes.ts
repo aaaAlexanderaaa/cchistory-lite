@@ -24,9 +24,14 @@ export const hermesAdapter: PlatformAdapter = {
     if (options.homeDir) {
       candidates.push(path.join(options.homeDir, ".hermes"));
     }
-    const appDataDir = options.appDataDir ?? env.LOCALAPPDATA ?? env.APPDATA;
-    if (appDataDir) {
-      candidates.push(path.join(appDataDir, "hermes"));
+    // Hermes uses %LOCALAPPDATA% on Windows; discovery's generic appDataDir is
+    // %APPDATA%/Roaming, so it must not stand in for Local.
+    if (options.platform === "win32" || env.LOCALAPPDATA) {
+      const localAppData = env.LOCALAPPDATA
+        ?? (options.homeDir ? path.join(options.homeDir, "AppData", "Local") : undefined);
+      if (localAppData) {
+        candidates.push(path.join(localAppData, "hermes"));
+      }
     }
     return candidates;
   },

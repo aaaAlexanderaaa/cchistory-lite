@@ -13,11 +13,19 @@ import { asNumber, asString, isObject, safeJsonParse } from "../../core/type-gua
  * per-model usage aggregates and lineage markers all live in that store.
  *
  * The store is WAL-mode and may be written by a live gateway, so it is opened
- * read-only and every read runs under the adapter read budget.
+ * read-only inside one read transaction; every read runs under the adapter read
+ * budget.
  */
 
 const HERMES_CONTENT_JSON_PREFIX = "\x00json:";
 const SESSION_LINEAGE_MARKERS = ["_delegate_from", "_branched_from", "_reset_from"] as const;
+const SYNTHETIC_USER_MARKERS = [
+  "Continue from the compressed conversation context above.",
+  "You've reached the maximum number of tool-calling iterations allowed.",
+  "[IMPORTANT: Background process ",
+  "[Your active task list was preserved across context compression]",
+] as const;
+const DISPLAY_ONLY_KINDS = new Set(["failed_turn", "internal_notification", "process_complete"]);
 
 export interface HermesSqliteReadOptions {
   targetSessionRefs?: readonly string[];
@@ -27,6 +35,7 @@ export interface HermesSqliteReadOptions {
 interface HermesSeedDiagnostic {
   code: string;
   detail: string;
+  severity?: "info" | "warning" | "error";
 }
 
 export function extractHermesSqliteSeeds(
@@ -34,6 +43,7 @@ export function extractHermesSqliteSeeds(
   options: HermesSqliteReadOptions = {},
 ): ExtractedSessionSeed[] {
   const db = new DatabaseSync(dbPath, { readOnly: true });
+  let transactionOpen = false;
   try {
     const tables = new Set(
       db
@@ -49,19 +59,17 @@ export function extractHermesSqliteSeeds(
     }
     const sessionColumns = tableColumns(db, "sessions");
     const messageColumns = tableColumns(db, "messages");
+    requireColumns(sessionColumns, ["id"], "sessions", dbPath);
+    requireColumns(messageColumns, ["session_id", "role", "content", "timestamp"], "messages", dbPath);
     const hasUsageTable = tables.has("session_model_usage");
     const usageColumns = hasUsageTable ? tableColumns(db, "session_model_usage") : new Set<string>();
+    db.exec("BEGIN");
+    transactionOpen = true;
 
     const seeds: ExtractedSessionSeed[] = [];
-    for (const sessionRow of listSessions(db, sessionColumns, options.budget)) {
+    for (const sessionRow of listSessions(db, sessionColumns, options)) {
       const rawSessionId = asString(sessionRow.id);
       if (!rawSessionId) {
-        continue;
-      }
-      if (
-        options.targetSessionRefs?.length &&
-        !options.targetSessionRefs.some((ref) => matchesSessionRef(ref, rawSessionId))
-      ) {
         continue;
       }
       const seed = buildSessionSeed(db, {
@@ -77,15 +85,42 @@ export function extractHermesSqliteSeeds(
         seeds.push(seed);
       }
     }
+    db.exec("COMMIT");
+    transactionOpen = false;
     return seeds;
   } finally {
+    if (transactionOpen) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        /* the connection is already unusable; close below still runs */
+      }
+    }
     db.close();
+  }
+}
+
+function requireColumns(
+  columns: ReadonlySet<string>,
+  required: readonly string[],
+  table: string,
+  dbPath: string,
+): void {
+  const missing = required.filter((column) => !columns.has(column));
+  if (missing.length > 0) {
+    throw new Error(
+      `Unrecognized Hermes Agent SQLite schema in ${dbPath}: ${table} is missing ${missing.join(", ")}.`,
+    );
   }
 }
 
 function matchesSessionRef(ref: string, rawSessionId: string): boolean {
   const canonical = `sess:hermes:${rawSessionId}`;
-  return ref === canonical || ref === rawSessionId || canonical.startsWith(ref) || rawSessionId.startsWith(ref);
+  if (ref === canonical || ref === rawSessionId) {
+    return true;
+  }
+  // Only a canonical prefix may abbreviate, and it must name this platform.
+  return ref.startsWith("sess:hermes:") && canonical.startsWith(ref);
 }
 
 function tableColumns(db: DatabaseSync, table: "sessions" | "messages" | "session_model_usage"): Set<string> {
@@ -122,11 +157,37 @@ const SESSION_SELECT_COLUMNS = [
 function listSessions(
   db: DatabaseSync,
   columns: ReadonlySet<string>,
-  budget: SourceReadBudget | undefined,
+  options: HermesSqliteReadOptions,
 ): Record<string, unknown>[] {
   const selected = SESSION_SELECT_COLUMNS.filter((column) => columns.has(column));
   const query = `SELECT ${selected.join(", ")} FROM sessions ORDER BY id`;
-  return readBudgetedSqliteRows(db, query, selected, [], budget, "sessions rows");
+  const rows = readBudgetedSqliteRows(db, query, selected, [], options.budget, "sessions rows");
+  const targetRefs = options.targetSessionRefs?.filter((ref) => ref.trim().length > 0) ?? [];
+  if (targetRefs.length === 0) {
+    return rows;
+  }
+  const matchedIds = new Set<string>();
+  for (const row of rows) {
+    const id = asString(row.id);
+    if (id && targetRefs.some((ref) => matchesSessionRef(ref, id))) {
+      matchedIds.add(id);
+    }
+  }
+  // A parent target includes direct children so family/related work and
+  // delegated usage stay resolvable; a child target stays one session.
+  for (const row of rows) {
+    const parentId = asString(row.parent_session_id);
+    if (parentId && matchedIds.has(parentId)) {
+      const id = asString(row.id);
+      if (id) {
+        matchedIds.add(id);
+      }
+    }
+  }
+  return rows.filter((row) => {
+    const id = asString(row.id);
+    return id !== undefined && matchedIds.has(id);
+  });
 }
 
 interface BuildSeedContext {
@@ -140,7 +201,7 @@ interface BuildSeedContext {
 }
 
 function buildSessionSeed(db: DatabaseSync, context: BuildSeedContext): ExtractedSessionSeed | undefined {
-  const { sessionRow, rawSessionId, messageColumns, budget } = context;
+  const { sessionRow, rawSessionId, budget } = context;
   const diagnostics: HermesSeedDiagnostic[] = [];
   const records: ExtractedSessionSeed["records"] = [];
   let lastMessageObservedAt: string | undefined;
@@ -153,7 +214,7 @@ function buildSessionSeed(db: DatabaseSync, context: BuildSeedContext): Extracte
   const title = asString(sessionRow.title)?.trim() || undefined;
   const model = asString(sessionRow.model)?.trim() || undefined;
   const workingDirectory = normalizeDirectory(asString(sessionRow.cwd));
-  const lineage = resolveLineage(sessionRow.model_config, diagnostics, rawSessionId);
+  const lineage = resolveLineage(sessionRow.model_config, rawSessionId);
 
   records.push({
     pointer: "sqlite:sessions",
@@ -174,8 +235,7 @@ function buildSessionSeed(db: DatabaseSync, context: BuildSeedContext): Extracte
     }),
   });
 
-  const messages = readMessages(db, context, diagnostics);
-  for (const message of messages) {
+  for (const message of readMessages(db, context, diagnostics)) {
     const messageId = asNumber(message.id);
     const content = decodeContent(message.content, diagnostics, messageId);
     const messageObservedAt = epochSecondsIso(message.timestamp) ?? updatedAt;
@@ -193,14 +253,17 @@ function buildSessionSeed(db: DatabaseSync, context: BuildSeedContext): Extracte
         tool_calls: parseToolCalls(message.tool_calls),
         finish_reason: asString(message.finish_reason),
         reasoning: asString(message.reasoning) ?? asString(message.reasoning_content),
+        synthetic_user: isSyntheticUserMessage(message, content),
+        display_only: isDisplayOnlyRow(asString(message.display_kind)),
+        display_kind: asString(message.display_kind),
         timestamp: epochSecondsIso(message.timestamp),
       }),
     });
   }
 
-  // Session-level usage is written after the messages so the canonical
-  // interpreter attaches it to the session's replies instead of dropping a
-  // signal that arrived before the first submission group.
+  // Session-level usage is emitted after the transcript and carries its own
+  // independent identity, so it survives a last turn with no text reply and
+  // keeps per-model attribution.
   appendUsageRecords(db, context, records, diagnostics, lastMessageObservedAt);
 
   return {
@@ -226,6 +289,8 @@ interface MessageRow {
   finish_reason?: unknown;
   reasoning?: unknown;
   reasoning_content?: unknown;
+  _compressed_summary?: unknown;
+  display_kind?: unknown;
 }
 
 function readMessages(
@@ -245,10 +310,9 @@ function readMessages(
     "finish_reason",
     "reasoning",
     "reasoning_content",
+    "_compressed_summary",
+    "display_kind",
   ].filter((column) => columns.has(column));
-  if (selected.length === 0) {
-    return [];
-  }
   const filters = ["session_id = ?"];
   if (columns.has("active")) {
     filters.push("active = 1");
@@ -284,13 +348,12 @@ function appendUsageRecords(
   lastMessageObservedAt: string | undefined,
 ): void {
   const { sessionRow, rawSessionId, hasUsageTable, usageColumns, budget } = context;
-  // Emitting the aggregate after the transcript lets canonical attach it to the
-  // session's replies; a timestamp before the first message would strand it.
   const usageObservedAt =
     epochSecondsIso(sessionRow.last_activity_at) ??
     epochSecondsIso(sessionRow.ended_at) ??
     lastMessageObservedAt ??
     epochSecondsIso(sessionRow.started_at);
+
   if (hasUsageTable) {
     const selected = [
       "model",
@@ -309,9 +372,7 @@ function appendUsageRecords(
       try {
         const rows = readBudgetedSqliteRows(
           db,
-          `SELECT ${selected.join(", ")} FROM session_model_usage WHERE session_id = ? ORDER BY ${
-            usageColumns.has("model") ? "model ASC" : "rowid ASC"
-          }${usageColumns.has("task") ? ", task ASC" : ""}`,
+          `SELECT ${selected.join(", ")} FROM session_model_usage WHERE session_id = ? ORDER BY rowid ASC`,
           selected,
           [rawSessionId],
           budget,
@@ -348,6 +409,7 @@ function appendUsageRecords(
       }
     }
   }
+
   const sessionUsage = {
     input_tokens: asNumber(sessionRow.input_tokens),
     output_tokens: asNumber(sessionRow.output_tokens),
@@ -383,12 +445,13 @@ function decodeContent(
   }
   const payload = raw.slice(HERMES_CONTENT_JSON_PREFIX.length);
   const parsed = safeJsonParse(payload);
-  if (parsed === undefined || parsed === null) {
+  if (parsed === undefined) {
     diagnostics.push({
       code: "hermes_content_decode_failed",
-      detail: `Message ${messageId ?? "?"} has a structured content marker that is not valid JSON; kept as raw text.`,
+      detail: `Message ${messageId ?? "?"} has a structured content marker that is not valid JSON; kept as the raw stored text.`,
     });
-    return payload;
+    // Upstream returns the original string, including the reserved prefix.
+    return raw;
   }
   return parsed;
 }
@@ -401,9 +464,36 @@ function parseToolCalls(raw: unknown): unknown {
   return parsed ?? null;
 }
 
+function isDisplayOnlyRow(displayKind: string | undefined): boolean {
+  return displayKind !== undefined && DISPLAY_ONLY_KINDS.has(displayKind);
+}
+
+function isSyntheticUserMessage(message: MessageRow, content: unknown): boolean {
+  if (message._compressed_summary === 1 || message._compressed_summary === true) {
+    return true;
+  }
+  if (asString(message.role) !== "user") {
+    return false;
+  }
+  const text = contentToPlainText(content);
+  return text.length > 0 && SYNTHETIC_USER_MARKERS.some((marker) => text.startsWith(marker));
+}
+
+function contentToPlainText(content: unknown): string {
+  if (typeof content === "string") {
+    return content.trim();
+  }
+  if (!Array.isArray(content)) {
+    return "";
+  }
+  return content
+    .map((item) => (isObject(item) && asString(item.type) === "text" ? asString(item.text) ?? "" : ""))
+    .join("\n")
+    .trim();
+}
+
 function resolveLineage(
   modelConfig: unknown,
-  diagnostics: HermesSeedDiagnostic[],
   sessionId: string,
 ): { kind: string | undefined; parent: string | undefined } {
   const config = typeof modelConfig === "string" ? safeJsonParse(modelConfig) : modelConfig;
@@ -413,11 +503,8 @@ function resolveLineage(
   for (const marker of SESSION_LINEAGE_MARKERS) {
     const parent = asString(config[marker]);
     if (parent) {
-      void diagnostics;
-      void sessionId;
       return {
-        kind:
-          marker === "_delegate_from" ? "delegate" : marker === "_branched_from" ? "branch" : "reset",
+        kind: marker === "_delegate_from" ? "delegate" : marker === "_branched_from" ? "branch" : "reset",
         parent,
       };
     }

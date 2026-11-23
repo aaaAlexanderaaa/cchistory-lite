@@ -13,6 +13,8 @@ import { grokAdapter } from "./grok.js";
 import { grokBotAdapter } from "./grok-bot.js";
 import { deepSeekHarnessAdapter } from "./deepseek-harness.js";
 import { hermesAdapter } from "./hermes.js";
+import { piAdapter } from "./pi.js";
+import { ohMyPiAdapter } from "./oh-my-pi.js";
 import { lobechatAdapter } from "./lobechat.js";
 import { kimiAdapter } from "./kimi.js";
 import { openclawAdapter } from "./openclaw.js";
@@ -41,6 +43,8 @@ const adapters = [
   grokBotAdapter,
   deepSeekHarnessAdapter,
   hermesAdapter,
+  piAdapter,
+  ohMyPiAdapter,
 ] as const satisfies readonly PlatformAdapter[];
 
 const adapterRegistry = Object.fromEntries(

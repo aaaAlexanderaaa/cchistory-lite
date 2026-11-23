@@ -192,6 +192,22 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     description: "Grok CLI sessions under ~/.grok/sessions/<encoded-cwd>/<session-id>/chat_history.jsonl, with summary.json metadata and updates/signals companions retained as evidence. Subagent sibling sessions are linked through parent/subagents/*/meta.json and summary session_kind.",
     capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
   },
+  pi: {
+    id: "pi:session-jsonl:v3",
+    family: "local_coding_agent",
+    platform: "pi",
+    parser_version: "pi-family-parser@2026-11-24.1",
+    description: "Pi session JSONL under ~/.pi/agent/sessions/<encoded-cwd> (or PI_CODING_AGENT_DIR/sessions): a session header plus tree entries (id/parentId) for messages, model changes, usage, compaction and branch summaries. Only the active branch is projected.",
+    capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
+  },
+  oh_my_pi: {
+    id: "oh_my_pi:session-jsonl:v3",
+    family: "local_coding_agent",
+    platform: "oh_my_pi",
+    parser_version: "pi-family-parser@2026-11-24.1",
+    description: "Oh My Pi session JSONL (Pi fork) under ~/.omp/agent/sessions or profiles/*/agent/sessions, including the fixed-width title slot, title_change entries, model_usage records, reset boundaries, and task children linked through parentSession/taskPromptCacheKey.",
+    capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
+  },
   hermes: {
     id: "hermes:state-sqlite:v1",
     family: "local_coding_agent",
@@ -334,6 +350,18 @@ const DEFAULT_SOURCE_SPECS: ReadonlyArray<
     family: "local_coding_agent",
     platform: "hermes",
     display_name: "Hermes Agent",
+  },
+  {
+    slot_id: "pi",
+    family: "local_coding_agent",
+    platform: "pi",
+    display_name: "Pi",
+  },
+  {
+    slot_id: "oh_my_pi",
+    family: "local_coding_agent",
+    platform: "oh_my_pi",
+    display_name: "Oh My Pi",
   },
 ];
 

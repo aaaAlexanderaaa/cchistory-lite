@@ -48,6 +48,8 @@ import { iterateZcodeSqliteSeeds } from "../platforms/zcode/runtime.js";
 import { extractOpenCodeSqliteSeeds } from "../platforms/opencode/sqlite.js";
 import { extractHermesSqliteSeeds } from "../platforms/hermes/sqlite.js";
 import { parseHermesRecord as parseHermesRuntimeRecord } from "../platforms/hermes/runtime.js";
+import { extractPiFamilySessionSeed } from "../platforms/pi-family/reader.js";
+import { parsePiFamilyRecord as parsePiFamilyRuntimeRecord } from "../platforms/pi-family/runtime.js";
 import { extractDeepSeekHarnessSeeds } from "../platforms/deepseek-harness/reader.js";
 import { parseDeepSeekHarnessRecord as parseDeepSeekHarnessRuntimeRecord } from "../platforms/deepseek-harness/runtime.js";
 import {
@@ -449,6 +451,9 @@ export function parseRecord(
   if (context.source.platform === "hermes") {
     return parseHermesRuntimeRecord(context, record, parsed, draft, buildCommonParseRuntimeHelpers());
   }
+  if (context.source.platform === "pi" || context.source.platform === "oh_my_pi") {
+    return parsePiFamilyRuntimeRecord(context, record, parsed, draft, buildCommonParseRuntimeHelpers());
+  }
   if (context.source.platform === "grok") {
     applyGrokWorkspaceFromPath(context.filePath, draft, normalizeWorkspacePath);
     return parseGrokRuntimeRecord(context, record, parsed, draft, buildCommonParseRuntimeHelpers());
@@ -640,6 +645,10 @@ export async function extractMultiSessionSeeds(
   }
   if (source.platform === "hermes" && path.basename(filePath) === "state.db") {
     return extractHermesSqliteSeeds(filePath, { targetSessionRefs, budget });
+  }
+  if (source.platform === "pi" || source.platform === "oh_my_pi") {
+    const { seed } = extractPiFamilySessionSeed(source.platform, filePath, fileBuffer);
+    return seed ? [seed] : [];
   }
   if (source.platform === "opencode" || source.platform === "gemini") {
     const exportSeeds = await extractConversationExportSeeds(source, filePath, fileBuffer, blobId);

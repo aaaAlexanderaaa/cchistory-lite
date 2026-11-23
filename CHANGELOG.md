@@ -34,6 +34,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   granularity; `model_config` lineage markers link delegated children while
   branch and compression continuations stay top-level. Older stores without
   title/model-config/usage tables still project their transcript.
+- Pi and Oh My Pi source adapters (`pi`, `oh_my_pi`, experimental): read the
+  shared Pi-family session JSONL tree and project only the active branch, with
+  per-call assistant usage, collapsed thinking, tool calls/results (including
+  `isError`), model changes, and independent compaction/branch-summary usage.
+  Oh My Pi adds its fixed-width title slot, `title_change`/`model_usage`/
+  `reset_boundary` entries, named profile stores, and task children linked from
+  `parentSession` + `taskPromptCacheKey`; ordinary forks stay top-level. Both
+  honour `PI_CODING_AGENT_DIR` without indexing one installation twice.
 
 ## [0.8.3] - 2026-11-21
 

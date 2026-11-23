@@ -153,10 +153,17 @@ test("[hermes] fixture sessions project turns, collapsed reasoning, tools, linea
     const usage = payload.fragments.filter((fragment) => fragment.fragment_kind === "token_usage_signal");
     assert.equal(usage.length, 4);
     assert.equal(usage.every((fragment) => fragment.payload.scope === "session"), true);
+    assert.equal(
+      usage.every((fragment) => typeof fragment.payload.independent_usage_event_id === "string"),
+      true,
+      "session/model usage survives a last turn without a text reply",
+    );
     const mainUsage = usage
       .filter((fragment) => fragment.session_ref === "sess:hermes:sess_fixture_hermes_main")
       .map((fragment) => fragment.payload.token_usage as Record<string, number>);
     assert.equal(mainUsage.length, 2);
+    const mainTokens = mainUsage.reduce((sum, item) => sum + (item.total_tokens ?? 0), 0);
+    assert.equal(mainTokens, 2_960, "reasoning is a subset of output and must not be added twice");
     assert.equal(mainUsage.reduce((sum, item) => sum + (item.input_tokens ?? 0), 0), 300);
     assert.equal(mainUsage.reduce((sum, item) => sum + (item.cache_read_input_tokens ?? 0), 0), 2_500);
     assert.equal(mainUsage.reduce((sum, item) => sum + (item.reasoning_output_tokens ?? 0), 0), 40);
@@ -166,6 +173,19 @@ test("[hermes] fixture sessions project turns, collapsed reasoning, tools, linea
     assert.deepEqual(hidden, []);
     const rewound = payload.turns.filter((turn) => turn.canonical_text.includes("rewound prompt"));
     assert.deepEqual(rewound, []);
+    assert.equal(
+      payload.turns.some((turn) => turn.canonical_text.includes("CONTEXT COMPACTION")),
+      false,
+      "compression summaries must not become user turns",
+    );
+    assert.ok(
+      syntheticTextOf(payload).some((text) => text.includes("[CONTEXT COMPACTION - REFERENCE ONLY]")),
+      "compression summaries remain collapsed system evidence",
+    );
+    assert.ok(
+      syntheticTextOf(payload).some((text) => text.includes("Turn failed: provider timeout.")),
+      "display-only failed-turn rows remain evidence, not assistant replies",
+    );
   });
 });
 
@@ -233,4 +253,51 @@ test("[hermes] an unrecognized SQLite schema is reported instead of guessed", as
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+function syntheticTextOf(payload: { fragments: Array<{ fragment_kind: string; payload: Record<string, unknown> }> }): string[] {
+  return payload.fragments
+    .filter(
+      (fragment) =>
+        fragment.fragment_kind === "text"
+        && fragment.payload.display_policy === "collapse"
+        && fragment.payload.source_content_type !== "reasoning",
+    )
+    .map((fragment) => String(fragment.payload.text ?? ""));
+}
+
+test("[hermes] a parent target includes its delegated child and Windows uses LOCALAPPDATA", async () => {
+  await withHermesRoot(async (root) => {
+    const source = hermesSource(root);
+    const [payload] = (
+      await runSourceProbe(
+        { source_ids: [source.id], target_session_refs: ["sess:hermes:sess_fixture_hermes_main"] },
+        [source],
+      )
+    ).sources;
+    assert.ok(payload);
+    assert.deepEqual(
+      payload.sessions.map((session) => session.id).sort(),
+      [
+        "sess:hermes:sess_fixture_hermes_child",
+        "sess:hermes:sess_fixture_hermes_main",
+        "sess:hermes:sess_fixture_hermes_reset",
+      ],
+      "a parent target keeps delegated children and compression continuations resolvable",
+    );
+    assert.ok(payload.fragments.some((fragment) => fragment.fragment_kind === "session_relation"));
+  });
+
+  const localAppData = "C:/Users/tester/AppData/Local";
+  const localRoot = `${localAppData}/hermes`;
+  const sources = getDefaultSourcesForHost({
+    homeDir: "C:/Users/tester",
+    hostname: "hermes-win32-host",
+    platform: "win32",
+    env: { LOCALAPPDATA: localAppData },
+    pathExists: (targetPath) => targetPath === localRoot,
+  });
+  const resolved = sources.find((entry) => entry.platform === "hermes");
+  assert.ok(resolved);
+  assert.equal(resolved.base_dir, localRoot);
 });

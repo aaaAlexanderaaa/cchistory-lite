@@ -39,6 +39,8 @@ const fixtureRoots = {
   grok_bot: "fixtures/grok-bot",
   deepseek_harness: ".deepseek-harness/sessions",
   hermes: "fixtures/hermes",
+  pi: ".pi/agent/sessions",
+  oh_my_pi: ".omp/agent/sessions",
 } as const;
 
 test("Codex accounting keeps text-less calls, compactions and call timestamps in every stats dimension", async () => {
@@ -2539,7 +2541,17 @@ test("Hermes delegated children stay in the parent family while compression cont
       snapshot.listSessionRelatedWork(parent.id).some((entry) =>
         entry.relation_kind === "delegated_session" && entry.child_session_ref?.includes("sess_fixture_hermes_child")),
     );
-    assert.equal(snapshot.getUsageOverview({ timezone: "UTC" }).total_tokens, 3_881);
+    assert.equal(snapshot.getUsageOverview({ timezone: "UTC" }).total_tokens, 3_828);
+    const breakdown = snapshot.getUsageBreakdown({
+      filters: { timezone: "UTC" },
+      time_dimension: "day",
+      matrix_dimensions: ["model", "day"],
+    });
+    assert.deepEqual(
+      breakdown.by_model.rows.map((row) => row.key).sort(),
+      ["mock-hermes-1", "mock-hermes-2", "mock-hermes-mini"],
+      "per-model session usage keeps every model row",
+    );
     assert.equal(snapshot.getReadStatus().loss_warning_count, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -2584,4 +2596,88 @@ test("OpenCode v1 and pre-split SQLite stores project without issues and keep de
       await rm(root, { recursive: true, force: true });
     }
   }
+});
+
+test("Hermes per-model usage survives a final turn with no text reply", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-hermes-toolonly-"));
+  try {
+    const db = new DatabaseSync(path.join(root, "state.db"));
+    try {
+      db.exec(`
+        CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, model TEXT, started_at REAL NOT NULL,
+          input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0,
+          cache_write_tokens INTEGER DEFAULT 0, reasoning_tokens INTEGER DEFAULT 0);
+        CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL,
+          content TEXT, tool_calls TEXT, tool_call_id TEXT, tool_name TEXT, timestamp REAL NOT NULL,
+          active INTEGER NOT NULL DEFAULT 1, display_kind TEXT, _compressed_summary INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE session_model_usage (session_id TEXT NOT NULL, model TEXT NOT NULL,
+          billing_provider TEXT NOT NULL DEFAULT '', task TEXT NOT NULL DEFAULT '', api_call_count INTEGER DEFAULT 0,
+          input_tokens INTEGER DEFAULT 0, output_tokens INTEGER DEFAULT 0, cache_read_tokens INTEGER DEFAULT 0,
+          cache_write_tokens INTEGER DEFAULT 0, reasoning_tokens INTEGER DEFAULT 0,
+          estimated_cost_usd REAL DEFAULT 0, actual_cost_usd REAL DEFAULT 0);
+        INSERT INTO sessions VALUES ('sess_tool_only', 'cli', 'hermes-model', 1771000000.0, 0, 0, 0, 0, 0);
+        INSERT INTO messages (session_id, role, content, timestamp) VALUES
+          ('sess_tool_only', 'user', 'Run the audit tool.', 1771000001.0);
+        INSERT INTO messages (session_id, role, content, tool_calls, timestamp) VALUES
+          ('sess_tool_only', 'assistant', NULL,
+           '[{"id":"call_1","type":"function","function":{"name":"audit","arguments":"{}"}}]', 1771000002.0);
+        INSERT INTO messages (session_id, role, content, tool_call_id, tool_name, timestamp) VALUES
+          ('sess_tool_only', 'tool', 'audit complete', 'call_1', 'audit', 1771000003.0);
+        INSERT INTO session_model_usage VALUES ('sess_tool_only', 'hermes-model', 'mock', '', 1,
+          100, 20, 0, 0, 5, 0, 0);
+      `);
+    } finally {
+      db.close();
+    }
+    const snapshot = await scanLiteHistory({
+      homeDir: path.join(mockDataRoot, "empty-home"),
+      sourceRefs: ["hermes"],
+      sourceRoots: [{ sourceRef: "hermes", baseDir: root }],
+      contextMode: "none",
+    });
+    assert.deepEqual(snapshot.projectionIssues, []);
+    assert.equal(snapshot.getUsageOverview({ timezone: "UTC" }).total_tokens, 120);
+    assert.deepEqual(
+      snapshot.getUsageBreakdown({ filters: { timezone: "UTC" }, time_dimension: "day", matrix_dimensions: ["model", "day"] })
+        .by_model.rows.map((row) => row.key),
+      ["hermes-model"],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Pi family projection keeps call-granularity usage and task-child lineage", async () => {
+  const piSnapshot = await scanLiteHistory({
+    homeDir: path.join(mockDataRoot, "empty-home"),
+    sourceRefs: ["pi"],
+    sourceRoots: [{ sourceRef: "pi", baseDir: path.join(mockDataRoot, ".pi/agent/sessions") }],
+    contextMode: "none",
+  });
+  assert.deepEqual(piSnapshot.projectionIssues, []);
+  assert.equal(piSnapshot.getUsageOverview({ timezone: "UTC" }).total_tokens, 3_373);
+  const piSession = piSnapshot.listResolvedSessions()[0]!;
+  assert.equal(piSnapshot.getSessionTrace({ sessionRef: piSession.id, filters: { timezone: "UTC" } })?.usage_granularity, "call");
+  assert.ok(
+    piSnapshot.listSessionTurns(piSession.id).every((turn) => !turn.canonical_text.includes("Abandoned branch")),
+  );
+
+  const ompSnapshot = await scanLiteHistory({
+    homeDir: path.join(mockDataRoot, "empty-home"),
+    sourceRefs: ["oh_my_pi"],
+    sourceRoots: [{ sourceRef: "oh_my_pi", baseDir: path.join(mockDataRoot, ".omp/agent/sessions") }],
+    contextMode: "none",
+  });
+  assert.deepEqual(ompSnapshot.projectionIssues, []);
+  assert.equal(ompSnapshot.getUsageOverview({ timezone: "UTC" }).total_tokens, 1_794);
+  assert.deepEqual(
+    ompSnapshot.listTopLevelSessions().map((session) => session.source_session_id).sort(),
+    ["omp-fixture-fork", "omp-fixture-main"],
+    "the task child is delegated; the ordinary fork stays top-level",
+  );
+  const main = ompSnapshot.listTopLevelSessions().find((session) => session.source_session_id === "omp-fixture-main")!;
+  assert.ok(
+    ompSnapshot.listSessionRelatedWork(main.id).some((entry) =>
+      entry.relation_kind === "delegated_session" && entry.child_session_ref?.includes("omp-fixture-task")),
+  );
 });

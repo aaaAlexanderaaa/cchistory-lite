@@ -764,5 +764,24 @@
     "paths": [
       "fixtures/hermes/state.sql"
     ]
+  },
+  {
+    "id": "pi-family-active-branch",
+    "apps": [
+      "Pi",
+      "Oh My Pi"
+    ],
+    "visible_cue": "Pi and Oh My Pi session JSONL files carry a tree of entries; only the active branch is the live conversation, while an abandoned branch entry remains in the file as raw evidence.",
+    "tricky": "Following file order projects abandoned branches and duplicates usage; ignoring parentId loses the live path. Oh My Pi adds a fixed-width title slot, title_change entries, model_usage records, reset boundaries, and task children distinguished from ordinary forks.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/pi-lab",
+      "/Users/mock_user/workspace/omp-lab"
+    ],
+    "paths": [
+      ".pi/agent/sessions/--Users-mock-user-workspace-pi-lab--/2026-10-03T09-00-00_pi-fixture-main.jsonl",
+      ".omp/agent/sessions/--Users-mock-user-workspace-omp-lab--/2026-10-04T09-00-00_omp-fixture-main.jsonl",
+      ".omp/agent/sessions/--Users-mock-user-workspace-omp-lab--/2026-10-04T10-00-00_omp-fixture-task.jsonl",
+      ".omp/agent/sessions/--Users-mock-user-workspace-omp-lab--/2026-10-04T11-00-00_omp-fixture-fork.jsonl"
+    ]
   }
 ]

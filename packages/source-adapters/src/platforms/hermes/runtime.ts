@@ -143,12 +143,13 @@ function appendSessionUsage(
     reasoning_output_tokens: helpers.asNumber(parsed.reasoning_tokens),
     model: helpers.asString(parsed.model),
   };
+  // Hermes' reasoning_tokens is a subset of output_tokens, so it must not be
+  // added to the total a second time.
   const total = [
     usage.input_tokens,
     usage.output_tokens,
     usage.cache_read_input_tokens,
     usage.cache_creation_input_tokens,
-    usage.reasoning_output_tokens,
   ].reduce<number>((sum, value) => sum + (value ?? 0), 0);
   if (total <= 0) {
     return;
@@ -161,6 +162,10 @@ function appendSessionUsage(
     { ...usage, total_tokens: total },
     undefined,
     {
+      // Each per-model row is an independent aggregate record. Without an
+      // independent identity canonical can attach it to whichever reply happens
+      // to be last, and loses it entirely when that reply is missing.
+      independent_usage_event_id: record.id,
       scope: "session",
       source_event_type: "hermes_session_usage",
       ...(helpers.asString(parsed.provider) ? { billing_provider: helpers.asString(parsed.provider) } : {}),
@@ -176,11 +181,38 @@ function appendMessage(
   push: PushFragment,
   loss: RecordLoss,
 ): void {
-  const role = helpers.asString(parsed.role) ?? "assistant";
+  const role = helpers.asString(parsed.role);
+  if (!role) {
+    loss("Hermes message row has no role; kept only as a diagnostic.", "hermes_message_role_missing", "warning");
+    return;
+  }
   const messageId = helpers.asNumber(parsed.id);
   const content = parsed.content;
 
+  if (parsed.display_only === true) {
+    // UI-only notifications (failed turn, internal notification, process
+    // completion) are evidence, not conversation turns or assistant replies.
+    appendContentItems(helpers, content, push, loss, {
+      actorKind: "system",
+      originKind: "source_instruction",
+      displayPolicy: "collapse",
+      messageId,
+    });
+    return;
+  }
+
   if (role === "user") {
+    if (parsed.synthetic_user === true || parsed.display_only === true) {
+      // Compression summaries and UI-only rows are model-facing context, not
+      // human submissions; they must not create a turn.
+      appendContentItems(helpers, content, push, loss, {
+        actorKind: "system",
+        originKind: "source_instruction",
+        displayPolicy: "collapse",
+        messageId,
+      });
+      return;
+    }
     appendContentItems(helpers, content, push, loss, {
       actorKind: "user",
       originKind: "user_authored",
@@ -196,6 +228,7 @@ function appendMessage(
       originKind: "assistant_authored",
       displayPolicy: "show",
       messageId,
+      stopReason: helpers.normalizeStopReason(parsed.finish_reason),
     });
     appendReasoning(helpers, parsed, push, messageId);
     appendToolCalls(helpers, parsed, push, loss);
@@ -214,6 +247,9 @@ function appendMessage(
   }
 
   if (role === "system") {
+    // System prompts are model-facing configuration, not conversation. Keep a
+    // diagnostic so the omission is visible instead of silent.
+    loss("Hermes system message was not projected as conversation evidence.", "hermes_system_message_not_projected");
     return;
   }
 
@@ -226,10 +262,11 @@ function appendContentItems(
   push: PushFragment,
   loss: RecordLoss,
   options: {
-    actorKind: "user" | "assistant";
-    originKind: "user_authored" | "assistant_authored";
+    actorKind: "user" | "assistant" | "system";
+    originKind: "user_authored" | "assistant_authored" | "source_instruction";
     displayPolicy: "show" | "collapse";
     messageId: number | undefined;
+    stopReason?: string;
   },
 ): void {
   const pushText = (text: string | undefined): void => {
@@ -242,6 +279,7 @@ function appendContentItems(
       text,
       display_policy: options.displayPolicy,
       ...(options.messageId !== undefined ? { message_id: String(options.messageId) } : {}),
+      ...(options.stopReason ? { stop_reason: options.stopReason } : {}),
     });
   };
 

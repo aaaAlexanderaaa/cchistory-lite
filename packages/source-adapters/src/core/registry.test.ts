@@ -27,8 +27,10 @@ test("platform adapter registry provides exactly one adapter per supported platf
     "hermes",
     "kimi",
     "lobechat",
+    "oh_my_pi",
     "openclaw",
     "opencode",
+    "pi",
     "zcode",
   ]);
   assert.equal(new Set(platforms).size, adapters.length);
@@ -79,6 +81,8 @@ test("platform adapter registry distinguishes stable and experimental support ti
     "hermes",
     "kimi",
     "lobechat",
+    "oh_my_pi",
+    "pi",
     "zcode",
   ]);
 });

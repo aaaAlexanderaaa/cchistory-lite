@@ -3,9 +3,11 @@
 ## Current work — 2026-11-23 Source compatibility expansion
 
 Status: source inventory, pinned-reference investigation and Ask ChatGPT research complete.
-DeepSeek Harness and Hermes Agent (new sources) plus OpenCode SQLite compatibility
-(existing stable source) are implemented and verified; Pi/Oh My Pi remain proposed.
-The registered source count is 19.
+DeepSeek Harness, Hermes Agent, Pi and Oh My Pi (new sources) plus OpenCode SQLite
+compatibility (existing stable source) are implemented and verified. The first
+new-source batch is complete; step 3+ candidates (Cline, Mistral Vibe, Goose,
+Crush, Cherry Studio, OpenCodeReview, Warp/Oz, Hindsight) remain proposed. The
+registered source count is 21.
 
 Owner request (verbatim):
 > 知名度	可信度	数据源5	高	OpenCode、Claude Code、Codex CLI、Cursor IDE、Google Antigravity5	中	OpenClaw、Hermes Agent、Gemini CLI、DeepSeek Harness4	高	Pi、Kilo、Warp / Oz、Cline、Mistral Vibe4	中	GitHub Copilot CLI、Oh My Pi、Qwen Code、Crush、Goose、Cherry Studio、Hindsight、OpenCodeReview
@@ -234,21 +236,82 @@ Implemented slice:
   continuation visible, 3,881 session tokens).
 
 Verification (2026-11-24, runtime 0.8.3): `pnpm run build:lite` passed. The
-`pnpm test` body (`pnpm run verify:lite`) passed **909 package tests**, 4 catalog
-tests and dependency boundaries. `verify:governance` passed (14 JS tests, 5
-Python tests, 5 architecture rules across 161 matches, 38 docs / 19 adapters,
-30 advisories). `mock-data:validate` passed across 204 files;
+`pnpm test` body (`pnpm run verify:lite`) passed **920 package tests** (domain 103,
+canonical 184, source-adapters 311, live-runtime 142, lite-cli 79, lite-tui 101),
+4 catalog tests and dependency boundaries. `verify:governance` passed (14 JS
+tests, 5 Python tests, 5 architecture rules across 165 matches, 38 docs / 21
+adapters, 31 advisories). `mock-data:validate` passed across 208 files;
 `verify:lite-artifact` passed for the standalone tarball and local npm
 installation; `git diff --check` passed. CLI smoke reads produced the OpenCode
-v2 session (1,768 tokens) and both top-level Hermes sessions (2 turns / 3,000
-tokens with one subagent, and the compression continuation) with correct
+v2 session (1,768 tokens) and both top-level Hermes sessions with correct
 projects and models.
+
+Review correction (2026-11-24): an independent review requested changes on
+session usage and visibility boundaries. The reader now opens one read
+transaction, requires the core `messages` columns, includes direct children for
+a parent target, resolves usage per model as independent session events
+(`independent_usage_event_id`) so a final tool-only turn no longer drops the
+whole session's tokens and every model keeps its rollup, excludes Hermes'
+`reasoning_tokens` from the total (it is a subset of output), treats
+`_compressed_summary` and known synthetic user rows plus display-only
+`failed_turn`/notification rows as collapsed evidence instead of user turns,
+keeps `finish_reason` as `stop_reason`, returns the raw stored text when a
+structured content marker is malformed, and reads `%LOCALAPPDATA%/hermes` on
+Windows instead of Roaming. Regression coverage includes a tool-only final
+turn, a parent-target read with delegated and compression children, a
+compressed-summary row, a display-only row, a Windows discovery path and the
+per-model rollup.
 
 Projection/coverage limits: only live (`active = 1`) transcript rows are
 projected, so compaction-archived and rewound rows stay as native evidence;
-usage keeps session/model granularity and is attributed to the session's replies
-as a whole; tool results carry no native error flag, so `is_error` is not
-invented.
+usage carries session/model granularity (each row is an independent aggregate
+event, so trace reports call granularity over those aggregates); tool results
+carry no native error flag, so `is_error` is not invented.
+
+### Delivery record — Pi and Oh My Pi (2026-11-24)
+
+Status: implemented and verified in the working tree; not committed or released.
+
+Implemented slice:
+
+- `packages/source-adapters/src/platforms/pi.ts` and `oh-my-pi.ts` register the
+  experimental `pi` and `oh_my_pi` sources. Roots: `~/.pi/agent/sessions`
+  (`PI_CODING_AGENT_DIR` override, `PI_CONFIG_DIR` rename) and
+  `~/.omp/agent/sessions` plus `profiles/*/agent/sessions`; a marker-less
+  `PI_CODING_AGENT_DIR` is accepted only by the product whose own root exists,
+  so one installation is not indexed twice.
+- `platforms/pi-family/reader.ts` parses the shared JSONL format: optional
+  fixed-width title slot, session header (v1/v2/v3), tree entries
+  (`id`/`parentId`), active-branch reconstruction from the last entry, title
+  precedence, malformed/truncated-tail diagnostics and parent-session path
+  resolution.
+- `platforms/pi-family/runtime.ts` keeps message semantics: user/assistant text,
+  collapsed `thinking`, `toolCall`/`toolResult` with `isError`, model changes,
+  independent per-call assistant usage, independent compaction/branch-summary
+  and `usage`/`model_usage` records, OMP `reset_boundary` evidence, and lineage:
+  `taskPromptCacheKey` children are delegated work, ordinary forks keep their
+  `parentSession` as top-level lineage.
+- Evidence: Pi fixture with a model change, compaction, tool loop and an
+  abandoned branch; OMP fixtures with title slot, `title_change`, `model_usage`,
+  `reset_boundary`, a task child and an ordinary fork; one scenario; six
+  adapter tests (registration, profile discovery, active-branch projection,
+  OMP semantics, v1 linear/truncated tail, targeting) and live-runtime coverage
+  (matrix participation, call-granularity trace, task/fork visibility, usage
+  totals).
+
+Verification (2026-11-24, runtime 0.8.3): the final `pnpm run verify:lite`
+passed **920 package tests**, 4 catalog tests and dependency boundaries;
+`verify:governance` passed (165 architecture matches, 38 docs / 21 adapters,
+31 advisories); `mock-data:validate` passed across 208 files;
+`verify:lite-artifact` passed; `git diff --check` passed. Pi and OMP fixture
+snapshots report zero projection issues; Pi usage stays call-granular
+(3,373 tokens) and OMP keeps its task child hidden with 1,794 total tokens
+including the ordinary fork.
+
+Projection/coverage limits: abandoned branches and non-active entries remain in
+the file as raw evidence but are not projected; `thinking` blocks are collapsed
+reasoning evidence; image content is not projected as text; Pi v1 files have no
+tree, so their file order is the active order.
 
 ## Previous work — 2026-11-21 Per-call usage telemetry, anomaly diagnostics, and `trace`
 

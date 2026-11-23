@@ -17,7 +17,7 @@ Published as [`@cchistory/lite`](https://www.npmjs.com/package/@cchistory/lite).
 | Agent `--json` | ✓ | — | ✓ |
 | Own database | **0** | 0 | SQLite index |
 | Semantic search | — | — | ✓ |
-| Sources | **19** | 29 | ~24 |
+| Sources | **21** | 29 | ~24 |
 | Search pays | every scan | GUI cache | disk index |
 
 ## Quick start
@@ -91,6 +91,8 @@ Each adapter is referenced by its slot id.
 | `grok_bot` | Grok Bot | `~/agent-data`, `~/sand-data` | experimental |
 | `deepseek_harness` | DeepSeek Harness | `$DSH_HOME/sessions`, `~/.dsh/sessions` | experimental |
 | `hermes` | Hermes Agent | `$HERMES_HOME/state.db`, `~/.hermes` (profiles under `profiles/*`) | experimental |
+| `pi` | Pi | `~/.pi/agent/sessions`, `$PI_CODING_AGENT_DIR/sessions` | experimental |
+| `oh_my_pi` | Oh My Pi | `~/.omp/agent/sessions`, `profiles/*/agent/sessions` | experimental |
 
 `cursor` still merges Agent CLI transcripts with composer/chat-store evidence
 when they share a native agent id.
@@ -141,6 +143,20 @@ children (`_delegate_from`, linked under the parent) from branch/compression
 continuations (`_branched_from` / `_reset_from`, kept as their own top-level
 sessions). Hermes records usage per session/model, not per call, so those totals
 keep session granularity.
+
+`pi` and `oh_my_pi` read the shared Pi-family session JSONL layout:
+`<agent-dir>/sessions/<encoded-cwd>/<timestamp>_<session>.jsonl`. Entries form a
+tree (`id`/`parentId`), so only the active branch — the last entry walked back to
+its root — becomes conversation evidence; abandoned branches stay in the file as
+raw evidence. Assistant messages keep per-call usage (call granularity), thinking
+blocks stay collapsed, `toolCall` blocks pair with `toolResult` rows (including
+`isError`), and compaction/branch-summary entries contribute their own model
+usage instead of overwriting a reply. Oh My Pi additionally carries a fixed-width
+title slot, `title_change`/`model_usage`/`reset_boundary` entries, named profile
+stores, and task children linked through `parentSession` + `taskPromptCacheKey`;
+ordinary forks keep their `parentSession` lineage as a top-level session. Both
+sources honour `PI_CODING_AGENT_DIR`; a marker-less override is accepted only by
+the product whose own root exists, so one installation is not indexed twice.
 
 `cursor_agent` is opt-in (`--source cursor_agent`) so a default scan does not
 emit those transcripts twice.

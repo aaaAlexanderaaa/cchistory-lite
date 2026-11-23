@@ -59,7 +59,7 @@ class CheckDocsTests(unittest.TestCase):
         errors = [f for f in findings if f.severity == "error"]
         self.assertEqual(errors, [], f"Unexpected doc errors: {errors}")
         self.assertGreaterEqual(summary["markdown_files"], 10)
-        self.assertEqual(summary["registered_adapters"], 19)
+        self.assertEqual(summary["registered_adapters"], 21)
 
     def test_detects_broken_link_and_fragment(self) -> None:
         with tempfile.TemporaryDirectory() as td:

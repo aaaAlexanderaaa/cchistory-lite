@@ -20,6 +20,7 @@ import "./platforms/cursor.test.js";
 import "./platforms/deepseek-harness.test.js";
 import "./platforms/opencode-sqlite.test.js";
 import "./platforms/hermes.test.js";
+import "./platforms/pi-family.test.js";
 import "./platforms/antigravity.test.js";
 import "./platforms/antigravity-sqlite.test.js";
 import "./platforms/openclaw.test.js";
