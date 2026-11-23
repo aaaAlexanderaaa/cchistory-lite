@@ -1,8 +1,113 @@
 # Project work
 
-## Current work — 2026-11-21 Per-call usage telemetry, anomaly diagnostics, and `trace`
+## Current work — 2026-11-23 Source compatibility expansion
 
-Status: Stage 1 committed & pushed (`c222f75`); Stage 2 (finite SQL `calls` collection, TUI interactive diagnostics & call waterfall, date `Hit`, `Reas`, and fixed legend) verified and commit/push to `origin/main` authorized.
+Status: source inventory, pinned-reference investigation and Ask ChatGPT research complete;
+implementation batches below are proposed. This update owns the expansion plan and evidence.
+The registered source count remains 17.
+
+Owner request (verbatim):
+> 知名度	可信度	数据源5	高	OpenCode、Claude Code、Codex CLI、Cursor IDE、Google Antigravity5	中	OpenClaw、Hermes Agent、Gemini CLI、DeepSeek Harness4	高	Pi、Kilo、Warp / Oz、Cline、Mistral Vibe4	中	GitHub Copilot CLI、Oh My Pi、Qwen Code、Crush、Goose、Cherry Studio、Hindsight、OpenCodeReview
+>
+> 这是我让其他agent做的调研，加一下到计划里吧，看看怎么去做适配兼容新的数据源。另外，你可以根据别人已经做的工作去做一些adapter适配，比如：[https://github.com/junhoyeo/tokscale](https://github.com/junhoyeo/tokscale) ， 需要调研就ask chatgpt
+
+Owner scope revision (verbatim, 2026-11-23):
+> 去除qwen code/ copilot cli /kilo cli/kilo ide
+
+The inventory and delivery sequence below apply this revision. Kilo's IDE and CLI profiles
+were counted as one candidate product in the original inventory.
+
+Owner follow-up (verbatim, 2026-11-23):
+> 增加deepseek harness
+
+DeepSeek Harness joins the first new-source batch alongside Pi, Oh My Pi and Hermes.
+
+Owner delivery authorization (verbatim, 2026-11-23):
+> commit and push
+
+Outcome: recover useful native conversation evidence across the requested tools, with usage
+and diagnostics at the granularity each producer actually records. Retain the owner's source
+ratings as research inputs; qualify Lite support through versioned native formats and fixtures.
+
+### Inventory from the supplied research
+
+| Visibility | Source confidence | Registered sources to audit | New candidates |
+| --- | --- | --- | --- |
+| 5 | High | OpenCode, Claude Code, Codex CLI, Cursor IDE, Google Antigravity | — |
+| 5 | Medium | OpenClaw, Gemini CLI | Hermes Agent, DeepSeek Harness |
+| 4 | High | — | Pi, Warp / Oz, Cline, Mistral Vibe |
+| 4 | Medium | — | Oh My Pi, Crush, Goose, Cherry Studio, Hindsight, OpenCodeReview |
+
+The current scope covers 19 named products: 7 registered sources and 12 new candidates.
+Format profiles may need separate identities after producer inspection; final adapter counts
+follow those decisions. The [source compatibility report](docs/research/2026-11-23-source-compatibility.md)
+records the current matchers, all 12 candidates, upstream parser paths, sharing opportunities,
+acquisition boundaries and remaining producer-schema checks. The inspected Tokscale revision
+is `b265e836c58f085f50a836525aa60b8d45bd8d57` (4.23.1, MIT).
+
+Pre-code judgment:
+
+- Executor: preserve zero-store, native-source read-only access, compatible projections and
+  explicit usage granularity. Research, planning and native adapter work follow the owner's
+  request; sync, credentials, third-party history ledgers and acquisition services remain
+  separate product decisions.
+- Collaborator: improve coverage of the owner's requested tools through small useful deliveries.
+  Compare existing-source repairs with new-source work; prioritize a reproducible missing-history
+  journey and available versioned fixtures over raw adapter count.
+- Architect: keep source/root/schema profiles and shared format readers in `source-adapters`;
+  keep history interpretation and usage reconciliation in `canonical`. New adapters start at
+  `experimental`; existing stable adapters retain their compatibility and projection gates.
+
+### Delivery sequence
+
+| Step | Sources and work | Completion condition |
+| --- | --- | --- |
+| 0 — Inventory and reference research (complete) | Map the supplied shortlist to local coverage, apply the revised 19-product scope, inspect pinned Tokscale parsers and use Ask ChatGPT for the expansion judgment. | Source-specific evidence, unresolved producer checks and priorities are recorded here and in the research report. |
+| 1 — Existing compatibility | Audit all 7 registered sources. Start with OpenCode SQLite versus legacy JSON and OpenClaw SQLite versus session JSONL; qualify schema versions, overlap and root variants. Track Codex compressed copies with the bounded-compression slice. | Each selected repair has producer-format evidence, sanitized old/new fixtures, preserved identities/totals and zero projection issues through real Lite entrypoints. |
+| 2 — First new sources | Pi and Oh My Pi through a shared, source-profiled JSONL reader; Hermes through its native session/message/profile DB schemas; DeepSeek Harness through versioned plain/zstd JSONL session events. Implement one independently verifiable source slice at a time. | Useful conversation search/read works where the native source carries it; real user turns, tools, delegation and available usage are qualified separately. Hermes aggregate counters retain their session/model scope. DeepSeek covers fork/seed boundaries, independent compaction calls and compressed/plain copy identity, with encoded/decoded/record/allocation bounds and Node 22 artifact checks. |
+| 3 — Task logs | Cline through its native UI messages and API conversation history, with explicit producer-version and IDE/CLI format profiles. | Paired task files reconcile by native identity; real submissions, tools, cache semantics and available usage have independent expected results. |
+| 4 — Additional native formats | Mistral Vibe, Goose, Crush, Cherry Studio and OpenCodeReview. Reorder ready sources by actual user demand and available producer evidence. | Conversation evidence and aggregate cost/usage have independent expected results. |
+| 5 — Native acquisition research | Start Warp Local's read-only SQLite schema investigation during step 1, using the reported `agent_conversations`/`ai_queries` evidence; qualify assistant bodies and request links. Treat Oz cloud history and Hindsight service telemetry as separate acquisition questions. | A supported native acquisition path and provenance are established, or a separate product proposal specifies the requested API/export acquisition outcome and its costs. Complete Warp conversation evidence can move its implementation into step 3. |
+
+The strongest quicker alternative is normalized usage-export compatibility with Tokscale.
+That would prioritize aggregate usage across more tools and introduce an acquisition/provenance
+contract. Native conversation recovery remains this plan's selected outcome. Actual installed
+tools, a reproducible coverage failure, or ready producer fixtures can change the order above.
+
+### Per-source implementation and acceptance
+
+- Pin producer/reference versions and record root overrides, file/DB schemas, request/message
+  identities, timestamps, model/provider fields, cache/reasoning semantics and known gaps.
+  Distinguish conversation, tool, delegation, call/turn/session usage, and native cost coverage.
+- Reuse root/schema knowledge and focused format helpers from prior work, with MIT attribution
+  for copied or substantially translated code. Keep source identities independent when syntax
+  is shared. Build fresh sanitized fixtures and independently specified expected projections.
+- Register the adapter/root/tier, parser dispatch and domain/schema/catalog metadata as needed;
+  include it in the fixture and projection matrix, source documentation, shipped skill and
+  agent contract wherever they enumerate sources. The existing generic CLI/TUI views consume
+  the canonical results; visual/interaction redesign follows the repository's approval gate.
+- Verify missing/empty/corrupt inputs, unsupported versions, overlapping copies, appends/WAL,
+  duplicate titles, interleaved and turn-less sessions, model switches and delegated children.
+  Preserve diagnostics and evidence; aggregate-only rows retain their actual scope and real
+  user-turn counts continue to come from native submissions.
+- Exercise built CLI search/show, SQL and shell reads and usage/trace where supported. Require
+  zero projection issues across every registered fixture source and run `build:lite`, `pnpm test`,
+  `verify:governance`, `verify:lite-artifact`, fixture validation and `git diff --check` for each
+  completed implementation slice. Stable promotion records real-world producer-version evidence
+  through the existing stable-adapter validation process.
+
+Planning and pre-commit verification (2026-11-23, runtime 0.8.3): `build:lite`, `pnpm test`
+(883 package tests, 4 catalog tests and dependency boundaries), `verify:governance` (14 JS
+tests, 5 Python tests, 5 architecture rules across 154 matches, and 38 docs / 17 adapters),
+and `verify:lite-artifact -- --skip-build` passed. Artifact verification used the fresh build
+and a temporary npm cache. `git diff --check` passed. New adapter implementation, publication
+and the existing owner-owned U1 acceptance have their own completion records.
+
+## Previous work — 2026-11-21 Per-call usage telemetry, anomaly diagnostics, and `trace`
+
+Status: Stage 1 (`c222f75`) and Stage 2 (`8a8073f`, finite SQL `calls`, TUI diagnostics/Trace,
+date `Hit`, `Reas`, and fixed legend) are committed and present on local `origin/main`.
+The changes shipped in release 0.8.3 (`3093c9e`).
 
 Owner requests (verbatim):
 > 我让远程的agent用了一下这个工具，让它去排查异常token开销，它感觉有点摩擦，因为只到了session级别，没有subagent或者每句话/每个工具调用的情况，它举了一个例子，可能某些工具调用的缓存命中是0,但是其他会话都是99%，结果综合下来变成了70%或者50%，就缺少了可观测性。它建议最省事的改进会是直接列出“哪条命令被反复查询、查了几次、持续多久、同期用了多少 token”，但我认为可以做得更好，你想想
