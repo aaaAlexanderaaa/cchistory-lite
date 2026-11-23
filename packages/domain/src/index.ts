@@ -22,6 +22,7 @@ export type SourcePlatform =
   | "grok"
   | "grok_bot"
   | "deepseek_harness"
+  | "hermes"
   | "other";
 
 export type LinkState = "committed" | "candidate" | "unlinked";

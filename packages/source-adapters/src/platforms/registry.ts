@@ -12,6 +12,7 @@ import { factoryDroidAdapter } from "./factory-droid.js";
 import { grokAdapter } from "./grok.js";
 import { grokBotAdapter } from "./grok-bot.js";
 import { deepSeekHarnessAdapter } from "./deepseek-harness.js";
+import { hermesAdapter } from "./hermes.js";
 import { lobechatAdapter } from "./lobechat.js";
 import { kimiAdapter } from "./kimi.js";
 import { openclawAdapter } from "./openclaw.js";
@@ -39,6 +40,7 @@ const adapters = [
   grokAdapter,
   grokBotAdapter,
   deepSeekHarnessAdapter,
+  hermesAdapter,
 ] as const satisfies readonly PlatformAdapter[];
 
 const adapterRegistry = Object.fromEntries(

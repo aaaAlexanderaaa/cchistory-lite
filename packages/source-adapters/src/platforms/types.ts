@@ -27,7 +27,8 @@ export type SupportedSourcePlatform =
   | "cursor_agent"
   | "grok"
   | "grok_bot"
-  | "deepseek_harness";
+  | "deepseek_harness"
+  | "hermes";
 
 export interface DefaultSourceResolutionOptions {
   homeDir?: string;
@@ -81,6 +82,7 @@ export function isSupportedSourcePlatform(platform: SourcePlatform): platform is
     platform === "cursor_agent" ||
     platform === "grok" ||
     platform === "grok_bot" ||
-    platform === "deepseek_harness"
+    platform === "deepseek_harness" ||
+    platform === "hermes"
   );
 }

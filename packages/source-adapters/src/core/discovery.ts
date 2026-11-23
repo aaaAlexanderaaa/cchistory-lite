@@ -129,12 +129,12 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     capabilities: ["session_meta", "workspace_signal", ...COMMON_PARSER_CAPABILITIES],
   },
   opencode: {
-    id: "opencode:json:v1",
+    id: "opencode:native:v2",
     family: DEFAULT_SOURCE_FAMILY,
     platform: "opencode",
-    parser_version: "opencode-parser@2026-03-11.1",
-    description: "OpenCode exported session JSON or raw storage session/message trees.",
-    capabilities: ["session_meta", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
+    parser_version: "opencode-parser@2026-11-23.1",
+    description: "OpenCode native history: current SQLite store (session_v2/session_message/session_part), 1.2-era SQLite store (session/message/part), and legacy storage/session|message|part JSON trees. A migrated install reads the SQLite store first and suppresses leftover JSON copies only when the store carries the same native session identity; pre-split v2 stores without seq remain readable.",
+    capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
   },
   lobechat: {
     id: "lobechat:export-json:v1",
@@ -190,6 +190,14 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     platform: "grok",
     parser_version: "grok-parser@2026-08-19.1",
     description: "Grok CLI sessions under ~/.grok/sessions/<encoded-cwd>/<session-id>/chat_history.jsonl, with summary.json metadata and updates/signals companions retained as evidence. Subagent sibling sessions are linked through parent/subagents/*/meta.json and summary session_kind.",
+    capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
+  },
+  hermes: {
+    id: "hermes:state-sqlite:v1",
+    family: "local_coding_agent",
+    platform: "hermes",
+    parser_version: "hermes-parser@2026-11-23.1",
+    description: "Hermes Agent profile SQLite stores ($HERMES_HOME/state.db, default ~/.hermes/state.db, named profiles under profiles/*): live session rows, full message history with reasoning and OpenAI-style tool calls, per-model session usage, and model_config lineage markers (delegate, branch, compression reset).",
     capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
   },
   deepseek_harness: {
@@ -320,6 +328,12 @@ const DEFAULT_SOURCE_SPECS: ReadonlyArray<
     family: "local_coding_agent",
     platform: "deepseek_harness",
     display_name: "DeepSeek Harness",
+  },
+  {
+    slot_id: "hermes",
+    family: "local_coding_agent",
+    platform: "hermes",
+    display_name: "Hermes Agent",
   },
 ];
 

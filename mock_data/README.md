@@ -78,6 +78,14 @@ OpenCode fixture coverage now captures the real-archive-backed storage split und
 - `storage/part/<message-id>/*.json` carries the user prompt text, assistant text, and tool traces that must not be dropped from evidence-preserving layers.
 - `storage/session_diff/*.json` and `storage/todo/*.json` remain explicit companion evidence so future parser decisions are regression-covered rather than guessed.
 
+SQLite fixtures are schema scripts rather than binary databases, so the exact
+table/part shape stays reviewable and no native store is copied:
+
+- `fixtures/opencode-sqlite/v2.sql` is the current `session_v2` / `session_message` / `session_part` shape, including a completed tool, a failed tool, system/shell rows, and a compaction row whose usage must stay out of assistant reply accounting.
+- `fixtures/opencode-sqlite/v1.sql` is the 1.2-era `session` / `message` / `part` shape with a delegated child and a file part carrying a data URL that must never become prompt text.
+- `fixtures/opencode-sqlite/v2-presplit.sql` is the pre-split v2 shape: metadata still in `session`, `session_message` without `seq`, and empty legacy `message`/`part` tables.
+- `fixtures/hermes/state.sql` is a sanitized Hermes Agent `state.db`: live message rows, hidden and rewound rows, collapsed reasoning, OpenAI-style tool calls, per-model session usage, and delegate/branch/reset lineage markers.
+
 > Full-fidelity Antigravity extraction on a real machine still requires the Antigravity desktop app to be running. Without the app, that is not way to recover raw prompts or real conversation turns.
 
 | Scenario | Apps | What A User Would Notice | Why A Naive Parser Gets It Wrong | Paths |

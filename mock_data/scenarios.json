@@ -734,5 +734,35 @@
       ".deepseek-harness/sessions/--Users-mock-user-workspace-dsh-demo--/session-fixture-dsh-main/session.v4.jsonl",
       ".deepseek-harness/sessions/--Users-mock-user-workspace-dsh-demo--/session-fixture-dsh-child/session.v4.jsonl"
     ]
+  },
+  {
+    "id": "opencode-sqlite-two-generations",
+    "apps": [
+      "OpenCode"
+    ],
+    "visible_cue": "Both OpenCode storage generations are covered: the 1.2-era session/message/part SQLite store and the current session_v2/session_message/session_part store, each with real user turns, tool evidence and token usage.",
+    "tricky": "Part payloads carry text, reasoning and tool state (completed content arrays and error objects); session parent_id links a delegated child, and a migrated install must not project leftover JSON copies of the same sessions.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/opencode-lab",
+      "/Users/mock_user/workspace/opencode-v2"
+    ],
+    "paths": [
+      "fixtures/opencode-sqlite/v1.sql",
+      "fixtures/opencode-sqlite/v2.sql"
+    ]
+  },
+  {
+    "id": "hermes-state-sqlite-lineage",
+    "apps": [
+      "Hermes Agent"
+    ],
+    "visible_cue": "One Hermes profile state.db holds a main session, a delegated child marked by model_config, and a compression continuation, with live messages, collapsed reasoning, OpenAI-style tool calls and per-model session usage.",
+    "tricky": "Only active rows are live; hidden display rows and rewound rows must not surface, delegate lineage is a delegated session while branch/reset lineage stays top-level, and usage exists only per session/model rather than per call.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/hermes-lab"
+    ],
+    "paths": [
+      "fixtures/hermes/state.sql"
+    ]
   }
 ]

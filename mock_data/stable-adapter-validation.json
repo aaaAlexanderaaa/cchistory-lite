@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "last_reviewed": "2026-04-02",
+  "last_reviewed": "2026-11-24",
   "stable_adapters": [
     {
       "platform": "amp",
@@ -154,11 +154,18 @@
       "probe_base_dir": ".local/share/opencode/storage",
       "scenario_ids": [
         "opencode-global-storage-parts",
-        "opencode-todo-companion"
+        "opencode-todo-companion",
+        "opencode-sqlite-two-generations"
       ],
       "validation_basis": [
         "sanitized_local_disk",
-        "real_archive_review"
+        "real_archive_review",
+        "synthetic_fixture_from_official_schema"
+      ],
+      "runtime_fixture_paths": [
+        "fixtures/opencode-sqlite/v1.sql",
+        "fixtures/opencode-sqlite/v2.sql",
+        "fixtures/opencode-sqlite/v2-presplit.sql"
       ]
     }
   ]

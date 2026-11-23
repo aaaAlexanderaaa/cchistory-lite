@@ -45,6 +45,9 @@ import { extractGeminiProjectKey, resolveGeminiRoot } from "../platforms/gemini.
 import { resolveKimiSessionDir } from "../platforms/kimi.js";
 import { parseKimiRecord as parseKimiRuntimeRecord } from "../platforms/kimi/runtime.js";
 import { iterateZcodeSqliteSeeds } from "../platforms/zcode/runtime.js";
+import { extractOpenCodeSqliteSeeds } from "../platforms/opencode/sqlite.js";
+import { extractHermesSqliteSeeds } from "../platforms/hermes/sqlite.js";
+import { parseHermesRecord as parseHermesRuntimeRecord } from "../platforms/hermes/runtime.js";
 import { extractDeepSeekHarnessSeeds } from "../platforms/deepseek-harness/reader.js";
 import { parseDeepSeekHarnessRecord as parseDeepSeekHarnessRuntimeRecord } from "../platforms/deepseek-harness/runtime.js";
 import {
@@ -443,6 +446,9 @@ export function parseRecord(
   if (context.source.platform === "deepseek_harness") {
     return parseDeepSeekHarnessRuntimeRecord(context, record, parsed, draft, buildCommonParseRuntimeHelpers());
   }
+  if (context.source.platform === "hermes") {
+    return parseHermesRuntimeRecord(context, record, parsed, draft, buildCommonParseRuntimeHelpers());
+  }
   if (context.source.platform === "grok") {
     applyGrokWorkspaceFromPath(context.filePath, draft, normalizeWorkspacePath);
     return parseGrokRuntimeRecord(context, record, parsed, draft, buildCommonParseRuntimeHelpers());
@@ -628,6 +634,12 @@ export async function extractMultiSessionSeeds(
   }
   if (source.platform === "deepseek_harness") {
     return extractDeepSeekHarnessSeeds(filePath, fileBuffer, budget);
+  }
+  if (source.platform === "opencode" && path.basename(filePath) === "opencode.db") {
+    return extractOpenCodeSqliteSeeds(filePath, { targetSessionRefs, budget });
+  }
+  if (source.platform === "hermes" && path.basename(filePath) === "state.db") {
+    return extractHermesSqliteSeeds(filePath, { targetSessionRefs, budget });
   }
   if (source.platform === "opencode" || source.platform === "gemini") {
     const exportSeeds = await extractConversationExportSeeds(source, filePath, fileBuffer, blobId);

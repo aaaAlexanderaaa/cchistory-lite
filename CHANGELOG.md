@@ -19,7 +19,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `subagent/catalog` evidence links delegated child sessions; unsupported
   physical format versions and malformed records are reported instead of
   guessed.
-
+- OpenCode native SQLite history: reads the current
+  `session_v2`/`session_message`/`session_part` store, the pre-split v2 store
+  (metadata in `session`, no `seq`), and the 1.2-era
+  `session`/`message`/`part` store read-only beside the legacy JSON tree, maps
+  parts to text/reasoning/tool evidence with token usage, links `parent_id`
+  delegated sessions, and suppresses a leftover JSON session only when the
+  SQLite store carries the same native session id, so empty or partial stores
+  leave JSON history readable.
+- Hermes Agent source adapter (`hermes`, experimental): reads read-only
+  `$HERMES_HOME/state.db` and `profiles/<name>/state.db` stores. Live message
+  rows supply user/assistant/tool evidence, OpenAI-style tool calls, collapsed
+  reasoning and `display_kind` filtering; per-model session usage keeps session
+  granularity; `model_config` lineage markers link delegated children while
+  branch and compression continuations stay top-level. Older stores without
+  title/model-config/usage tables still project their transcript.
 
 ## [0.8.3] - 2026-11-21
 

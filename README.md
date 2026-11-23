@@ -17,7 +17,7 @@ Published as [`@cchistory/lite`](https://www.npmjs.com/package/@cchistory/lite).
 | Agent `--json` | ✓ | — | ✓ |
 | Own database | **0** | 0 | SQLite index |
 | Semantic search | — | — | ✓ |
-| Sources | **18** | 29 | ~24 |
+| Sources | **19** | 29 | ~24 |
 | Search pays | every scan | GUI cache | disk index |
 
 ## Quick start
@@ -81,7 +81,7 @@ Each adapter is referenced by its slot id.
 | `antigravity` | Antigravity | `~/.gemini/antigravity/conversations/*.db` (history + token usage), platform Antigravity `User` dir, brain artifacts | stable |
 | `gemini` | Gemini CLI | `~/.gemini` | stable |
 | `openclaw` | OpenClaw | `~/.openclaw/agents` | stable |
-| `opencode` | OpenCode | `~/.local/share/opencode/storage` | stable |
+| `opencode` | OpenCode | `~/.local/share/opencode` (SQLite), `~/.local/share/opencode/storage` (legacy JSON) | stable |
 | `codebuddy` | CodeBuddy | `~/.codebuddy` | stable |
 | `lobechat` | LobeChat | `~/.config/lobehub-storage` | experimental |
 | `accio` | Accio Work | `~/.accio/accounts/<id>/agents` | experimental |
@@ -90,6 +90,7 @@ Each adapter is referenced by its slot id.
 | `grok` | Grok CLI | `~/.grok` | experimental |
 | `grok_bot` | Grok Bot | `~/agent-data`, `~/sand-data` | experimental |
 | `deepseek_harness` | DeepSeek Harness | `$DSH_HOME/sessions`, `~/.dsh/sessions` | experimental |
+| `hermes` | Hermes Agent | `$HERMES_HOME/state.db`, `~/.hermes` (profiles under `profiles/*`) | experimental |
 
 `cursor` still merges Agent CLI transcripts with composer/chat-store evidence
 when they share a native agent id.
@@ -120,6 +121,26 @@ as injected conversation context instead of becoming real user turns. A tagged
 fork-seed prefix belongs to the parent history and is not projected twice;
 subagent children are linked from the parent's `subagent/catalog` evidence.
 Older physical format versions are reported as unsupported rather than guessed.
+
+`opencode` reads the current SQLite store (`session_v2` / `session_message` /
+`session_part`), the pre-split v2 store (metadata still in `session`, no `seq`
+yet), the 1.2-era store (`session` / `message` / `part`), and the
+legacy `storage/{session,message,part}` JSON tree. When a migrated install still
+has JSON copies beside `opencode.db`, the store is read first and a leftover
+JSON session is skipped only when the store carries the same native session id,
+so an empty, partial or unreadable store never hides JSON-only history. Parts supply assistant text, reasoning,
+tool calls and results; session `parent_id` links delegated child sessions.
+
+`hermes` reads Hermes Agent profile stores (`state.db`, including
+`profiles/<name>/state.db`). Live transcript rows (`active = 1`) become
+conversation evidence; `display_kind = 'hidden'` and rewound rows are omitted.
+Reasoning columns stay collapsed as reasoning instead of becoming visible
+assistant text, OpenAI-style `tool_calls` become tool calls paired with their
+`role: tool` results, and `model_config` lineage markers distinguish delegated
+children (`_delegate_from`, linked under the parent) from branch/compression
+continuations (`_branched_from` / `_reset_from`, kept as their own top-level
+sessions). Hermes records usage per session/model, not per call, so those totals
+keep session granularity.
 
 `cursor_agent` is opt-in (`--source cursor_agent`) so a default scan does not
 emit those transcripts twice.

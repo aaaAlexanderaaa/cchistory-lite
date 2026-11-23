@@ -38,6 +38,7 @@ const fixtureRoots = {
   grok: "fixtures/grok-cli",
   grok_bot: "fixtures/grok-bot",
   deepseek_harness: ".deepseek-harness/sessions",
+  hermes: "fixtures/hermes",
 } as const;
 
 test("Codex accounting keeps text-less calls, compactions and call timestamps in every stats dimension", async () => {
@@ -1183,6 +1184,14 @@ async function prepareContextFixtureRoots(scratch: string): Promise<Record<strin
   const kimiMain = path.join(kimiSession, "agents", "main");
   const zcode = path.join(scratch, ".zcode");
   const zcodeDb = path.join(zcode, "cli", "db");
+  const hermes = path.join(scratch, "hermes");
+  await mkdir(hermes, { recursive: true });
+  const hermesDb = new DatabaseSync(path.join(hermes, "state.db"));
+  try {
+    hermesDb.exec(await readFile(path.join(mockDataRoot, "fixtures/hermes/state.sql"), "utf8"));
+  } finally {
+    hermesDb.close();
+  }
   await mkdir(geminiChats, { recursive: true });
   await mkdir(kimiMain, { recursive: true });
   await mkdir(zcodeDb, { recursive: true });
@@ -1203,6 +1212,7 @@ async function prepareContextFixtureRoots(scratch: string): Promise<Record<strin
     lobechat: path.join(fixtures, "lobechat"),
     kimi,
     zcode,
+    hermes,
   };
 }
 
@@ -2464,4 +2474,114 @@ test("Codex inherited embedded usage stays on the parent while child calls remai
   const child = snapshot.listResolvedSessions().find(session => session.source_session_id === "codex-delegation-child")!;
   assert.equal(child.turn_count, 0);
   assert.deepEqual(child.usage_events!.map(event => [event.turn_id, event.token_usage.total_tokens]), [[null, 11]]);
+});
+
+test("OpenCode SQLite stores project v1 and v2 sessions without projection issues", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-opencode-sqlite-"));
+  try {
+    const fixtureSql = await readFile(path.join(mockDataRoot, "fixtures/opencode-sqlite/v2.sql"), "utf8");
+    const db = new DatabaseSync(path.join(root, "opencode.db"));
+    try {
+      db.exec(fixtureSql);
+    } finally {
+      db.close();
+    }
+    const snapshot = await scanLiteHistory({
+      homeDir: path.join(mockDataRoot, "empty-home"),
+      sourceRefs: ["opencode"],
+      sourceRoots: [{ sourceRef: "opencode", baseDir: root }],
+      contextMode: "none",
+    });
+    assert.deepEqual(snapshot.projectionIssues, []);
+    assert.equal(snapshot.listResolvedSessions().length, 1);
+    const turns = snapshot.listResolvedTurns();
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0]?.canonical_text, "Compare the two OpenCode storage generations.");
+    const overview = snapshot.getUsageOverview({ timezone: "UTC" });
+    assert.equal(overview.total_tokens, 1_768);
+    assert.equal(overview.usage_event_count, 1);
+    assert.equal(snapshot.getReadStatus().loss_warning_count, 0);
+
+    const trace = snapshot.getSessionTrace({
+      sessionRef: snapshot.listResolvedSessions()[0]!.id,
+      filters: { timezone: "UTC" },
+    });
+    assert.equal(trace?.usage_granularity, "turn");
+    assert.equal(trace?.total_calls, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Hermes delegated children stay in the parent family while compression continuations remain top-level", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-hermes-family-"));
+  try {
+    const db = new DatabaseSync(path.join(root, "state.db"));
+    try {
+      db.exec(await readFile(path.join(mockDataRoot, "fixtures/hermes/state.sql"), "utf8"));
+    } finally {
+      db.close();
+    }
+    const snapshot = await scanLiteHistory({
+      homeDir: path.join(mockDataRoot, "empty-home"),
+      sourceRefs: ["hermes"],
+      sourceRoots: [{ sourceRef: "hermes", baseDir: root }],
+      contextMode: "none",
+    });
+    assert.deepEqual(snapshot.projectionIssues, []);
+    assert.deepEqual(
+      snapshot.listTopLevelSessions().map((session) => session.source_session_id).sort(),
+      ["sess_fixture_hermes_main", "sess_fixture_hermes_reset"],
+      "the delegated child is addressable through its parent, not as a top-level session",
+    );
+    const parent = snapshot.listResolvedSessions().find((session) => session.source_session_id === "sess_fixture_hermes_main")!;
+    assert.ok(
+      snapshot.listSessionRelatedWork(parent.id).some((entry) =>
+        entry.relation_kind === "delegated_session" && entry.child_session_ref?.includes("sess_fixture_hermes_child")),
+    );
+    assert.equal(snapshot.getUsageOverview({ timezone: "UTC" }).total_tokens, 3_881);
+    assert.equal(snapshot.getReadStatus().loss_warning_count, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode v1 and pre-split SQLite stores project without issues and keep delegated children resolvable", async () => {
+  for (const fixture of ["v1.sql", "v2-presplit.sql"]) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `cchistory-opencode-${fixture}-`));
+    try {
+      const db = new DatabaseSync(path.join(root, "opencode.db"));
+      try {
+        db.exec(await readFile(path.join(mockDataRoot, "fixtures/opencode-sqlite", fixture), "utf8"));
+      } finally {
+        db.close();
+      }
+      const snapshot = await scanLiteHistory({
+        homeDir: path.join(mockDataRoot, "empty-home"),
+        sourceRefs: ["opencode"],
+        sourceRoots: [{ sourceRef: "opencode", baseDir: root }],
+        contextMode: "none",
+      });
+      assert.deepEqual(snapshot.projectionIssues, [], fixture);
+      if (fixture === "v1.sql") {
+        assert.equal(snapshot.listTopLevelSessions().length, 1, fixture);
+        assert.equal(snapshot.listResolvedSessions().length, 2, fixture);
+        assert.equal(snapshot.listResolvedTurns().length, 2, fixture);
+        assert.equal(snapshot.getUsageOverview({ timezone: "UTC" }).total_tokens, 1_423, fixture);
+        const parent = snapshot.listTopLevelSessions()[0]!;
+        assert.ok(
+          snapshot.listSessionRelatedWork(parent.id).some((entry) =>
+            entry.relation_kind === "delegated_session" && entry.child_session_ref?.includes("ses_fixture_v1_child")),
+          fixture,
+        );
+      } else {
+        assert.equal(snapshot.listResolvedSessions().length, 1, fixture);
+        assert.equal(snapshot.listResolvedTurns().length, 1, fixture);
+        assert.equal(snapshot.getUsageOverview({ timezone: "UTC" }).total_tokens, 840, fixture);
+        assert.equal(snapshot.getReadStatus().loss_warning_count, 0, fixture);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
 });

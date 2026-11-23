@@ -520,7 +520,40 @@ async function* streamCollectedFileInputs(
   });
 
   const preferredGrokBotAgents = new Set<string>();
+  const opencodeSqliteSessionIds = new Set<string>();
   for (const [fileIndex, filePath] of files.entries()) {
+    if (source.platform === "opencode" && isOpenCodeLegacySessionFile(filePath)) {
+      const nativeSessionId = path.basename(filePath, path.extname(filePath));
+      if (opencodeSqliteSessionIds.has(nativeSessionId)) {
+        emitProbeProgress(options, source, {
+          stage: "file_skip",
+          message: `Skipped legacy JSON session already covered by the OpenCode SQLite store: ${filePath}`,
+          file_path: filePath,
+          file_index: fileIndex + 1,
+          file_count: files.length,
+        });
+        yield {
+          originPath: filePath,
+          sessionInputs: [],
+          orphanBlobs: [],
+          lossAudits: [createLossAudit(
+            source.id,
+            stableId("blob", source.id, filePath, "opencode-sqlite-covered"),
+            "dropped_for_projection",
+            `Legacy JSON session ${nativeSessionId} is covered by the OpenCode SQLite store; the native identity is projected once.`,
+            {
+              stageKind: "extract_records",
+              diagnosticCode: "opencode_sqlite_supersedes_legacy_json",
+              severity: "info",
+              sourceFormatProfileId: sourceFormatProfile.id,
+            },
+          )],
+          trustedBytesByBlobId: new Map(),
+          skipReason: "superseded",
+        };
+        continue;
+      }
+    }
     const grokBotAgentId = source.platform === "grok_bot" ? parseGrokBotAgentIdFromPath(filePath) : undefined;
     if (grokBotAgentId && isGrokBotTranscriptPath(filePath) && preferredGrokBotAgents.has(grokBotAgentId)) {
       emitProbeProgress(options, source, {
@@ -554,6 +587,13 @@ async function* streamCollectedFileInputs(
       if (source.platform === "antigravity" && isAntigravityConversationDatabase(filePath)) {
         for (const input of collected.sessionInputs) if (hasAntigravitySqliteConversation(input)) {
           sqliteSessionIds.add(input.draft.id.replace(/^sess:antigravity:/u, ""));
+        }
+      }
+      if (source.platform === "opencode" && path.basename(filePath) === "opencode.db") {
+        for (const input of collected.sessionInputs) {
+          const nativeSessionId = input.draft.source_session_id
+            ?? input.draft.id.replace(/^sess:opencode:/u, "");
+          if (nativeSessionId) opencodeSqliteSessionIds.add(nativeSessionId);
         }
       }
       yield collected;
@@ -861,6 +901,7 @@ async function* streamSingleFileInputs(
       : []);
     const sessionsById = new Map<string, SessionBuildInput>();
     const targetedResults = source.platform !== "antigravity" && options.target_session_refs?.length
+      && !sourceFileHandlesSessionTargets(source.platform, filePath)
       ? adapterResults.filter((result) =>
           options.target_session_refs!.some((ref) =>
             targetRefMatchesSession(ref, result.draft.id, result.draft.source_session_id),
@@ -1025,6 +1066,20 @@ async function selectTargetSourceFiles(
   return selected;
 }
 
+/** Container adapters that filter native rows themselves keep related children. */
+function sourceFileHandlesSessionTargets(platform: SourcePlatform, filePath: string): boolean {
+  const basename = path.basename(filePath);
+  return (
+    (platform === "opencode" && basename === "opencode.db") ||
+    (platform === "hermes" && basename === "state.db")
+  );
+}
+
+function isOpenCodeLegacySessionFile(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/gu, "/");
+  return normalized.includes("/storage/session/") && normalized.toLowerCase().endsWith(".json");
+}
+
 function isMultiSessionContainer(platform: SourcePlatform, filePath: string): boolean {
   const basename = path.basename(filePath);
   if (
@@ -1038,6 +1093,8 @@ function isMultiSessionContainer(platform: SourcePlatform, filePath: string): bo
     (platform === "openclaw" && isOpenClawCronRunFile(filePath)) ||
     platform === "zcode" ||
     platform === "lobechat" ||
+    (platform === "opencode" && basename === "opencode.db") ||
+    (platform === "hermes" && basename === "state.db") ||
     (platform === "grok_bot" && basename === "store.db") ||
     ((platform === "cursor" || platform === "antigravity") &&
       (basename === "state.vscdb" || basename === "store.db"))
@@ -1052,6 +1109,12 @@ function isPathBackedSqliteSourceFile(platform: SourcePlatform, filePath: string
   }
   if (platform === "grok_bot") {
     return basename === "store.db";
+  }
+  if (platform === "opencode") {
+    return basename === "opencode.db";
+  }
+  if (platform === "hermes") {
+    return basename === "state.db";
   }
   return (
     (platform === "cursor" || platform === "antigravity") &&
@@ -2252,7 +2315,12 @@ async function tryProcessPathOpenedContainer(
   }
   const results: AdapterBlobResult[] = [];
   for (const seed of multiSessionSeeds) {
-    if (source.platform !== "antigravity" && targetSessionRefs?.length && !targetSessionRefs.some(ref => targetRefMatchesSession(ref, seed.sessionId))) continue;
+    if (
+      source.platform !== "antigravity" &&
+      targetSessionRefs?.length &&
+      !sourceFileHandlesSessionTargets(source.platform, filePath) &&
+      !targetSessionRefs.some(ref => targetRefMatchesSession(ref, seed.sessionId))
+    ) continue;
     results.push(
       buildAdapterBlobResult(
         source,
@@ -2283,7 +2351,7 @@ async function tryProcessPathOpenedContainer(
           working_directory: seed.workingDirectory,
         },
         (seed.diagnostics ?? []).map(diagnostic => createLossAudit(source.id, blobId, "unknown_fragment", diagnostic.detail, {
-          stageKind: "extract_records", diagnosticCode: diagnostic.code, severity: "warning",
+          stageKind: "extract_records", diagnosticCode: diagnostic.code, severity: diagnostic.severity ?? "warning",
           sessionRef: seed.sessionId, blobRef: blobId, sourceFormatProfileId: sourceFormatProfile.id,
         })),
         retainRawRecords,

@@ -3,8 +3,9 @@
 ## Current work — 2026-11-23 Source compatibility expansion
 
 Status: source inventory, pinned-reference investigation and Ask ChatGPT research complete.
-Step 2's first source (DeepSeek Harness) is implemented and verified; OpenCode SQLite
-compatibility, Hermes, and Pi/Oh My Pi remain proposed. The registered source count is 18.
+DeepSeek Harness and Hermes Agent (new sources) plus OpenCode SQLite compatibility
+(existing stable source) are implemented and verified; Pi/Oh My Pi remain proposed.
+The registered source count is 19.
 
 Owner request (verbatim):
 > 知名度	可信度	数据源5	高	OpenCode、Claude Code、Codex CLI、Cursor IDE、Google Antigravity5	中	OpenClaw、Hermes Agent、Gemini CLI、DeepSeek Harness4	高	Pi、Kilo、Warp / Oz、Cline、Mistral Vibe4	中	GitHub Copilot CLI、Oh My Pi、Qwen Code、Crush、Goose、Cherry Studio、Hindsight、OpenCodeReview
@@ -148,6 +149,106 @@ Projection/coverage limits: current v4 only; fork-seed inherited prefixes are
 intentionally not re-projected; image/file attachment content is not projected as
 text; the offline price catalog does not yet list the harness-local model ids, so
 those calls stay unpriced.
+
+### Delivery record — OpenCode SQLite compatibility (2026-11-23)
+
+Status: implemented and verified in the working tree; not committed or released.
+
+Implemented slice:
+
+- `packages/source-adapters/src/platforms/opencode/sqlite.ts` reads two native SQLite
+  generations read-only: the 1.2-era `session`/`message`/`part` store and the current
+  `session_v2`/`session_message`/`session_part` store. Message and part rows are
+  projected into the adapter's generic records (text, reasoning, tool call/result with
+  native error status, message usage and model), while session metadata, title,
+  directory and `parent_id` delegation come from the session table.
+- `platforms/opencode.ts` discovers the SQLite store beside the legacy JSON tree
+  (`~/.local/share/opencode`, plus `$XDG_DATA_HOME/opencode`), declares hybrid
+  targeting, and keeps a migrated SQLite store authoritative so leftover JSON copies
+  are not projected twice. `core/probe.ts` treats `opencode.db` as a path-backed
+  container; `core/parser.ts` dispatches its seeds; `core/discovery.ts` records the
+  combined format profile. The legacy JSON parser and its companion evidence remain
+  unchanged for users who have not migrated.
+- Evidence: `mock_data/fixtures/opencode-sqlite/v1.sql` and `v2.sql`, one scenario,
+  five adapter tests (v1 projection, v2 parts/usage/errors, targeted reads, mixed
+  install preference, unknown schema refusal), and a live-runtime SQLite projection
+  test asserting zero projection issues, turn/usage parity and trace granularity.
+
+Verification (2026-11-23, runtime 0.8.3): `pnpm run build:lite` passed. The `pnpm test`
+body (`pnpm run verify:lite`) passed **909 package tests** (`@cchistory/domain` 103,
+`@cchistory/canonical` 184, `@cchistory/source-adapters` 304,
+`@cchistory/live-runtime` 138, `@cchistory/lite-cli` 79,
+`@cchistory/lite-tui` 101), 4 catalog tests and dependency boundaries.
+`verify:governance` passed (14 JS tests, 5 Python tests, 5 architecture rules across
+158 matches, 38 docs / 18 adapters, 29 advisories). `mock-data:validate` passed
+across 204 files; `verify:lite-artifact` passed for the standalone tarball and local
+npm installation. `git diff --check` passed.
+
+Projection/coverage limits: SQLite rows without a parseable `data` payload are
+reported per column family; reasoning parts share the generic text path, so they are
+retained as assistant text rather than a separate collapsed channel; v2 `session_part`
+rows are preferred over inline `content` when both exist and inline content is used
+only when no part rows are stored.
+
+Review correction (2026-11-24): an independent review requested changes on six
+boundaries. The slice now detects pre-split v2 stores (`session_message` first,
+metadata in `session`, missing `seq` falls back to time/id ordering), opens one
+read transaction for admission and retrieval, filters targeted sessions before
+loading messages (and includes direct children for a parent target), keeps
+compaction tokens out of assistant reply accounting while retaining the summary
+as collapsed evidence, preserves system/synthetic/skill/shell and unknown-part
+evidence with diagnostics instead of silently dropping it, labels file parts from
+`filename`/`mime` rather than a data URL, and reads the SQLite store before
+suppressing only the legacy JSON sessions whose native id it actually covers
+(empty or partial stores leave JSON history readable). The stable validation
+manifest records the SQL fixtures and the new scenario; v1, pre-split, compaction
+and identity-precedence cases have adapter and live-runtime coverage.
+
+### Delivery record — Hermes Agent (2026-11-24)
+
+Status: implemented and verified in the working tree; not committed or released.
+
+Implemented slice:
+
+- `packages/source-adapters/src/platforms/hermes.ts` registers the experimental
+  `hermes` source: `$HERMES_HOME/state.db`, `~/.hermes`, and Windows app-data
+  roots, with named profile stores under `profiles/<name>/state.db` reached by
+  the directory walk.
+- `packages/source-adapters/src/platforms/hermes/sqlite.ts` reads the store
+  read-only in one transaction with budgeted queries. It selects optional
+  columns by `PRAGMA table_info` (older stores without `title`/`model_config`/
+  usage tables still project), reads only `active = 1` transcript rows, skips
+  `display_kind = 'hidden'`, decodes the reserved `\x00json:` structured
+  content prefix, and pairs OpenAI-style `tool_calls` with `role = tool` rows.
+- `packages/source-adapters/src/platforms/hermes/runtime.ts` keeps message
+  semantics: user prompts, assistant text, collapsed reasoning channels
+  (`reasoning`/`reasoning_content`), tool calls/results, shell evidence, and
+  per-model session usage (Hermes never records per-call usage). `model_config`
+  lineage markers distinguish delegated children (`_delegate_from`, linked as
+  delegated work) from branch/compression continuations (`_branched_from` /
+  `_reset_from`, kept top-level with an info diagnostic).
+- Evidence: `mock_data/fixtures/hermes/state.sql`, one scenario, six adapter
+  tests (registration/discovery, profile stores, full projection, targeted
+  reads, older schema, unknown schema), the live-runtime fixture matrix and a
+  family/usage test (delegated child hidden from the top level, compression
+  continuation visible, 3,881 session tokens).
+
+Verification (2026-11-24, runtime 0.8.3): `pnpm run build:lite` passed. The
+`pnpm test` body (`pnpm run verify:lite`) passed **909 package tests**, 4 catalog
+tests and dependency boundaries. `verify:governance` passed (14 JS tests, 5
+Python tests, 5 architecture rules across 161 matches, 38 docs / 19 adapters,
+30 advisories). `mock-data:validate` passed across 204 files;
+`verify:lite-artifact` passed for the standalone tarball and local npm
+installation; `git diff --check` passed. CLI smoke reads produced the OpenCode
+v2 session (1,768 tokens) and both top-level Hermes sessions (2 turns / 3,000
+tokens with one subagent, and the compression continuation) with correct
+projects and models.
+
+Projection/coverage limits: only live (`active = 1`) transcript rows are
+projected, so compaction-archived and rewound rows stay as native evidence;
+usage keeps session/model granularity and is attributed to the session's replies
+as a whole; tool results carry no native error flag, so `is_error` is not
+invented.
 
 ## Previous work — 2026-11-21 Per-call usage telemetry, anomaly diagnostics, and `trace`
 
