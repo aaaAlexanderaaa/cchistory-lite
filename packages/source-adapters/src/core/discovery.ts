@@ -192,6 +192,14 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     description: "Grok CLI sessions under ~/.grok/sessions/<encoded-cwd>/<session-id>/chat_history.jsonl, with summary.json metadata and updates/signals companions retained as evidence. Subagent sibling sessions are linked through parent/subagents/*/meta.json and summary session_kind.",
     capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
   },
+  deepseek_harness: {
+    id: "deepseek_harness:session-jsonl:v1",
+    family: "local_coding_agent",
+    platform: "deepseek_harness",
+    parser_version: "deepseek-harness-parser@2026-11-23.1",
+    description: "DeepSeek Harness per-session durability logs under $DSH_HOME/sessions (default ~/.dsh/sessions): session.vN.jsonl or session.vN.jsonl.zstd with a session header and one JSONL record per durable event. Assistant messages carry per-call usage; fork-seed and subagent catalog evidence remain separate.",
+    capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
+  },
   grok_bot: {
     id: "grok_bot:agent-store:v1",
     family: "local_coding_agent",
@@ -306,6 +314,12 @@ const DEFAULT_SOURCE_SPECS: ReadonlyArray<
     family: "local_coding_agent",
     platform: "grok_bot",
     display_name: "Grok Bot",
+  },
+  {
+    slot_id: "deepseek_harness",
+    family: "local_coding_agent",
+    platform: "deepseek_harness",
+    display_name: "DeepSeek Harness",
   },
 ];
 

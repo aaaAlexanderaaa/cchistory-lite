@@ -26,10 +26,13 @@ export type SupportedSourcePlatform =
   | "kimi"
   | "cursor_agent"
   | "grok"
-  | "grok_bot";
+  | "grok_bot"
+  | "deepseek_harness";
 
 export interface DefaultSourceResolutionOptions {
   homeDir?: string;
+  /** Environment consulted by adapters with a documented home override. */
+  env?: NodeJS.ProcessEnv;
   hostname?: string;
   platform?: NodeJS.Platform;
   appDataDir?: string;
@@ -77,6 +80,7 @@ export function isSupportedSourcePlatform(platform: SourcePlatform): platform is
     platform === "kimi" ||
     platform === "cursor_agent" ||
     platform === "grok" ||
-    platform === "grok_bot"
+    platform === "grok_bot" ||
+    platform === "deepseek_harness"
   );
 }

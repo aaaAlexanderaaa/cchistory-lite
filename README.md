@@ -17,7 +17,7 @@ Published as [`@cchistory/lite`](https://www.npmjs.com/package/@cchistory/lite).
 | Agent `--json` | ✓ | — | ✓ |
 | Own database | **0** | 0 | SQLite index |
 | Semantic search | — | — | ✓ |
-| Sources | **17** | 29 | ~24 |
+| Sources | **18** | 29 | ~24 |
 | Search pays | every scan | GUI cache | disk index |
 
 ## Quick start
@@ -89,6 +89,7 @@ Each adapter is referenced by its slot id.
 | `kimi` | Kimi Code | `~/.kimi-code` | experimental |
 | `grok` | Grok CLI | `~/.grok` | experimental |
 | `grok_bot` | Grok Bot | `~/agent-data`, `~/sand-data` | experimental |
+| `deepseek_harness` | DeepSeek Harness | `$DSH_HOME/sessions`, `~/.dsh/sessions` | experimental |
 
 `cursor` still merges Agent CLI transcripts with composer/chat-store evidence
 when they share a native agent id.
@@ -108,6 +109,17 @@ commits. Titles prefer
 `profile.json`, then `SAND_AGENT_PROFILE_UPDATE`, then the first real user message;
 canonical titles apply the shared masking rules before display truncation.
 Grok Bot hidden-prompt markers and native title tags are interpreted only for this source.
+
+`deepseek_harness` reads the current `session.vN.jsonl` or `session.vN.jsonl.zstd`
+generation (v4) under each session directory. Checksummed Zstandard frames are
+decoded in-process; a truncated trailing frame from a crashed writer keeps its
+complete predecessor records and records a read diagnostic. Assistant messages
+carry per-call usage, so cache-hit and cost diagnostics keep call granularity.
+Injected harness context, including skill and time reminders, stays collapsed
+as injected conversation context instead of becoming real user turns. A tagged
+fork-seed prefix belongs to the parent history and is not projected twice;
+subagent children are linked from the parent's `subagent/catalog` evidence.
+Older physical format versions are reported as unsupported rather than guessed.
 
 `cursor_agent` is opt-in (`--source cursor_agent`) so a default scan does not
 emit those transcripts twice.

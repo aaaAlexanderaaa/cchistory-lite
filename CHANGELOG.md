@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- DeepSeek Harness source adapter (`deepseek_harness`, experimental): reads the
+  current `session.v4.jsonl` / `session.v4.jsonl.zstd` durability log under
+  `$DSH_HOME/sessions` (default `~/.dsh/sessions`). Concatenated Zstandard
+  frames are decoded in-process with a truncated-tail recovery diagnostic;
+  assistant messages supply per-call usage, native tool error status, and
+  reasoning; injected harness context stays collapsed as injected user
+  messages; tagged fork-seed prefixes are not projected twice; parent
+  `subagent/catalog` evidence links delegated child sessions; unsupported
+  physical format versions and malformed records are reported instead of
+  guessed.
+
+
 ## [0.8.3] - 2026-11-21
 
 ### Added

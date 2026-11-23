@@ -1,0 +1,29 @@
+{"type":"session","version":4,"id":"session-fixture-dsh-main","createdAt":1790931600000,"cwd":"/Users/mock_user/workspace/dsh-demo","isSeeded":false,"delegationDepth":0,"agentPreset":"standard"}
+{"type":"permission/preset","seq":0,"time":1790931600000,"data":{"preset":"workspace-write"}}
+{"type":"sandbox/mode","seq":1,"time":1790931600100,"data":{"mode":"workspace-write"}}
+{"type":"turn/start","seq":2,"time":1790931601000,"data":{"turn":1}}
+{"type":"step/start","seq":3,"time":1790931601100,"data":{"turn":1,"step":1}}
+{"type":"system/message","seq":4,"time":1790931601200,"data":{"turn":1,"step":1,"message":{"role":"system","id":"msg-system","source":{"kind":"system-prompt"},"content":[{"type":"text","text":"You are a coding agent. Read files before editing them."}]}}}
+{"type":"user/message","seq":5,"time":1790931601300,"data":{"content":[{"type":"text","text":"Find the retry helper and explain its backoff."}],"source":{"kind":"user","rpcId":"rpc-fixture-1","clientTimeZone":"Asia/Shanghai"},"role":"user","id":"msg-user-1"}}
+{"type":"user/message","seq":6,"time":1790931601400,"data":{"content":[{"type":"text","text":"<system-reminder>Runtime context for this turn.</system-reminder>"}],"source":{"kind":"runtime-context","form":"snapshot","sections":[{"name":"working-directory:current","text":"Current working directory: \"/Users/mock_user/workspace/dsh-demo\"."}]},"role":"user","id":"msg-context-1"}}
+{"type":"request/context","seq":7,"time":1790931601500,"data":{"provider":"deepseek","model":"deepseek-v4-pro","contextWindow":200000}}
+{"type":"assistant/message","seq":8,"time":1790931602000,"data":{"turn":1,"step":1,"message":{"role":"assistant","id":"msg-assistant-1","source":{"kind":"model","provider":"deepseek","model":"deepseek-v4-pro"},"content":[{"type":"reasoning","text":"The prompt names a retry helper; search the source tree first."},{"type":"text","text":"I'll read the retry module."},{"type":"tool-call","id":"call-read-1","name":"read","arguments":"{\"path\":\"src/retry.ts\"}"}]},"usage":{"inputTokens":1200,"outputTokens":180,"totalTokens":21860,"cacheReadTokens":20480}}}
+{"type":"tool/call","seq":9,"time":1790931602100,"data":{"turn":1,"step":1,"callId":"call-read-1","name":"read","arguments":"{\"path\":\"src/retry.ts\"}"}}
+{"type":"job/registered","seq":10,"time":1790931602200,"data":{"jobId":"job-1","kind":"read","label":"src/retry.ts","startedAt":1790931602100,"toolCall":{"callId":"call-read-1","rootCallId":"call-read-1"}}}
+{"type":"job/settled","seq":11,"time":1790931602400,"data":{"jobId":"job-1","kind":"read","label":"src/retry.ts","startedAt":1790931602100,"finishedAt":1790931602400,"status":"completed","cause":"producer","producerReported":true}}
+{"type":"tool/result","seq":12,"time":1790931602500,"data":{"turn":1,"step":1,"message":{"role":"tool","id":"msg-tool-1","source":{"kind":"tool","callId":"call-read-1"},"toolCallId":"call-read-1","content":[{"type":"text","text":"export function backoff(attempt: number) { return Math.min(30000, 500 * 2 ** attempt); }"}],"isError":false},"meta":{"cwd":"/Users/mock_user/workspace/dsh-demo"}}}
+{"type":"step/end","seq":13,"time":1790931603000,"data":{"turn":1,"step":1}}
+{"type":"step/start","seq":14,"time":1790931603100,"data":{"turn":1,"step":2}}
+{"type":"assistant/message","seq":15,"time":1790931604000,"data":{"turn":1,"step":2,"message":{"role":"assistant","id":"msg-assistant-2","source":{"kind":"model","provider":"deepseek","model":"deepseek-v4-pro"},"content":[{"type":"text","text":"The backoff starts at 500 ms and doubles per attempt, capped at 30 s."}]},"usage":{"inputTokens":340,"outputTokens":96,"totalTokens":22536,"cacheReadTokens":22100}}}
+{"type":"step/end","seq":16,"time":1790931604100,"data":{"turn":1,"step":2}}
+{"type":"turn/end","seq":17,"time":1790931604200,"data":{"turn":1,"reason":{"kind":"completed"}}}
+{"type":"session/title","seq":18,"time":1790931604300,"data":{"title":"Retry backoff helper","messageSeqs":[3],"source":{"kind":"llm"}}}
+{"type":"turn/start","seq":19,"time":1790931605000,"data":{"turn":2}}
+{"type":"step/start","seq":20,"time":1790931605100,"data":{"turn":2,"step":1}}
+{"type":"user/message","seq":21,"time":1790931605200,"data":{"content":[{"type":"text","text":"Now show the timeout constant."}],"source":{"kind":"user","rpcId":"rpc-fixture-2","clientTimeZone":"Asia/Shanghai"},"role":"user","id":"msg-user-2"}}
+{"type":"assistant/message","seq":22,"time":1790931606000,"data":{"turn":2,"step":1,"message":{"role":"assistant","id":"msg-assistant-3","source":{"kind":"model","provider":"deepseek","model":"deepseek-v4-pro"},"content":[{"type":"text","text":"The timeout constant is 30 s."},{"type":"tool-call","id":"call-bash-1","name":"bash","arguments":"{\"command\":\"rg TIMEOUT_MS src/retry.ts\"}"}]},"usage":{"inputTokens":620,"outputTokens":54,"totalTokens":22684,"cacheReadTokens":22010}}}
+{"type":"tool/call","seq":23,"time":1790931606100,"data":{"turn":2,"step":1,"callId":"call-bash-1","name":"bash","arguments":"{\"command\":\"rg TIMEOUT_MS src/retry.ts\"}"}}
+{"type":"tool/result","seq":24,"time":1790931606500,"data":{"turn":2,"step":1,"message":{"role":"tool","id":"msg-tool-2","source":{"kind":"tool","callId":"call-bash-1"},"toolCallId":"call-bash-1","content":[{"type":"text","text":"Command failed: ripgrep exited with status 2"}],"isError":true},"error":{"name":"ToolError","code":"COMMAND_FAILED","reason":"ripgrep exited with status 2"},"meta":{"cwd":"/Users/mock_user/workspace/dsh-demo"}}}
+{"type":"step/end","seq":25,"time":1790931606600,"data":{"turn":2,"step":1}}
+{"type":"turn/end","seq":26,"time":1790931606700,"data":{"turn":2,"reason":{"kind":"completed"}}}
+{"type":"subagent/catalog","seq":27,"time":1790931607000,"data":{"version":3,"childId":"session-fixture-dsh-child","childCreatedAt":1790931606200,"mode":"one-shot","name":"explorer","label":"Explore retry module"}}

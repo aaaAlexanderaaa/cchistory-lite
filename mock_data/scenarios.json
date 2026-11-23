@@ -719,5 +719,20 @@
       "fixtures/antigravity-sqlite/conversations/bbbbbbbb-cccc-4ddd-8eee-ffffffffee22.db",
       "fixtures/antigravity-sqlite/conversations/cccccccc-dddd-4eee-8fff-11111111ee33.db"
     ]
+  },
+  {
+    "id": "deepseek-harness-turn-usage",
+    "apps": [
+      "DeepSeek Harness"
+    ],
+    "visible_cue": "One DeepSeek Harness session answers two prompts with per-call token accounting, an injected runtime-context reminder, one failed tool result, and a cataloged subagent child session.",
+    "tricky": "The log is event-sourced: assistant text, tool calls, and usage live in separate rows, while the child prompt is a real user message reached only through the parent catalog.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/dsh-demo"
+    ],
+    "paths": [
+      ".deepseek-harness/sessions/--Users-mock-user-workspace-dsh-demo--/session-fixture-dsh-main/session.v4.jsonl",
+      ".deepseek-harness/sessions/--Users-mock-user-workspace-dsh-demo--/session-fixture-dsh-child/session.v4.jsonl"
+    ]
   }
 ]

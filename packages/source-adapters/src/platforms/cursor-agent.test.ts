@@ -25,6 +25,7 @@ test("[cursor_agent] default discovery stays opt-in so cursor does not double-sc
       homeDir: tempRoot,
       hostname: "cursor-agent-default-host",
       platform: "darwin",
+      env: {},
     });
     assert.deepEqual(discovered.map((source) => source.platform), ["cursor"]);
 
@@ -33,6 +34,7 @@ test("[cursor_agent] default discovery stays opt-in so cursor does not double-sc
       hostname: "cursor-agent-default-host",
       platform: "darwin",
       includeMissing: true,
+      env: {},
     });
     const cursorAgent = optedIn.find((source) => source.platform === "cursor_agent");
     assert.ok(cursorAgent);

@@ -73,6 +73,19 @@ export function extractSourceSessionId(platform: SourcePlatform, filePath: strin
     }
   }
 
+  if (platform === "deepseek_harness") {
+    // Layout: <root>/<project>/<session-id>/session[.vN].jsonl[.zstd].
+    const normalized = filePath.replace(/\\/gu, "/");
+    const match = normalized.match(/\/sessions\/[^/]+\/([^/]+)\/session(?:\.v\d+)?\.jsonl(?:\.zstd)?$/u);
+    if (match?.[1]) {
+      return match[1];
+    }
+    const directory = path.basename(path.dirname(filePath));
+    if (directory && directory !== "." && directory !== "/") {
+      return directory;
+    }
+  }
+
   if (platform === "gemini") {
     try {
       const parsed = JSON.parse(fileBuffer.toString("utf8")) as Record<string, unknown>;

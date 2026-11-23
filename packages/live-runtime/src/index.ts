@@ -174,6 +174,8 @@ export interface ResolveLiteSourcesOptions {
   hostname?: string;
   platform?: NodeJS.Platform;
   appDataDir?: string;
+  /** Environment consulted by adapters with a documented home override. */
+  env?: NodeJS.ProcessEnv;
   sourceRefs?: readonly string[];
   sourceRoots?: readonly LiteSourceRoot[];
 }
@@ -2067,6 +2069,7 @@ export async function resolveLiteSources(options: ResolveLiteSourcesOptions = {}
     hostname: options.hostname,
     platform: options.platform,
     appDataDir: options.appDataDir,
+    env: options.env,
   };
   const discoveredRoster = getDefaultSourcesForHost(discoveryOptions);
   const completeRoster = getDefaultSourcesForHost({

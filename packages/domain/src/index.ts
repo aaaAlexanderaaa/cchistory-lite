@@ -21,6 +21,7 @@ export type SourcePlatform =
   | "cursor_agent"
   | "grok"
   | "grok_bot"
+  | "deepseek_harness"
   | "other";
 
 export type LinkState = "committed" | "candidate" | "unlinked";

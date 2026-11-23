@@ -45,6 +45,8 @@ import { extractGeminiProjectKey, resolveGeminiRoot } from "../platforms/gemini.
 import { resolveKimiSessionDir } from "../platforms/kimi.js";
 import { parseKimiRecord as parseKimiRuntimeRecord } from "../platforms/kimi/runtime.js";
 import { iterateZcodeSqliteSeeds } from "../platforms/zcode/runtime.js";
+import { extractDeepSeekHarnessSeeds } from "../platforms/deepseek-harness/reader.js";
+import { parseDeepSeekHarnessRecord as parseDeepSeekHarnessRuntimeRecord } from "../platforms/deepseek-harness/runtime.js";
 import {
   extractGrokBotStoreSeeds,
   loadGrokBotProfileTitleForSourceFile,
@@ -438,6 +440,9 @@ export function parseRecord(
   if (context.source.platform === "kimi") {
     return parseKimiRuntimeRecord(context, record, parsed, draft, buildCommonParseRuntimeHelpers());
   }
+  if (context.source.platform === "deepseek_harness") {
+    return parseDeepSeekHarnessRuntimeRecord(context, record, parsed, draft, buildCommonParseRuntimeHelpers());
+  }
   if (context.source.platform === "grok") {
     applyGrokWorkspaceFromPath(context.filePath, draft, normalizeWorkspacePath);
     return parseGrokRuntimeRecord(context, record, parsed, draft, buildCommonParseRuntimeHelpers());
@@ -620,6 +625,9 @@ export async function extractMultiSessionSeeds(
       nowIso,
       truncate,
     }, targetSessionRefs, budget);
+  }
+  if (source.platform === "deepseek_harness") {
+    return extractDeepSeekHarnessSeeds(filePath, fileBuffer, budget);
   }
   if (source.platform === "opencode" || source.platform === "gemini") {
     const exportSeeds = await extractConversationExportSeeds(source, filePath, fileBuffer, blobId);

@@ -53,6 +53,7 @@ ALLOWED_FILE_PATTERNS = [
     re.compile(r"fixtures/context-boundary/lobechat/export\.json"),
     re.compile(r"fixtures/context-boundary/kimi/(?:wire\.jsonl|state\.json)"),
     re.compile(r"fixtures/context-boundary/zcode/fixture\.sql"),
+    re.compile(r"\.deepseek-harness/sessions/[^/]+/[^/]+/session(?:\.v\d+)?\.jsonl"),
     re.compile(r"\.codex/history\.jsonl"),
     re.compile(r"\.codex/sessions/\d{4}/\d{2}/\d{2}/rollout-[^/]+\.jsonl"),
     re.compile(r"\.codebuddy/settings\.json"),

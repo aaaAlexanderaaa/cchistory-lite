@@ -37,6 +37,7 @@ const fixtureRoots = {
   cursor_agent: "fixtures/cursor-agent",
   grok: "fixtures/grok-cli",
   grok_bot: "fixtures/grok-bot",
+  deepseek_harness: ".deepseek-harness/sessions",
 } as const;
 
 test("Codex accounting keeps text-less calls, compactions and call timestamps in every stats dimension", async () => {
@@ -661,6 +662,7 @@ test("Lite scans explicit roots without creating or reading a Full store", async
 
     const resolved = await resolveLiteSources({
       homeDir: tempHome,
+      env: {},
       sourceRoots: [
         { sourceRef: "codex", baseDir: path.join(mockDataRoot, ".codex", "sessions") },
       ],

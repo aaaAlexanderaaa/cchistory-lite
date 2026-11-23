@@ -2,9 +2,9 @@
 
 ## Current work — 2026-11-23 Source compatibility expansion
 
-Status: source inventory, pinned-reference investigation and Ask ChatGPT research complete;
-implementation batches below are proposed. This update owns the expansion plan and evidence.
-The registered source count remains 17.
+Status: source inventory, pinned-reference investigation and Ask ChatGPT research complete.
+Step 2's first source (DeepSeek Harness) is implemented and verified; OpenCode SQLite
+compatibility, Hermes, and Pi/Oh My Pi remain proposed. The registered source count is 18.
 
 Owner request (verbatim):
 > 知名度	可信度	数据源5	高	OpenCode、Claude Code、Codex CLI、Cursor IDE、Google Antigravity5	中	OpenClaw、Hermes Agent、Gemini CLI、DeepSeek Harness4	高	Pi、Kilo、Warp / Oz、Cline、Mistral Vibe4	中	GitHub Copilot CLI、Oh My Pi、Qwen Code、Crush、Goose、Cherry Studio、Hindsight、OpenCodeReview
@@ -102,6 +102,52 @@ tests, 5 Python tests, 5 architecture rules across 154 matches, and 38 docs / 17
 and `verify:lite-artifact -- --skip-build` passed. Artifact verification used the fresh build
 and a temporary npm cache. `git diff --check` passed. New adapter implementation, publication
 and the existing owner-owned U1 acceptance have their own completion records.
+
+### Delivery record — DeepSeek Harness (2026-11-23)
+
+Status: implemented and verified in the working tree; not committed or released.
+
+Implemented slice:
+
+- `packages/source-adapters/src/platforms/deepseek-harness.ts` selects the highest
+  `session[.vN].jsonl[.zstd]` generation per session directory and registers the
+  experimental `deepseek_harness` source (default roots `$DSH_HOME/sessions` and
+  `~/.dsh/sessions`). `deepseek-harness/reader.ts` decodes concatenated Zstandard
+  frames in-process with an explicit truncated-tail recovery diagnostic and refuses
+  older physical versions instead of guessing. `deepseek-harness/runtime.ts` maps
+  `user/message` (real prompts versus injected harness context), `assistant/message`
+  text/reasoning and per-call usage, `tool/call`, `tool/result` (native `isError`),
+  `session/title`, `request/context`, `request/header`, `model/selection`,
+  `working-directory/change`, `compaction/summary` usage, and `subagent/catalog`
+  delegation. Tagged fork-seed prefixes are reported and omitted so parent history
+  is not projected twice.
+- Registration and discovery: `platforms/types.ts`, `domain/index.ts`,
+  `platforms/registry.ts`, `core/discovery.ts` (format profile and slot),
+  `core/source-identity.ts`, and an optional `env` resolution option so adapter
+  home overrides stay testable in `ResolveLiteSourcesOptions` and
+  `DefaultSourceResolutionOptions`.
+- Evidence: sanitized parent/child sessions under
+  `mock_data/.deepseek-harness/sessions`, one `scenarios.json` entry, the mock-data
+  layout allowance, eight adapter tests (registration, discovery, generation
+  selection, plain and compressed parity, truncated frame recovery, malformed and
+  unsupported input, fork seeds), the live-runtime fixture matrix, and the
+  README/CHANGELOG documentation.
+
+Verification (2026-11-23, runtime 0.8.3): `pnpm run build:lite` passed. `pnpm test`
+passed **892 package tests** (`@cchistory/domain` 103, `@cchistory/canonical` 184,
+`@cchistory/source-adapters` 291, `@cchistory/live-runtime` 134, `@cchistory/lite-cli`
+79, `@cchistory/lite-tui` 101), 4 catalog tests, and dependency boundaries.
+`verify:governance` passed (14 JS tests, 5 Python tests, 5 architecture rules across
+157 matches, 38 docs / 18 adapters). `mock-data:validate` passed across 200 files.
+`verify:lite-artifact` passed against the rebuilt standalone tarball and the local npm installation. The live probe also read the
+current host's real `$DSH_HOME/sessions` logs end to end: three sessions, per-call
+cache and cost diagnostics, `trace` call waterfall with a delegated child, and SQL
+`calls` rows agreeing with `stats`.
+
+Projection/coverage limits: current v4 only; fork-seed inherited prefixes are
+intentionally not re-projected; image/file attachment content is not projected as
+text; the offline price catalog does not yet list the harness-local model ids, so
+those calls stay unpriced.
 
 ## Previous work — 2026-11-21 Per-call usage telemetry, anomaly diagnostics, and `trace`
 
