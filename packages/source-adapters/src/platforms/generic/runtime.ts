@@ -35,6 +35,18 @@ export function parseGenericConversationRecord(
     helpers.coerceIso(parsed.created_at) ??
     record.observed_at;
 
+  if (parsed.usage_only === true) {
+    const usageOnly = helpers.extractTokenUsage(parsed.usage ?? parsed);
+    if (usageOnly) {
+      fragments.push(helpers.createTokenUsageFragment(context, record, 0, timeKey, usageOnly, undefined, {
+        scope: "call",
+        independent_usage_event_id: record.id,
+        source_event_type: helpers.asString(parsed.source_event_type) ?? "usage_record",
+        ...(helpers.asString(parsed.call_kind) ? { call_kind: helpers.asString(parsed.call_kind) } : {}),
+      }));
+    }
+    return { fragments, lossAudits };
+  }
   const meta = extractGenericSessionMetadata(parsed, helpers);
   if (meta.workspacePath) {
     draft.working_directory = meta.workspacePath;

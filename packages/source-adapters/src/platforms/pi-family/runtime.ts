@@ -115,6 +115,8 @@ export function parsePiFamilyRecord(
         origin_kind: "source_instruction",
         display_policy: "collapse",
         synthetic: true,
+        signal_kind: "compact_boundary",
+        source_event_type: "context_compacted",
         text: summary,
       });
     }
@@ -154,6 +156,15 @@ interface UsageAppendOptions {
   messageId?: string;
 }
 
+function mapPiStopReason(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  // Pi persists the camelCase provider value; canonical's stop-reason alias
+  // table only knows the snake_case form.
+  return value === "toolUse" ? "tool_use" : value;
+}
+
 function appendUsageRecord(
   context: FragmentBuildContextLike,
   record: RawRecord,
@@ -173,7 +184,7 @@ function appendUsageRecord(
     fragments.length,
     timeKey,
     usage,
-    helpers.normalizeStopReason(parsed.stop_reason),
+    helpers.normalizeStopReason(mapPiStopReason(helpers.asString(parsed.stop_reason))),
     {
       scope: "call",
       independent_usage_event_id: record.id,
@@ -255,10 +266,17 @@ function appendMessage(
         "pi_family_assistant_error_evidence",
       );
     }
+    const assistantModel = helpers.asString(message.responseModel) ?? helpers.asString(message.model);
+    if (assistantModel) {
+      fragments.push(helpers.createFragment(context, record, fragments.length, "model_signal", messageTimeKey, {
+        model: assistantModel,
+        provider: helpers.asString(message.provider),
+      }));
+    }
     appendUsageRecord(context, record, {
       usage: message.usage,
-      model: helpers.asString(message.model),
-      stop_reason: helpers.asString(message.stopReason),
+      model: assistantModel,
+      stop_reason: mapPiStopReason(helpers.asString(message.stopReason)),
       provider: helpers.asString(message.provider),
     }, messageTimeKey, fragments, helpers, {
       sourceEventType: "pi_assistant_message",
@@ -320,7 +338,7 @@ function appendMessage(
     return;
   }
 
-  if (role === "custom") {
+  if (role === "custom" || role === "hookMessage") {
     pushText(contentToText(message.content, helpers), {
       actorKind: "system",
       originKind: "source_instruction",
@@ -339,7 +357,11 @@ function appendMessage(
   }
 
   if (role === "fileMention") {
-    pushText(contentToText(message.content, helpers), {
+    const files = Array.isArray(message.files) ? message.files : [];
+    const labels = files
+      .map((file) => (isPiObject(file) ? asPiString(file.path) ?? asPiString(file.name) : undefined))
+      .filter((value): value is string => Boolean(value));
+    pushText(labels.length > 0 ? labels.map((label) => `[file] ${label}`).join("\n") : contentToText(message.content, helpers), {
       actorKind: "user",
       originKind: "injected_user_shaped",
       displayPolicy: "collapse",
@@ -457,7 +479,17 @@ function normalizeUsage(
     // Pi documents `reasoning` as already included in `output`; keep it as
     // evidence without adding it to the total a second time.
     reasoning_output_tokens: reasoning,
-    total_tokens: total ?? values.reduce<number>((sum, value) => sum + (value ?? 0), 0),
+    // reasoning is a subset of output; the fallback mirrors Pi's own
+    // input + output + cacheRead + cacheWrite total.
+    total_tokens: total ?? [input, output, cacheRead, cacheWrite].reduce<number>((sum, value) => sum + (value ?? 0), 0),
     model,
   };
+}
+
+function isPiObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asPiString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
 }

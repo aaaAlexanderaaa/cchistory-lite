@@ -106,11 +106,12 @@ test("[hermes] fixture sessions project turns, collapsed reasoning, tools, linea
     assert.equal(main.title, "Retry review in Hermes");
     assert.equal(main.model, "mock-hermes-1");
     assert.equal(main.working_directory, "/Users/mock_user/workspace/hermes-lab");
-    assert.equal(main.turn_count, 2);
+    assert.equal(main.turn_count, 3);
     const mainTurns = payload.turns.filter((turn) => turn.session_id === main.id);
     assert.deepEqual(mainTurns.map((turn) => turn.canonical_text), [
       "Find the retry helper and explain the backoff.",
       "Now compare providers.",
+      "Please fix the flaky retry test.",
     ]);
 
     const child = payload.sessions.find((session) => session.id === "sess:hermes:sess_fixture_hermes_child");
@@ -179,8 +180,12 @@ test("[hermes] fixture sessions project turns, collapsed reasoning, tools, linea
       "compression summaries must not become user turns",
     );
     assert.ok(
-      syntheticTextOf(payload).some((text) => text.includes("[CONTEXT COMPACTION - REFERENCE ONLY]")),
-      "compression summaries remain collapsed system evidence",
+      syntheticTextOf(payload).some((text) => text.includes("[CONTEXT COMPACTION — REFERENCE ONLY]")),
+      "standalone and merged compression summaries remain collapsed system evidence",
+    );
+    assert.ok(
+      syntheticTextOf(payload).some((text) => text.includes("Older summary of the retry work.")),
+      "the merged carrier's summary suffix is collapsed, not a user turn",
     );
     assert.ok(
       syntheticTextOf(payload).some((text) => text.includes("Turn failed: provider timeout.")),
@@ -233,7 +238,11 @@ test("[hermes] older stores without optional columns still project the transcrip
     const [payload] = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources;
     assert.ok(payload);
     assert.deepEqual(payload.turns.map((turn) => turn.canonical_text), ["Old schema prompt."]);
-    assert.equal(payload.turns[0]?.context_summary?.token_usage?.total_tokens, 12);
+    assert.ok(payload.fragments.some((fragment) =>
+      fragment.fragment_kind === "token_usage_signal"
+      && typeof fragment.payload.independent_usage_event_id === "string"
+      && (fragment.payload.token_usage as Record<string, number>).total_tokens === 12,
+    ));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

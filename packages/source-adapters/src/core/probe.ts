@@ -521,7 +521,14 @@ async function* streamCollectedFileInputs(
 
   const preferredGrokBotAgents = new Set<string>();
   const opencodeSqliteSessionIds = new Set<string>();
-  for (const [fileIndex, filePath] of files.entries()) {
+  const orderedFiles = source.platform === "opencode"
+    ? [...files].sort((left, right) => {
+        const rank = (filePath: string) => (path.basename(filePath) === "opencode.db" ? 0 : 1);
+        const delta = rank(left) - rank(right);
+        return delta !== 0 ? delta : left.localeCompare(right);
+      })
+    : files;
+  for (const [fileIndex, filePath] of orderedFiles.entries()) {
     if (source.platform === "opencode" && isOpenCodeLegacySessionFile(filePath)) {
       const nativeSessionId = path.basename(filePath, path.extname(filePath));
       if (opencodeSqliteSessionIds.has(nativeSessionId)) {
@@ -591,6 +598,13 @@ async function* streamCollectedFileInputs(
       }
       if (source.platform === "opencode" && path.basename(filePath) === "opencode.db") {
         for (const input of collected.sessionInputs) {
+          // A metadata-only session row (partial/interrupted migration) must not
+          // suppress a complete legacy JSON copy of the same native session.
+          const hasConversation = input.atoms.some((atom) =>
+            atom.content_kind === "text"
+            || atom.content_kind === "tool_call"
+            || atom.content_kind === "tool_result");
+          if (!hasConversation) continue;
           const nativeSessionId = input.draft.source_session_id
             ?? input.draft.id.replace(/^sess:opencode:/u, "");
           if (nativeSessionId) opencodeSqliteSessionIds.add(nativeSessionId);
@@ -1094,7 +1108,6 @@ function isMultiSessionContainer(platform: SourcePlatform, filePath: string): bo
     platform === "zcode" ||
     platform === "lobechat" ||
     (platform === "opencode" && basename === "opencode.db") ||
-    (platform === "hermes" && basename === "state.db") ||
     (platform === "grok_bot" && basename === "store.db") ||
     ((platform === "cursor" || platform === "antigravity") &&
       (basename === "state.vscdb" || basename === "store.db"))

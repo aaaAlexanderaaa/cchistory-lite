@@ -25,7 +25,16 @@ const SYNTHETIC_USER_MARKERS = [
   "[IMPORTANT: Background process ",
   "[Your active task list was preserved across context compression]",
 ] as const;
-const DISPLAY_ONLY_KINDS = new Set(["failed_turn", "internal_notification", "process_complete"]);
+const DISPLAY_ONLY_KINDS = new Set([
+  "failed_turn",
+  "internal_notification",
+  "process_complete",
+  "async_delegation_complete",
+  "content_refused",
+]);
+const MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]";
+const SUMMARY_END_MARKER = "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---";
+const MERGED_PRIOR_CONTEXT_HEADER = "[PRIOR CONTEXT — for reference only; not a new message]";
 
 export interface HermesSqliteReadOptions {
   targetSessionRefs?: readonly string[];
@@ -235,36 +244,40 @@ function buildSessionSeed(db: DatabaseSync, context: BuildSeedContext): Extracte
     }),
   });
 
+  appendUsageRecords(db, context, records, diagnostics, startedAt ?? updatedAt);
+
   for (const message of readMessages(db, context, diagnostics)) {
     const messageId = asNumber(message.id);
     const content = decodeContent(message.content, diagnostics, messageId);
     const messageObservedAt = epochSecondsIso(message.timestamp) ?? updatedAt;
     lastMessageObservedAt = messageObservedAt ?? lastMessageObservedAt;
+    const role = asString(message.role);
+    const displayKind = asString(message.display_kind);
+    const summary = splitCompressedSummary(message, content, role);
     records.push({
       pointer: `sqlite:messages[${messageId ?? "?"}]`,
       observedAt: messageObservedAt,
       rawJson: JSON.stringify({
         kind: "message",
         id: messageId,
-        role: asString(message.role),
-        content,
+        role,
+        content: summary ? summary.userContent : content,
+        ...(summary ? { summary_content: summary.summaryContent } : {}),
+        hidden: displayKind === "hidden" && !summary,
         tool_call_id: asString(message.tool_call_id),
         tool_name: asString(message.tool_name),
         tool_calls: parseToolCalls(message.tool_calls),
         finish_reason: asString(message.finish_reason),
         reasoning: asString(message.reasoning) ?? asString(message.reasoning_content),
-        synthetic_user: isSyntheticUserMessage(message, content),
-        display_only: isDisplayOnlyRow(asString(message.display_kind)),
-        display_kind: asString(message.display_kind),
+        synthetic_user: summary !== undefined
+          ? String(summary.userContent ?? "").trim().length === 0
+          : isSyntheticUserMessage(message, content),
+        display_only: isDisplayOnlyRow(displayKind),
+        display_kind: displayKind,
         timestamp: epochSecondsIso(message.timestamp),
       }),
     });
   }
-
-  // Session-level usage is emitted after the transcript and carries its own
-  // independent identity, so it survives a last turn with no text reply and
-  // keeps per-model attribution.
-  appendUsageRecords(db, context, records, diagnostics, lastMessageObservedAt);
 
   return {
     sessionId: `sess:hermes:${rawSessionId}`,
@@ -317,9 +330,6 @@ function readMessages(
   if (columns.has("active")) {
     filters.push("active = 1");
   }
-  if (columns.has("display_kind")) {
-    filters.push("COALESCE(display_kind, '') <> 'hidden'");
-  }
   const query =
     `SELECT ${selected.join(", ")} FROM messages WHERE ${filters.join(" AND ")} ORDER BY id ASC`;
   try {
@@ -348,11 +358,10 @@ function appendUsageRecords(
   lastMessageObservedAt: string | undefined,
 ): void {
   const { sessionRow, rawSessionId, hasUsageTable, usageColumns, budget } = context;
-  const usageObservedAt =
-    epochSecondsIso(sessionRow.last_activity_at) ??
-    epochSecondsIso(sessionRow.ended_at) ??
-    lastMessageObservedAt ??
-    epochSecondsIso(sessionRow.started_at);
+  // Aggregate usage carries no turn identity. Keeping it at the session start
+  // places it before every submission group so canonical records turn_id null
+  // instead of attributing the whole session to the last reply.
+  const usageObservedAt = epochSecondsIso(sessionRow.started_at) ?? lastMessageObservedAt;
 
   if (hasUsageTable) {
     const selected = [
@@ -469,14 +478,46 @@ function isDisplayOnlyRow(displayKind: string | undefined): boolean {
 }
 
 function isSyntheticUserMessage(message: MessageRow, content: unknown): boolean {
-  if (message._compressed_summary === 1 || message._compressed_summary === true) {
-    return true;
-  }
   if (asString(message.role) !== "user") {
     return false;
   }
   const text = contentToPlainText(content);
   return text.length > 0 && SYNTHETIC_USER_MARKERS.some((marker) => text.startsWith(marker));
+}
+
+/**
+ * A merge-into-tail compaction carrier holds the real user turn followed by
+ * the compaction summary. Only the summary is synthetic; the prefix before the
+ * delimiter stays a user-authored submission.
+ */
+function splitCompressedSummary(
+  message: MessageRow,
+  content: unknown,
+  role: string | undefined,
+): { userContent: unknown; summaryContent: string } | undefined {
+  if (message._compressed_summary !== 1 && message._compressed_summary !== true) {
+    return undefined;
+  }
+  if (role !== "user") {
+    return undefined;
+  }
+  const text = contentToPlainText(content);
+  if (!text) {
+    return { userContent: "", summaryContent: "" };
+  }
+  if (text.includes(MERGED_SUMMARY_DELIMITER)) {
+    const [prefix, suffix] = text.split(MERGED_SUMMARY_DELIMITER, 2);
+    const userContent = (prefix ?? "").replace(MERGED_PRIOR_CONTEXT_HEADER, "").trim();
+    return { userContent, summaryContent: `${MERGED_SUMMARY_DELIMITER}${suffix ?? ""}` };
+  }
+  if (text.includes(SUMMARY_END_MARKER)) {
+    const [before, after] = text.split(SUMMARY_END_MARKER, 2);
+    return {
+      userContent: (after ?? "").trim(),
+      summaryContent: `${before ?? ""}${SUMMARY_END_MARKER}`,
+    };
+  }
+  return { userContent: "", summaryContent: text };
 }
 
 function contentToPlainText(content: unknown): string {

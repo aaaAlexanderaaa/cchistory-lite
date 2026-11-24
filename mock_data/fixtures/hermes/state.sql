@@ -87,9 +87,16 @@ INSERT INTO messages (session_id, role, content, display_kind, timestamp) VALUES
   ('sess_fixture_hermes_main', 'assistant', 'hidden audit note', 'hidden', 1770000005.5);
 INSERT INTO messages (session_id, role, content, active, timestamp) VALUES
   ('sess_fixture_hermes_main', 'user', 'rewound prompt', 0, 1770000005.8);
+INSERT INTO messages (session_id, role, content, _compressed_summary, display_kind, timestamp) VALUES
+  ('sess_fixture_hermes_main', 'user',
+   '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier discussion of the retry helper.', 1, 'hidden', 1770000000.5);
 INSERT INTO messages (session_id, role, content, _compressed_summary, timestamp) VALUES
   ('sess_fixture_hermes_main', 'user',
-   '[CONTEXT COMPACTION - REFERENCE ONLY] Earlier discussion of the retry helper.', 1, 1770000000.5);
+   'Please fix the flaky retry test.
+[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]
+[CONTEXT COMPACTION — REFERENCE ONLY] Older summary of the retry work.', 1, 1770000007.0);
+INSERT INTO messages (session_id, role, content, display_kind, timestamp) VALUES
+  ('sess_fixture_hermes_main', 'user', 'Delegated audit finished.', 'async_delegation_complete', 1770000007.5);
 INSERT INTO messages (session_id, role, content, display_kind, timestamp) VALUES
   ('sess_fixture_hermes_main', 'assistant', 'Turn failed: provider timeout.', 'failed_turn', 1770000005.6);
 INSERT INTO messages (session_id, role, content, timestamp) VALUES

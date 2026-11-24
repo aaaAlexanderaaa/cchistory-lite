@@ -8,12 +8,14 @@ import type { ExtractedSessionSeed } from "../../core/conversation-seeds.js";
  * Both tools persist one JSONL file per session under
  * `<agent-dir>/sessions/<encoded-cwd>/<timestamp>_<session-id>.jsonl`.
  * Oh My Pi additionally starts the physical file with a fixed-width `title`
- * slot and appends `title_change` entries; Pi v3 and older files start with
- * the `session` header.
+ * slot, appends `title_change` entries and may persist the active leaf on an
+ * entry as `activeLeafId` (late usage can be the physically last row while the
+ * conversation continues at an earlier leaf).
  *
- * Entries form a tree (`id`/`parentId`), so only the active branch is
- * projected: the last entry is the leaf, and walking `parentId` yields the
- * live conversation. Abandoned branches stay in the file as raw evidence.
+ * Conversation evidence comes from the active branch only. Usage is different:
+ * Pi/OMP native session totals aggregate every entry that was actually billed,
+ * including compacted and abandoned branches, so non-active entries contribute
+ * usage-only records with an independent identity.
  */
 
 export type PiFamilyPlatform = "pi" | "oh_my_pi";
@@ -45,6 +47,7 @@ const EVIDENCE_ONLY_ENTRY_TYPES = new Set([
   "session_init",
   "mode_change",
   "context_edit",
+  "session_info",
 ]);
 
 export function extractPiFamilySessionSeed(
@@ -55,6 +58,12 @@ export function extractPiFamilySessionSeed(
   const diagnostics: PiSeedDiagnostic[] = [];
   const records: ParsedRecord[] = [];
   const lines = fileBuffer.toString("utf8").split("\n");
+  let lastNonEmptyLine = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index]?.trim()) {
+      lastNonEmptyLine = index;
+    }
+  }
   for (const [index, rawLine] of lines.entries()) {
     if (!rawLine.trim()) {
       continue;
@@ -63,7 +72,7 @@ export function extractPiFamilySessionSeed(
     try {
       value = JSON.parse(rawLine);
     } catch {
-      const isTail = index === lines.length - 1 || lines.slice(index + 1).every((line) => !line.trim());
+      const isTail = index === lastNonEmptyLine;
       diagnostics.push({
         code: isTail ? "pi_family_truncated_tail" : "pi_family_malformed_jsonl_record",
         detail: `Line ${index + 1} is not valid JSON${isTail ? " (truncated final record)" : ""}; it was kept only as a diagnostic.`,
@@ -82,32 +91,46 @@ export function extractPiFamilySessionSeed(
   }
 
   const headerRecord = records.find((record) => record.value.type === "session");
-  const header = headerRecord?.value;
+  if (!headerRecord) {
+    diagnostics.push({
+      code: "pi_family_session_header_missing",
+      detail: "The file has no session header; it is not projected as a session.",
+    });
+    return { seed: undefined, diagnostics };
+  }
+  const header = headerRecord.value;
   const titleSlot = [...records].reverse().find((record) => record.value.type === "title");
   const entries = records.filter((record) => record !== headerRecord && record.value.type !== "title");
-
-  const version = asNumber(header?.version) ?? 1;
+  const version = asNumber(header.version) ?? 1;
   const activeEntries = selectActiveBranch(entries, version, diagnostics);
+  const activeIds = new Set(
+    activeEntries.map((entry) => asString(entry.value.id)).filter((id): id is string => id !== undefined),
+  );
 
   const rawSessionId =
-    asString(header?.id) ??
+    asString(header.id) ??
     deriveSessionIdFromFileName(filePath) ??
     `session-${path.basename(filePath, ".jsonl")}`;
   const sessionId = `sess:${platform}:${rawSessionId}`;
-  const workingDirectory = normalizeDirectory(asString(header?.cwd));
-  const headerTitle = asString(header?.title)?.trim();
+  const workingDirectory = normalizeDirectory(asString(header.cwd));
+  const headerTitle = asString(header.title)?.trim();
   const slotTitle = asString(titleSlot?.value.title)?.trim();
-  const titleChanges = activeEntries
-    .filter((record) => record.value.type === "title_change")
-    .map((record) => asString(record.value.title)?.trim())
+  const titleChanges = entries
+    .filter((entry) => entry.value.type === "title_change")
+    .map((entry) => asString(entry.value.title)?.trim())
     .filter((value): value is string => Boolean(value));
-  const title = headerTitle || slotTitle || titleChanges.at(-1);
-  const parentSession = resolveParentSessionRef(asString(header?.parentSession));
-  const taskPromptCacheKey = asString(header?.taskPromptCacheKey);
-  const startedAt =
-    normalizeIso(asString(header?.timestamp)) ??
-    firstEntryIso(activeEntries) ??
-    undefined;
+  const sessionInfoNames = entries
+    .filter((entry) => entry.value.type === "session_info")
+    .map((entry) => asString(entry.value.name)?.trim())
+    .filter((value): value is string => Boolean(value));
+  // Oh My Pi keeps the current title in the slot; Pi's `/name` lands in
+  // session_info. Both are session-wide, independent of the active branch.
+  const title = slotTitle || titleChanges.at(-1) || headerTitle || sessionInfoNames.at(-1);
+  const parentSession = resolveParentSessionRef(asString(header.parentSession));
+  const nestedParent = nestedSessionParent(filePath);
+  const taskPromptCacheKey = asString(header.taskPromptCacheKey);
+  const delegated = platform === "oh_my_pi" && Boolean(nestedParent ?? taskPromptCacheKey);
+  const startedAt = normalizeIso(asString(header.timestamp)) ?? firstEntryIso(activeEntries);
 
   const output: ExtractedSessionSeed["records"] = [];
   output.push({
@@ -119,18 +142,26 @@ export function extractPiFamilySessionSeed(
       version,
       title,
       cwd: workingDirectory,
-      parent_session: parentSession,
-      delegated: platform === "oh_my_pi" && Boolean(taskPromptCacheKey),
+      parent_session: nestedParent ?? parentSession,
+      delegated,
       taskPromptCacheKey,
-      additional_directories: header?.additionalDirectories,
+      additional_directories: header.additionalDirectories,
     }),
   });
 
   for (const entry of activeEntries) {
     const entryType = asString(entry.value.type) ?? "unknown";
     const timestamp = normalizeIso(asString(entry.value.timestamp));
-    if (entryType === "message") {
-      const message = entry.value.message;
+    if (entryType === "message" || entryType === "custom_message") {
+      const message = entryType === "custom_message"
+        ? {
+            role: "custom",
+            content: entry.value.content,
+            customType: entry.value.customType,
+            display: entry.value.display,
+            timestamp: entry.value.timestamp,
+          }
+        : entry.value.message;
       output.push({
         pointer: `entry:${entry.lineNumber}`,
         observedAt: timestamp,
@@ -214,6 +245,16 @@ export function extractPiFamilySessionSeed(
     }
   }
 
+  // Native totals include compacted-away and abandoned-branch calls. Emit
+  // usage-only records for every offset entry that the active branch skipped.
+  for (const entry of entries) {
+    const entryId = asString(entry.value.id);
+    if (entryId && activeIds.has(entryId)) {
+      continue;
+    }
+    appendInactiveUsage(entry, platform, output, diagnostics);
+  }
+
   const lastActivity = lastMessageIso(activeEntries) ?? startedAt;
   return {
     seed: {
@@ -227,6 +268,62 @@ export function extractPiFamilySessionSeed(
     },
     diagnostics,
   };
+}
+
+function appendInactiveUsage(
+  entry: ParsedRecord,
+  _platform: PiFamilyPlatform,
+  output: ExtractedSessionSeed["records"],
+  diagnostics: PiSeedDiagnostic[],
+): void {
+  const entryType = asString(entry.value.type);
+  const timestamp = normalizeIso(asString(entry.value.timestamp));
+  const pushUsage = (usage: unknown, model: string | undefined, purpose: string): void => {
+    if (!isObject(usage)) {
+      return;
+    }
+    output.push({
+      pointer: `inactive-usage:${entry.lineNumber}`,
+      observedAt: timestamp,
+      rawJson: JSON.stringify({
+        kind: "usage",
+        usage,
+        model,
+        purpose,
+        entry_id: asString(entry.value.id),
+        timestamp,
+      }),
+    });
+  };
+  if (entryType === "message" || entryType === "custom_message") {
+    const message = entryType === "message" ? entry.value.message : undefined;
+    if (isObject(message)) {
+      const role = asString(message.role);
+      if (role === "assistant" || role === "toolResult") {
+        pushUsage(
+          message.usage,
+          asString(message.model) ?? asString(message.responseModel),
+          role === "assistant" ? "inactive_assistant" : "inactive_tool",
+        );
+      }
+    }
+    return;
+  }
+  if (entryType === "usage" || entryType === "model_usage") {
+    pushUsage(entry.value.usage, asString(entry.value.model), asString(entry.value.purpose) ?? "inactive_usage");
+    return;
+  }
+  if (entryType === "compaction" || entryType === "branch_summary") {
+    pushUsage(entry.value.usage, undefined, entryType);
+    return;
+  }
+  if (entryType !== undefined && !EVIDENCE_ONLY_ENTRY_TYPES.has(entryType)) {
+    diagnostics.push({
+      code: "pi_family_unhandled_inactive_entry",
+      detail: `Unhandled inactive ${entryType} entry; kept only as a diagnostic.`,
+      severity: "info",
+    });
+  }
 }
 
 function selectActiveBranch(
@@ -244,9 +341,31 @@ function selectActiveBranch(
       byId.set(id, entry);
     }
   }
-  const leaf = entries.at(-1);
-  const leafId = asString(leaf?.value.id);
+  // Oh My Pi persists the active leaf on late entries (background usage can be
+  // the physically last row). The newest explicit activeLeafId wins.
+  let leafId: string | undefined;
+  let leafWasExplicit = false;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!entry || !Object.prototype.hasOwnProperty.call(entry.value, "activeLeafId")) {
+      continue;
+    }
+    leafWasExplicit = true;
+    const rawLeaf = entry.value.activeLeafId;
+    if (rawLeaf === null) {
+      return [];
+    }
+    leafId = asString(rawLeaf);
+    break;
+  }
+  if (!leafWasExplicit) {
+    leafId = asString(entries.at(-1)?.value.id);
+  }
   if (!leafId || !byId.has(leafId)) {
+    diagnostics.push({
+      code: "pi_family_active_leaf_missing",
+      detail: `Active leaf ${leafId ?? "<unknown>"} is not present in the file; the file was projected in file order.`,
+    });
     return [...entries];
   }
   const chain: ParsedRecord[] = [];
@@ -261,7 +380,7 @@ function selectActiveBranch(
       return [...entries];
     }
     seen.add(cursorId);
-    const entry: ParsedRecord | undefined = byId.get(cursorId);
+    const entry = byId.get(cursorId);
     if (!entry) {
       diagnostics.push({
         code: "pi_family_parent_missing",
@@ -289,7 +408,11 @@ function firstEntryIso(entries: readonly ParsedRecord[]): string | undefined {
 function lastMessageIso(entries: readonly ParsedRecord[]): string | undefined {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
-    if (!entry || asString(entry.value.type) !== "message") {
+    if (!entry) {
+      continue;
+    }
+    const type = asString(entry.value.type);
+    if (type !== "message" && type !== "custom_message") {
       continue;
     }
     const message = entry.value.message;
@@ -308,6 +431,18 @@ function lastMessageIso(entries: readonly ParsedRecord[]): string | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * OMP nests subagent transcripts under `<bucket>/<timestamp>_<parent-id>/`.
+ * The directory name is durable delegation evidence even when the child header
+ * has no `taskPromptCacheKey` (that key is only written after a shared-cache
+ * request).
+ */
+function nestedSessionParent(filePath: string): string | undefined {
+  const normalized = filePath.replace(/\\/gu, "/");
+  const match = normalized.match(/\/sessions\/[^/]+\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}_([^/]+)\/[^/]+\.jsonl$/u);
+  return match?.[1] ?? undefined;
 }
 
 /**

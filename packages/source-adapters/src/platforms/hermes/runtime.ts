@@ -201,6 +201,22 @@ function appendMessage(
     return;
   }
 
+  const summaryContent = helpers.asString(parsed.summary_content);
+  if (summaryContent) {
+    // Compression handoff is model-facing context, not a human submission.
+    push("text", {
+      actor_kind: "system",
+      origin_kind: "source_instruction",
+      display_policy: "collapse",
+      synthetic: true,
+      text: summaryContent,
+      ...(messageId !== undefined ? { message_id: String(messageId) } : {}),
+    });
+  }
+  if (parsed.hidden === true) {
+    return;
+  }
+
   if (role === "user") {
     if (parsed.synthetic_user === true || parsed.display_only === true) {
       // Compression summaries and UI-only rows are model-facing context, not

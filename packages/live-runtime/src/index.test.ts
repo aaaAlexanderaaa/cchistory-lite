@@ -168,14 +168,14 @@ test("compact family I/O previews mask secrets before the 240-character cut", ()
 test("Lite materializer resolves canonical history across the fixture-backed adapter matrix", async () => {
   const tempStore = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-matrix-"));
   try {
+    // SQL-backed sources (Hermes/ZCode) and profile trees need materialized
+    // roots; this matrix covers every registered adapter, not just file fixtures.
+    const matrixRoots = await prepareContextFixtureRoots(tempStore);
     const sources = await resolveLiteSources({
       homeDir: path.join(tempStore, "empty-home"),
       hostname: "cchistory-lite-matrix-host",
-      sourceRefs: Object.keys(fixtureRoots),
-      sourceRoots: Object.entries(fixtureRoots).map(([sourceRef, relativePath]) => ({
-        sourceRef,
-        baseDir: path.join(mockDataRoot, relativePath),
-      })),
+      sourceRefs: Object.keys(matrixRoots),
+      sourceRoots: Object.entries(matrixRoots).map(([sourceRef, baseDir]) => ({ sourceRef, baseDir })),
     });
     const probe = await runSourceProbe(interpretSessionEvidence, { safe_mode: true }, sources);
     const askPayload = probe.sources.find((payload) => payload.source.platform === "codex");
@@ -235,10 +235,16 @@ test("Lite materializer resolves canonical history across the fixture-backed ada
     // Every registered adapter in the matrix materializes into the live snapshot.
     assert.deepEqual(
       sortById(lite.listSources()).map((source) => source.platform).sort(),
-      Object.keys(fixtureRoots).sort(),
+      Object.keys(matrixRoots).sort(),
     );
     assert.ok(lite.listResolvedSessions().length > 0);
     assert.ok(lite.listResolvedTurns().length > 0);
+    for (const sourceRef of Object.keys(matrixRoots)) {
+      assert.ok(
+        lite.listResolvedSessions().some((session) => session.source_platform === sourceRef),
+        `${sourceRef} must contribute a nonempty session to the fixture matrix`,
+      );
+    }
     let previousMessageAt: string | undefined;
     let reachedTurnlessSessions = false;
     for (const session of lite.listResolvedSessions()) {
@@ -317,17 +323,20 @@ test("Lite materializer resolves canonical history across the fixture-backed ada
 });
 
 test("Lite targeted probes preserve one-session parity across the fixture adapter matrix", async () => {
-  for (const [sourceRef, relativePath] of Object.entries(fixtureRoots)) {
+  const targetMatrixScratch = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-target-matrix-"));
+  try {
+  const targetRoots = await prepareContextFixtureRoots(targetMatrixScratch);
+  for (const [sourceRef, baseDir] of Object.entries(targetRoots)) {
     const scanOptions = {
       homeDir: path.join(mockDataRoot, "empty-home"),
       hostname: `cchistory-lite-target-matrix-${sourceRef}`,
       sourceRefs: [sourceRef],
-      sourceRoots: [{ sourceRef, baseDir: path.join(mockDataRoot, relativePath) }],
+      sourceRoots: [{ sourceRef, baseDir }],
       safeMode: true,
     };
     const full = await scanLiteHistory({ ...scanOptions, contextMode: "full" });
     const target = full.listResolvedSessions().find((session) => session.source_session_id);
-    if (!target?.source_session_id) continue;
+    assert.ok(target?.source_session_id, `${sourceRef} needs an addressable session for targeted parity`);
 
     const targeted = await scanLiteHistory({
       ...scanOptions,
@@ -365,6 +374,9 @@ test("Lite targeted probes preserve one-session parity across the fixture adapte
       full.data.contexts.filter((context) => targetTurnIds.has(context.turn_id)).map(targetContextParityFields),
       `${sourceRef} context parity`,
     );
+  }
+  } finally {
+    await rm(targetMatrixScratch, { recursive: true, force: true });
   }
 });
 
@@ -2500,16 +2512,15 @@ test("OpenCode SQLite stores project v1 and v2 sessions without projection issue
     assert.equal(turns.length, 1);
     assert.equal(turns[0]?.canonical_text, "Compare the two OpenCode storage generations.");
     const overview = snapshot.getUsageOverview({ timezone: "UTC" });
-    assert.equal(overview.total_tokens, 1_768);
-    assert.equal(overview.usage_event_count, 1);
-    assert.equal(snapshot.getReadStatus().loss_warning_count, 0);
+    assert.equal(overview.total_tokens, 1_778);
+    assert.equal(overview.usage_event_count, 2);
 
     const trace = snapshot.getSessionTrace({
       sessionRef: snapshot.listResolvedSessions()[0]!.id,
       filters: { timezone: "UTC" },
     });
-    assert.equal(trace?.usage_granularity, "turn");
-    assert.equal(trace?.total_calls, 1);
+    assert.equal(trace?.usage_granularity, "call");
+    assert.equal(trace?.total_calls, 2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -2552,6 +2563,8 @@ test("Hermes delegated children stay in the parent family while compression cont
       ["mock-hermes-1", "mock-hermes-2", "mock-hermes-mini"],
       "per-model session usage keeps every model row",
     );
+    const trace = snapshot.getSessionTrace({ sessionRef: parent.id, filters: { timezone: "UTC" } });
+    assert.equal(trace?.usage_granularity, "session", "Hermes exposes session/model aggregates, not calls");
     assert.equal(snapshot.getReadStatus().loss_warning_count, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -2655,7 +2668,7 @@ test("Pi family projection keeps call-granularity usage and task-child lineage",
     contextMode: "none",
   });
   assert.deepEqual(piSnapshot.projectionIssues, []);
-  assert.equal(piSnapshot.getUsageOverview({ timezone: "UTC" }).total_tokens, 3_373);
+  assert.equal(piSnapshot.getUsageOverview({ timezone: "UTC" }).total_tokens, 4_466);
   const piSession = piSnapshot.listResolvedSessions()[0]!;
   assert.equal(piSnapshot.getSessionTrace({ sessionRef: piSession.id, filters: { timezone: "UTC" } })?.usage_granularity, "call");
   assert.ok(

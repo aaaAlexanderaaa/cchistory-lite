@@ -111,7 +111,7 @@ This layer decides *what history means*. It must never learn where history is st
 
 ### `@cchistory/source-adapters`
 
-The 17 adapters, plus the probe that drives them. Each adapter knows one tool's on-disk layout
+The 21 adapters, plus the probe that drives them. Each adapter knows one tool's on-disk layout
 and normalizes it into parsed session metadata, atoms, edges, and provenance. Runtime explicitly
 supplies the canonical interpreter when calling `runSourceProbe`; the collector invokes it after
 native reconciliation and assembles its results with source diagnostics into a probe payload.

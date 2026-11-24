@@ -10,6 +10,16 @@ function envText(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+function expandTilde(value: string, homeDir: string): string {
+  if (value === "~" && homeDir) {
+    return homeDir;
+  }
+  if (value.startsWith("~/") && homeDir) {
+    return path.join(homeDir, value.slice(2));
+  }
+  return value;
+}
+
 /**
  * Oh My Pi is a Pi fork: it reuses the Pi session JSONL layout under
  * `<agent-dir>/sessions/<encoded-cwd>/` and adds a fixed-width title slot and
@@ -33,12 +43,19 @@ export const ohMyPiAdapter: PlatformAdapter = {
     // OMP honours the same override for its default profile. Only accept it
     // when it clearly belongs to OMP (or OMP is the installed product), so a
     // Pi-only machine is not indexed twice.
-    if (
-      envAgentDir &&
-      (!envAgentDir.replace(/\\/gu, "/").includes("/.pi/") &&
-        (envAgentDir.replace(/\\/gu, "/").includes("/.omp/") || pathExists(defaultAgentDir) || !pathExists(path.join(homeDir, ".pi"))))
-    ) {
-      candidates.push(path.join(envAgentDir, "sessions"));
+    if (envAgentDir) {
+      const normalized = expandTilde(envAgentDir, homeDir).replace(/\\/gu, "/");
+      const piAgentDir = path.join(homeDir, ".pi", "agent");
+      // Marker-less overrides are accepted only when OMP's own default root
+      // exists and Pi's does not; dual installs require an explicit source
+      // selection instead of indexing one directory twice.
+      const markerlessSafe =
+        !normalized.includes("/.pi/")
+        && (normalized.includes("/.omp/")
+          || (pathExists(defaultAgentDir) && !pathExists(piAgentDir)));
+      if (markerlessSafe) {
+        candidates.push(path.join(expandTilde(envAgentDir, homeDir), "sessions"));
+      }
     }
     if (homeDir) {
       candidates.push(path.join(defaultAgentDir, "sessions"));

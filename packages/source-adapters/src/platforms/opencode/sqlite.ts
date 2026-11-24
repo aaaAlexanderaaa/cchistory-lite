@@ -275,7 +275,48 @@ function buildSessionSeed(
       continue;
     }
     const parts = (messageId ? partsByMessage.get(messageId) : undefined) ?? [];
-    const record = buildMessageRecord(schema, message, parsed, parts, {
+    const role = schema.version === 2 ? asString(message.type) : asString(parsed.role);
+    const effectiveParsed = { ...parsed };
+    if (role === "assistant") {
+      const assistantUsage = normalizeOpenCodeUsage(parsed.tokens);
+      if (assistantUsage) {
+        records.push({
+          pointer: `sqlite:assistant-usage[${index}]`,
+          observedAt: epochMillisIso(message.time_created) ?? createdAt,
+          rawJson: JSON.stringify({
+            usage_only: true,
+            usage: assistantUsage,
+            model:
+              asString(parsed.modelID)
+              ?? (isObject(parsed.model) ? asString(parsed.model.id) : undefined),
+            source_event_type: "opencode_assistant_message",
+            call_kind: "assistant",
+          }),
+        });
+        // Usage is projected once as an independent call record so compaction
+        // and assistant calls share one attribution path.
+        delete effectiveParsed.tokens;
+      }
+    }
+    if (role === "compaction") {
+      const compactionUsage = normalizeOpenCodeUsage(parsed.tokens);
+      if (compactionUsage) {
+        records.push({
+          pointer: `sqlite:compaction-usage[${index}]`,
+          observedAt: epochMillisIso(message.time_created) ?? createdAt,
+          rawJson: JSON.stringify({
+            usage_only: true,
+            usage: compactionUsage,
+            model:
+              asString(parsed.modelID)
+              ?? (isObject(parsed.model) ? asString(parsed.model.id) : undefined),
+            source_event_type: "opencode_compaction",
+            call_kind: "compaction",
+          }),
+        });
+      }
+    }
+    const record = buildMessageRecord(schema, message, effectiveParsed, parts, {
       messageId,
       workingDirectory,
       diagnostics,

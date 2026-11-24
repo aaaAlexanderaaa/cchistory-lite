@@ -108,7 +108,7 @@ and the existing owner-owned U1 acceptance have their own completion records.
 
 ### Delivery record — DeepSeek Harness (2026-11-23)
 
-Status: implemented and verified in the working tree; not committed or released.
+Status: implemented and verified; committed in `b41fe2b`.
 
 Implemented slice:
 
@@ -154,7 +154,7 @@ those calls stay unpriced.
 
 ### Delivery record — OpenCode SQLite compatibility (2026-11-23)
 
-Status: implemented and verified in the working tree; not committed or released.
+Status: implemented and verified; committed in `fc914c2` (review corrections follow in the next commit).
 
 Implemented slice:
 
@@ -208,7 +208,7 @@ and identity-precedence cases have adapter and live-runtime coverage.
 
 ### Delivery record — Hermes Agent (2026-11-24)
 
-Status: implemented and verified in the working tree; not committed or released.
+Status: implemented and verified; committed in `fc914c2` with review corrections and regression coverage in the next commit.
 
 Implemented slice:
 
@@ -229,11 +229,11 @@ Implemented slice:
   lineage markers distinguish delegated children (`_delegate_from`, linked as
   delegated work) from branch/compression continuations (`_branched_from` /
   `_reset_from`, kept top-level with an info diagnostic).
-- Evidence: `mock_data/fixtures/hermes/state.sql`, one scenario, six adapter
+- Evidence: `mock_data/fixtures/hermes/state.sql`, one scenario, seven adapter
   tests (registration/discovery, profile stores, full projection, targeted
   reads, older schema, unknown schema), the live-runtime fixture matrix and a
   family/usage test (delegated child hidden from the top level, compression
-  continuation visible, 3,881 session tokens).
+  continuation visible, 3,828 session tokens).
 
 Verification (2026-11-24, runtime 0.8.3): `pnpm run build:lite` passed. The
 `pnpm test` body (`pnpm run verify:lite`) passed **920 package tests** (domain 103,
@@ -264,25 +264,26 @@ per-model rollup.
 
 Projection/coverage limits: only live (`active = 1`) transcript rows are
 projected, so compaction-archived and rewound rows stay as native evidence;
-usage carries session/model granularity (each row is an independent aggregate
-event, so trace reports call granularity over those aggregates); tool results
-carry no native error flag, so `is_error` is not invented.
+usage carries session/model granularity (aggregate events have no turn identity,
+so trace reports `session`); tool results carry no native error flag, so
+`is_error` is not invented.
 
 ### Delivery record — Pi and Oh My Pi (2026-11-24)
 
-Status: implemented and verified in the working tree; not committed or released.
+Status: implemented and verified; committed in `9953111` with review corrections in the next commit.
 
 Implemented slice:
 
 - `packages/source-adapters/src/platforms/pi.ts` and `oh-my-pi.ts` register the
   experimental `pi` and `oh_my_pi` sources. Roots: `~/.pi/agent/sessions`
-  (`PI_CODING_AGENT_DIR` override, `PI_CONFIG_DIR` rename) and
-  `~/.omp/agent/sessions` plus `profiles/*/agent/sessions`; a marker-less
-  `PI_CODING_AGENT_DIR` is accepted only by the product whose own root exists,
-  so one installation is not indexed twice.
+  (`PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR` overrides) and
+  `~/.omp/agent/sessions` (`PI_CONFIG_DIR` / `PI_CODING_AGENT_DIR` overrides)
+  plus `profiles/*/agent/sessions`. A marker-less `PI_CODING_AGENT_DIR` is
+  accepted only by the product whose default root exists and the other
+  product's root does not; a dual install requires explicit selection.
 - `platforms/pi-family/reader.ts` parses the shared JSONL format: optional
   fixed-width title slot, session header (v1/v2/v3), tree entries
-  (`id`/`parentId`), active-branch reconstruction from the last entry, title
+  (`id`/`parentId`), active-branch reconstruction from the active leaf (`activeLeafId` when present, otherwise the last entry), title
   precedence, malformed/truncated-tail diagnostics and parent-session path
   resolution.
 - `platforms/pi-family/runtime.ts` keeps message semantics: user/assistant text,
@@ -305,7 +306,7 @@ passed **920 package tests**, 4 catalog tests and dependency boundaries;
 31 advisories); `mock-data:validate` passed across 208 files;
 `verify:lite-artifact` passed; `git diff --check` passed. Pi and OMP fixture
 snapshots report zero projection issues; Pi usage stays call-granular
-(3,373 tokens) and OMP keeps its task child hidden with 1,794 total tokens
+(4,466 tokens including native inactive-branch usage) and OMP keeps its task child hidden with 1,794 total tokens
 including the ordinary fork.
 
 Projection/coverage limits: abandoned branches and non-active entries remain in

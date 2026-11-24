@@ -32,9 +32,24 @@ test("[pi/oh_my_pi] register as experimental Pi-family JSONL sources", () => {
   assert.deepEqual(pi.getDefaultBaseDirCandidates({ homeDir: "/Users/tester", env: {} }), [
     "/Users/tester/.pi/agent/sessions",
   ]);
+  const piDefault = "/Users/tester/.pi/agent";
   assert.deepEqual(
-    pi.getDefaultBaseDirCandidates({ homeDir: "/Users/tester", env: { PI_CODING_AGENT_DIR: "/opt/pi-agent" } }),
+    pi.getDefaultBaseDirCandidates({
+      homeDir: "/Users/tester",
+      env: { PI_CODING_AGENT_DIR: "/opt/pi-agent" },
+      pathExists: (targetPath) => targetPath === piDefault,
+    }),
     ["/opt/pi-agent/sessions", "/Users/tester/.pi/agent/sessions"],
+    "a marker-less override is accepted when only Pi's own root exists",
+  );
+  assert.deepEqual(
+    pi.getDefaultBaseDirCandidates({
+      homeDir: "/Users/tester",
+      env: { PI_CODING_AGENT_DIR: "/opt/pi-agent" },
+      pathExists: (targetPath) => targetPath === piDefault || targetPath === "/Users/tester/.omp/agent",
+    }),
+    ["/Users/tester/.pi/agent/sessions"],
+    "a dual install requires explicit source selection for marker-less overrides",
   );
   assert.deepEqual(omp.getDefaultBaseDirCandidates({ homeDir: "/Users/tester", env: {} }), [
     "/Users/tester/.omp/agent/sessions",
@@ -102,13 +117,18 @@ test("[pi] active-branch messages project turns, per-call usage, tools, thinking
   assert.equal(toolResults.some((fragment) => fragment.payload.is_error === true), true);
 
   const usage = payload.fragments.filter((fragment) => fragment.fragment_kind === "token_usage_signal");
-  assert.equal(usage.length, 4);
+  assert.equal(usage.length, 5);
   assert.equal(usage.every((fragment) => typeof fragment.payload.independent_usage_event_id === "string"), true);
   assert.equal(usage.every((fragment) => fragment.payload.scope === "call"), true);
   assert.equal(
     usage.reduce((sum, fragment) => sum + ((fragment.payload.token_usage as Record<string, number>).total_tokens ?? 0), 0),
-    3_373,
+    4_466,
+    "native totals include the abandoned branch while its text stays out of the conversation",
   );
+  assert.ok(usage.some((fragment) => fragment.payload.call_kind === "inactive_assistant"));
+  assert.ok(usage.some((fragment) => fragment.payload.stop_reason === "tool_use"));
+  assert.ok(texts.some((text) => text.includes("Extension note for the retry review.")));
+  assert.ok(texts.some((text) => text.includes("[file] src/retry.ts")));
   assert.ok(payload.fragments.some((fragment) => fragment.fragment_kind === "model_signal" && fragment.payload.model === "gpt-5"));
 });
 
@@ -189,4 +209,38 @@ test("[pi] targeted reads resolve one session and reject unknown refs", async ()
     runSourceProbe({ source_ids: [source.id], target_session_refs: ["pi-missing"] }, [source]),
     /requested session/u,
   );
+});
+
+test("[oh_my_pi] a late off-branch usage entry keeps the activeLeafId conversation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-omp-leaflate-"));
+  try {
+    const dir = path.join(root, "agent", "sessions", "--w--");
+    await mkdir(dir, { recursive: true });
+    const file = path.join(dir, "2026-01-02T00-00-00_omp-leaflate.jsonl");
+    const base = Date.UTC(2026, 0, 2, 0, 0, 0);
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const rows = [
+      { type: "session", version: 3, id: "omp-leaflate", timestamp: iso(base), cwd: "/workspace/omp" },
+      { type: "message", id: "u1", parentId: null, timestamp: iso(base + 1000), message: { role: "user", content: "First prompt.", timestamp: base + 1000 } },
+      { type: "message", id: "a1", parentId: "u1", timestamp: iso(base + 2000), message: { role: "assistant", model: "gpt-5", content: [{ type: "text", text: "First reply." }], usage: { input: 10, output: 2, totalTokens: 12 }, stopReason: "stop", timestamp: base + 2000 } },
+      { type: "message", id: "u2", parentId: "a1", timestamp: iso(base + 3000), message: { role: "user", content: "Second prompt.", timestamp: base + 3000 } },
+      { type: "message", id: "a2", parentId: "u2", timestamp: iso(base + 4000), message: { role: "assistant", model: "gpt-5", content: [{ type: "text", text: "Second reply." }], usage: { input: 20, output: 3, totalTokens: 23 }, stopReason: "stop", timestamp: base + 4000 } },
+      { type: "model_usage", id: "late", parentId: "a1", activeLeafId: "a2", timestamp: iso(base + 5000), purpose: "title", model: "gpt-5", usage: { input: 5, output: 1, totalTokens: 6 } },
+    ];
+    await writeFile(file, rows.map((row) => JSON.stringify(row)).join("\n") + "\n", "utf8");
+
+    const { seed } = extractPiFamilySessionSeed("oh_my_pi", file, Buffer.from(rows.map((row) => JSON.stringify(row)).join("\n") + "\n"));
+    assert.ok(seed);
+    const pointers = seed.records.map((record) => record.pointer);
+    assert.ok(pointers.includes("entry:4") && pointers.includes("entry:5"), "the active leaf follows activeLeafId, not the last physical row");
+
+    const source = createSourceDefinition("src-omp-leaflate", "oh_my_pi", root);
+    const [payload] = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources;
+    assert.ok(payload);
+    assert.deepEqual(payload.turns.map((turn) => turn.canonical_text), ["First prompt.", "Second prompt."]);
+    assert.ok(payload.fragments.some((fragment) => fragment.fragment_kind === "token_usage_signal"
+      && (fragment.payload.token_usage as Record<string, number>).total_tokens === 6));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

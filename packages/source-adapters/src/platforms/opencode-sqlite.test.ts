@@ -87,12 +87,12 @@ test("[opencode] SQLite v2 keeps assistant usage apart from compaction and proje
     assert.equal(session.model, "mock-opencode-v2");
     assert.equal(payload.turns.length, 1);
     assert.equal(payload.turns[0]?.canonical_text, "Compare the two OpenCode storage generations.");
-    assert.equal(payload.turns[0]?.context_summary?.token_usage?.total_tokens, 1_768);
+    assert.equal(payload.turns[0]?.context_summary?.token_usage?.total_tokens, 1_778);
 
     // The generic runtime applies assistant usage to its reply text rather than
     // emitting a standalone signal; the turn total proves compaction tokens
     // stayed out of reply accounting.
-    assert.equal(payload.turns[0]?.context_summary?.token_usage?.total_tokens, 1_768);
+    assert.equal(payload.turns[0]?.context_summary?.token_usage?.total_tokens, 1_778);
 
     const toolResults = payload.fragments.filter((fragment) => fragment.fragment_kind === "tool_result");
     assert.equal(toolResults.length, 2);
@@ -249,6 +249,58 @@ test("[opencode] an unrecognized SQLite schema is reported instead of guessed", 
     const dbPath = path.join(root, "opencode.db");
     execSql(dbPath, "CREATE TABLE unrelated (id TEXT PRIMARY KEY);");
     assert.throws(() => extractOpenCodeSqliteSeeds(dbPath), /Unrecognized OpenCode SQLite schema/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("[opencode] a metadata-only migrated store does not hide the complete legacy JSON session", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-opencode-partial-"));
+  try {
+    const dbPath = path.join(root, "opencode.db");
+    execSql(dbPath, await readFile(path.join(sqliteFixtures, "v2.sql"), "utf8"));
+    // Interrupted migration: sessions exist, conversation rows do not.
+    execSql(dbPath, "DELETE FROM session_part; DELETE FROM session_message;");
+
+    const storage = path.join(root, "storage");
+    const sessionDir = path.join(storage, "session", "global");
+    const messageDir = path.join(storage, "message", "ses_fixture_v2_main");
+    const userPartDir = path.join(storage, "part", "msg_partial_user");
+    const assistantPartDir = path.join(storage, "part", "msg_partial_assistant");
+    for (const dir of [sessionDir, messageDir, userPartDir, assistantPartDir]) {
+      await mkdir(dir, { recursive: true });
+    }
+    await writeFile(
+      path.join(sessionDir, "ses_fixture_v2_main.json"),
+      JSON.stringify({ id: "ses_fixture_v2_main", title: "Legacy partial recovery", time: { created: 1_770_000_000_000 } }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(messageDir, "msg_partial_user.json"),
+      JSON.stringify({ id: "msg_partial_user", sessionID: "ses_fixture_v2_main", role: "user", time: { created: 1_770_000_001_000 } }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(userPartDir, "prt_partial_user.json"),
+      JSON.stringify({ id: "prt_partial_user", type: "text", text: "Recovered prompt from JSON." }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(messageDir, "msg_partial_assistant.json"),
+      JSON.stringify({ id: "msg_partial_assistant", sessionID: "ses_fixture_v2_main", role: "assistant", time: { created: 1_770_000_002_000 } }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(assistantPartDir, "prt_partial_assistant.json"),
+      JSON.stringify({ id: "prt_partial_assistant", type: "text", text: "Recovered reply from JSON." }),
+      "utf8",
+    );
+
+    const source = opencodeSource(root);
+    const [payload] = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources;
+    assert.ok(payload);
+    assert.equal(payload.turns.length, 1, "the JSON copy stays readable when the SQLite store has no message rows");
+    assert.equal(payload.turns[0]?.canonical_text, "Recovered prompt from JSON.");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
