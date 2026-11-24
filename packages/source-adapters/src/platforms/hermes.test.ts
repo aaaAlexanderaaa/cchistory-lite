@@ -347,3 +347,40 @@ test("[hermes] hidden sessions stay out of the transcript while archived history
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("[hermes] id-less messages, malformed tool_calls, and _delegate_from-only targets degrade cleanly", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-hermes-edge-"));
+  try {
+    const db = new DatabaseSync(path.join(root, "state.db"));
+    try {
+      db.exec(`
+        CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, model TEXT, model_config TEXT, started_at REAL NOT NULL);
+        CREATE TABLE messages (session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, tool_calls TEXT, timestamp REAL NOT NULL);
+        INSERT INTO sessions VALUES ('sess_p', 'cli', 'm', NULL, 1773000000.0);
+        INSERT INTO sessions VALUES ('sess_c', 'cli', 'm', '{"_delegate_from":"sess_p"}', 1773000010.0);
+        INSERT INTO messages VALUES ('sess_p', 'user', 'Check id-less messages.', NULL, 1773000001.0);
+        INSERT INTO messages VALUES ('sess_p', 'assistant', 'Malformed tools follow.', '{not-json', 1773000002.0);
+        INSERT INTO messages VALUES ('sess_c', 'user', 'Delegated via model_config only.', NULL, 1773000011.0);
+      `);
+    } finally {
+      db.close();
+    }
+    const source = hermesSource(root);
+    const [payload] = (
+      await runSourceProbe({ source_ids: [source.id], target_session_refs: ["sess:hermes:sess_p"] }, [source])
+    ).sources;
+    assert.ok(payload);
+    assert.deepEqual(
+      payload.sessions.map((session) => session.source_session_id).sort(),
+      ["sess_c", "sess_p"],
+      "targeted parent read includes delegated child linked only by model_config._delegate_from",
+    );
+    assert.ok(payload.turns.some((turn) => turn.canonical_text === "Check id-less messages."));
+    assert.ok(
+      payload.loss_audits.some((audit) => audit.diagnostic_code === "hermes_tool_calls_malformed"),
+      "malformed tool_calls JSON must emit a diagnostic instead of being silently ignored",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

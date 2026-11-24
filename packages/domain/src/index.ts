@@ -663,6 +663,8 @@ export interface SessionUsageEvent {
   created_at: string;
   model?: string;
   token_usage: TokenUsageSummary;
+  /** Native attribution scope: "call" (default) for per-API-call events, "session" for session/model aggregates. */
+  usage_scope?: "call" | "session";
   /** 1-based chronological sequence ordinal within the session when known. */
   seq?: number;
   stop_reason?: import("./parsed-session.js").AssistantStopReason;

@@ -1,38 +1,29 @@
 import { DatabaseSync } from "node:sqlite";
-import type { SourceReadBudget } from "../../core/read-budget.js";
-import { readBudgetedSqliteRows } from "../../core/read-budget.js";
+import { readBudgetedSqliteRows, SourceReadBudgetExceededError, type SourceReadBudget } from "../../core/read-budget.js";
 import type { ExtractedSessionSeed } from "../../core/conversation-seeds.js";
-import { asNumber, asString, isObject, safeJsonParse } from "../../core/type-guards.js";
+import { asString, isObject, safeJsonParse } from "../../core/type-guards.js";
+import {
+  buildMessageRecord,
+  epochMillisIso,
+  normalizeDirectory,
+  normalizeOpenCodeUsage,
+  parseJsonObject,
+  type OpenCodeMessageRow,
+  type OpenCodePartRow,
+  type OpenCodeSeedDiagnostic,
+  type OpenCodeSqliteSchema,
+} from "./sqlite-records.js";
 
 /**
- * OpenCode native SQLite reader.
+ * Role: OpenCode native SQLite store reader (schema detection, read-only
+ * transaction, target filtering, and budgeted row retrieval). Excludes
+ * part/message record formatting (owned by `sqlite-records.ts`).
  *
- * The store has three shapes in the wild:
- *
- * - `session` / `message` / `part` (OpenCode 1.2 era), one row per message and
- *   part with the payload in a JSON `data` column;
- * - pre-split v2: `session` (the future `session_v2` metadata table under its
- *   old name) plus `session_message`/`session_part`, optionally beside the now
- *   empty `message`/`part` tables;
- * - current v2: `session_v2` plus `session_message`/`session_part`.
- *
- * The reader detects the message table first, because `session` is a valid
- * metadata table in both the legacy and the pre-split v2 shape. It projects
- * rows into the adapter's generic message records and leaves turn, tool and
- * usage semantics to the canonical interpreter. The database is opened
- * read-only inside one read transaction so budget admission and retrieval see
- * the same snapshot.
+ * Supported shapes:
+ * - `session` / `message` / `part` (OpenCode 1.2 era);
+ * - pre-split v2 (`session` + `session_message` / `session_part`, optional `seq`);
+ * - current v2 (`session_v2` + `session_message` / `session_part`).
  */
-
-interface SqliteSchema {
-  version: 2 | 1;
-  sessionsTable: "session_v2" | "session";
-  messagesTable: "session_message" | "message";
-  partsTable?: "session_part" | "part";
-  sessionColumns: ReadonlySet<string>;
-  messageColumns: ReadonlySet<string>;
-  partColumns: ReadonlySet<string>;
-}
 
 interface SessionRow {
   id: unknown;
@@ -42,30 +33,6 @@ interface SessionRow {
   model?: unknown;
   time_created?: unknown;
   time_updated?: unknown;
-}
-
-interface MessageRow {
-  id: unknown;
-  type?: unknown;
-  seq?: unknown;
-  data: unknown;
-  time_created?: unknown;
-  time_updated?: unknown;
-}
-
-interface PartRow {
-  message_id: unknown;
-  ordinal?: unknown;
-  type?: unknown;
-  data: unknown;
-  time_created?: unknown;
-  time_updated?: unknown;
-}
-
-interface OpenCodeSeedDiagnostic {
-  code: string;
-  detail: string;
-  severity?: "info" | "warning" | "error";
 }
 
 export interface OpenCodeSqliteReadOptions {
@@ -109,7 +76,7 @@ export function extractOpenCodeSqliteSeeds(
   }
 }
 
-function detectSchema(db: DatabaseSync, dbPath: string): SqliteSchema {
+function detectSchema(db: DatabaseSync, dbPath: string): OpenCodeSqliteSchema {
   const names = new Set(
     db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -130,7 +97,7 @@ function detectSchema(db: DatabaseSync, dbPath: string): SqliteSchema {
       );
     }
     const partsTable = names.has("session_part") ? ("session_part" as const) : undefined;
-    const schema: SqliteSchema = {
+    const schema: OpenCodeSqliteSchema = {
       version: 2,
       sessionsTable,
       messagesTable: "session_message",
@@ -145,7 +112,7 @@ function detectSchema(db: DatabaseSync, dbPath: string): SqliteSchema {
 
   if (names.has("session") && names.has("message")) {
     const partsTable = names.has("part") ? ("part" as const) : undefined;
-    const schema: SqliteSchema = {
+    const schema: OpenCodeSqliteSchema = {
       version: 1,
       sessionsTable: "session",
       messagesTable: "message",
@@ -177,7 +144,10 @@ function requireColumns(
   }
 }
 
-function tableColumns(db: DatabaseSync, table: SqliteSchema["sessionsTable"] | "session_message" | "session_part" | "message" | "part"): Set<string> {
+function tableColumns(
+  db: DatabaseSync,
+  table: OpenCodeSqliteSchema["sessionsTable"] | "session_message" | "session_part" | "message" | "part",
+): Set<string> {
   return new Set(
     db
       .prepare(`PRAGMA table_info(${table})`)
@@ -198,7 +168,7 @@ function matchesSessionRef(ref: string, rawSessionId: string): boolean {
 
 function listSessions(
   db: DatabaseSync,
-  schema: SqliteSchema,
+  schema: OpenCodeSqliteSchema,
   options: OpenCodeSqliteReadOptions,
 ): SessionRow[] {
   const selected = pickColumns(schema.sessionColumns, [
@@ -233,12 +203,18 @@ function listSessions(
       matchedIds.add(id);
     }
   }
-  for (const row of rows) {
-    const parentId = asString(row.parent_id);
-    if (parentId && matchedIds.has(parentId)) {
+  let added = true;
+  while (added) {
+    added = false;
+    for (const row of rows) {
       const id = asString(row.id);
-      if (id) {
+      if (!id || matchedIds.has(id)) {
+        continue;
+      }
+      const parentId = asString(row.parent_id);
+      if (parentId && matchedIds.has(parentId)) {
         matchedIds.add(id);
+        added = true;
       }
     }
   }
@@ -250,7 +226,7 @@ function listSessions(
 
 function buildSessionSeed(
   db: DatabaseSync,
-  schema: SqliteSchema,
+  schema: OpenCodeSqliteSchema,
   session: SessionRow,
   rawSessionId: string,
   options: OpenCodeSqliteReadOptions,
@@ -276,6 +252,10 @@ function buildSessionSeed(
     }
     const parts = (messageId ? partsByMessage.get(messageId) : undefined) ?? [];
     const role = schema.version === 2 ? asString(message.type) : asString(parsed.role);
+    const messageModel =
+      asString(parsed.modelID) ??
+      (isObject(parsed.model) ? asString(parsed.model.id) : undefined);
+    const effectiveModel = messageModel ?? sessionModel ?? firstAssistantModel;
     const effectiveParsed = { ...parsed };
     if (role === "assistant") {
       const assistantUsage = normalizeOpenCodeUsage(parsed.tokens);
@@ -286,9 +266,8 @@ function buildSessionSeed(
           rawJson: JSON.stringify({
             usage_only: true,
             usage: assistantUsage,
-            model:
-              asString(parsed.modelID)
-              ?? (isObject(parsed.model) ? asString(parsed.model.id) : undefined),
+            ...(effectiveModel ? { model: effectiveModel } : {}),
+            ...(asString(parsed.finish) ? { stop_reason: asString(parsed.finish) } : {}),
             source_event_type: "opencode_assistant_message",
             call_kind: "assistant",
           }),
@@ -307,9 +286,7 @@ function buildSessionSeed(
           rawJson: JSON.stringify({
             usage_only: true,
             usage: compactionUsage,
-            model:
-              asString(parsed.modelID)
-              ?? (isObject(parsed.model) ? asString(parsed.model.id) : undefined),
+            ...(effectiveModel ? { model: effectiveModel } : {}),
             source_event_type: "opencode_compaction",
             call_kind: "compaction",
           }),
@@ -366,11 +343,11 @@ function readSessionModel(value: unknown): string | undefined {
 
 function readMessages(
   db: DatabaseSync,
-  schema: SqliteSchema,
+  schema: OpenCodeSqliteSchema,
   sessionId: string,
   budget: SourceReadBudget | undefined,
   diagnostics: OpenCodeSeedDiagnostic[],
-): MessageRow[] {
+): OpenCodeMessageRow[] {
   const selected = pickColumns(schema.messageColumns, [
     "id",
     "type",
@@ -391,8 +368,11 @@ function readMessages(
       [sessionId],
       budget,
       `${schema.messagesTable} rows`,
-    ) as unknown as MessageRow[];
+    ) as unknown as OpenCodeMessageRow[];
   } catch (error) {
+    if (error instanceof SourceReadBudgetExceededError) {
+      throw error;
+    }
     diagnostics.push({
       code: "opencode_message_read_failed",
       detail: `Could not read ${schema.messagesTable} rows for session ${sessionId}: ${(error as Error).message}`,
@@ -403,11 +383,11 @@ function readMessages(
 
 function readParts(
   db: DatabaseSync,
-  schema: SqliteSchema,
+  schema: OpenCodeSqliteSchema,
   sessionId: string,
   budget: SourceReadBudget | undefined,
   diagnostics: OpenCodeSeedDiagnostic[],
-): Map<string, PartRow[]> {
+): Map<string, OpenCodePartRow[]> {
   if (!schema.partsTable) {
     return new Map();
   }
@@ -425,7 +405,7 @@ function readParts(
       : schema.partColumns.has("time_created")
         ? "message_id ASC, time_created ASC, rowid ASC"
         : "message_id ASC, rowid ASC";
-  let rows: PartRow[];
+  let rows: OpenCodePartRow[];
   try {
     rows = readBudgetedSqliteRows(
       db,
@@ -434,15 +414,18 @@ function readParts(
       [sessionId],
       budget,
       `${schema.partsTable} rows`,
-    ) as unknown as PartRow[];
+    ) as unknown as OpenCodePartRow[];
   } catch (error) {
+    if (error instanceof SourceReadBudgetExceededError) {
+      throw error;
+    }
     diagnostics.push({
       code: "opencode_part_read_failed",
       detail: `Could not read ${schema.partsTable} rows for session ${sessionId}: ${(error as Error).message}`,
     });
     return new Map();
   }
-  const byMessage = new Map<string, PartRow[]>();
+  const byMessage = new Map<string, OpenCodePartRow[]>();
   for (const row of rows) {
     const messageId = asString(row.message_id);
     if (!messageId) {
@@ -453,346 +436,4 @@ function readParts(
     byMessage.set(messageId, existing);
   }
   return byMessage;
-}
-
-interface MessageRecordContext {
-  messageId: string | undefined;
-  workingDirectory: string | undefined;
-  diagnostics: OpenCodeSeedDiagnostic[];
-}
-
-function buildMessageRecord(
-  schema: SqliteSchema,
-  message: MessageRow,
-  parsed: Record<string, unknown>,
-  parts: readonly PartRow[],
-  context: MessageRecordContext,
-): { observedAt?: string; model?: string; record: Record<string, unknown> } | undefined {
-  const v2Type = schema.version === 2 ? asString(message.type) : undefined;
-  const role = v2Type ?? asString(parsed.role);
-  if (!role) {
-    return undefined;
-  }
-
-  const content: Record<string, unknown>[] = [];
-  const pushLoss = (code: string, detail: string, severity: "info" | "warning" | "error" = "info"): void => {
-    context.diagnostics.push({ code, detail, severity });
-  };
-
-  if (role === "user") {
-    appendTextBlock(content, asString(parsed.text));
-    for (const part of parts) {
-      const parsedPart = parseJsonObject(asString(part.data), context.messageId, context.diagnostics, "part");
-      if (parsedPart) {
-        appendMessagePart(content, parsedPart, role, pushLoss);
-      }
-    }
-    appendUserFiles(content, parsed.files);
-  } else if (role === "assistant") {
-    const inlineContent = Array.isArray(parsed.content) ? parsed.content : [];
-    // Current builds store assistant parts in `session_part`; the inline copy is
-    // only authoritative when no part rows exist (part rows disabled).
-    if (parts.length === 0) {
-      for (const item of inlineContent) {
-        if (isObject(item)) {
-          appendMessagePart(content, item, role, pushLoss);
-        }
-      }
-    }
-    for (const part of parts) {
-      const parsedPart = parseJsonObject(asString(part.data), context.messageId, context.diagnostics, "part");
-      if (parsedPart) {
-        appendMessagePart(content, parsedPart, role, pushLoss);
-      }
-    }
-    if (parsed.error !== undefined) {
-      pushLoss("opencode_assistant_error_evidence", `Assistant message ${context.messageId ?? "?"} recorded an error payload: ${describeValue(parsed.error)}`);
-    }
-  } else if (role === "compaction") {
-    // A compaction is its own model call. Emitting its tokens as ordinary
-    // assistant usage would overwrite the neighbouring reply's accounting
-    // because canonical attributes signals to the nearest assistant reply.
-    const summary = extractContentText(parsed.summary);
-    if (summary) {
-      content.push({ type: "text", text: summary, synthetic: true });
-    }
-    pushLoss(
-      "opencode_compaction_usage_not_attributed",
-      `Compaction ${context.messageId ?? "?"} records usage for its own call; the amount stays out of assistant reply accounting until canonical has an independent compaction call identity.`,
-    );
-  } else if (role === "system" || role === "synthetic" || role === "skill") {
-    appendTextBlock(content, asString(parsed.text), true);
-  } else if (role === "shell") {
-    appendShellEvidence(content, parsed);
-  } else {
-    pushLoss("opencode_unhandled_message_type", `Unhandled OpenCode message type ${role}; kept only as a diagnostic.`);
-    return undefined;
-  }
-
-  const usage = role === "compaction" ? undefined : normalizeOpenCodeUsage(parsed.tokens);
-  const model =
-    asString(parsed.modelID) ??
-    (isObject(parsed.model) ? asString(parsed.model.id) : undefined);
-  const stopReason = asString(parsed.finish);
-
-  if (content.length === 0 && !usage && !model && role !== "user" && role !== "compaction") {
-    return undefined;
-  }
-
-  const observedAt =
-    epochMillisIso(message.time_created) ??
-    epochMillisIso(isObject(parsed.time) ? parsed.time.created : undefined);
-
-  return {
-    observedAt,
-    model,
-    record: {
-      id: context.messageId,
-      role: role === "compaction" || role === "shell" || role === "synthetic" || role === "skill" ? "system" : role,
-      timestamp: observedAt,
-      content,
-      ...(usage ? { usage } : {}),
-      ...(stopReason ? { stopReason } : {}),
-      ...(model ? { model } : {}),
-      ...(context.workingDirectory ? { cwd: context.workingDirectory } : {}),
-      opencode: {
-        storage: schema.messagesTable,
-        message_type: role,
-        provider_id:
-          asString(parsed.providerID) ??
-          (isObject(parsed.model) ? asString(parsed.model.providerID) : undefined),
-        agent: asString(parsed.agent) ?? asString(parsed.mode),
-      },
-    },
-  };
-}
-
-function appendMessagePart(
-  content: Record<string, unknown>[],
-  part: Record<string, unknown>,
-  role: string,
-  loss: (code: string, detail: string) => void,
-): void {
-  const partType = asString(part.type);
-  if (partType === "text" || partType === "reasoning") {
-    appendTextBlock(content, asString(part.text), part.synthetic === true);
-    return;
-  }
-  if (partType === "file" || partType === "file_part") {
-    appendFilePart(content, part);
-    return;
-  }
-  if (partType === "tool") {
-    appendToolPart(content, part);
-    return;
-  }
-  if (partType === "step-start" || partType === "step-finish" || partType === "snapshot" || partType === "patch") {
-    return;
-  }
-  if (partType === "compaction") {
-    loss(
-      "opencode_compaction_part_evidence",
-      `Compaction part ${asString(part.id) ?? "?"} is retained only as a diagnostic; its summary/usage is not projected as assistant usage.`,
-    );
-    return;
-  }
-  if (partType === "agent" || partType === "subtask") {
-    const label =
-      asString(part.name) ??
-      asString(part.agent) ??
-      asString(part.description) ??
-      asString(part.prompt) ??
-      partType;
-    appendTextBlock(content, `[${partType}] ${label}`, true);
-    return;
-  }
-  if (partType === "retry") {
-    loss("opencode_retry_part_evidence", `Retry part ${asString(part.id) ?? "?"} was recorded for ${role}; kept as a diagnostic.`);
-    return;
-  }
-  loss(
-    "opencode_unknown_part_type",
-    `Unknown OpenCode ${role} part type ${String(partType)}; raw payload retained in the source row only.`,
-  );
-}
-
-function appendTextBlock(content: Record<string, unknown>[], text: string | undefined, synthetic = false): void {
-  if (!text?.trim()) {
-    return;
-  }
-  content.push(synthetic ? { type: "text", text, synthetic: true } : { type: "text", text });
-}
-
-function appendUserFiles(content: Record<string, unknown>[], files: unknown): void {
-  if (!Array.isArray(files)) {
-    return;
-  }
-  for (const file of files) {
-    if (isObject(file)) {
-      appendFilePart(content, file);
-    }
-  }
-}
-
-function appendFilePart(content: Record<string, unknown>[], part: Record<string, unknown>): void {
-  // v1 FilePart: { filename, mime, url }; v2 FileAttachment: { name, ... }.
-  // A data: URL is never projected as text; it can be megabytes of base64.
-  const filename = asString(part.filename) ?? asString(part.name) ?? asString(part.path);
-  if (filename) {
-    content.push({ type: "text", text: `[file] ${truncateLabel(filename)}` });
-    return;
-  }
-  const mime = asString(part.mime) ?? asString(part.mediaType);
-  if (mime) {
-    content.push({ type: "text", text: `[file ${truncateLabel(mime)}]` });
-    return;
-  }
-  content.push({ type: "text", text: "[file attachment]" });
-}
-
-function appendToolPart(content: Record<string, unknown>[], item: Record<string, unknown>): void {
-  const state = isObject(item.state) ? item.state : undefined;
-  const callId = asString(item.callID) ?? asString(item.callId) ?? asString(item.id);
-  const toolName = asString(item.tool) ?? asString(item.name) ?? "tool";
-  content.push({
-    type: "tool_call",
-    id: callId,
-    name: toolName,
-    input: state?.input ?? item.input ?? {},
-  });
-
-  const status = asString(state?.status);
-  const error = state?.error ?? item.error;
-  const output = state?.output ?? state?.content ?? item.output;
-  const isError = status === "error" || error !== undefined;
-  if (isError || output !== undefined) {
-    // Keep both halves when a failed call carries partial content and an error.
-    const detail = isError && output !== undefined && error !== undefined
-      ? `${stringifyValue(output)}\n${stringifyValue(error)}`
-      : (output ?? error ?? { status });
-    content.push({
-      type: "tool_result",
-      tool_use_id: callId,
-      content: detail,
-      ...(isError ? { is_error: true } : {}),
-    });
-  }
-}
-
-function appendShellEvidence(content: Record<string, unknown>[], parsed: Record<string, unknown>): void {
-  const command = asString(parsed.command);
-  const output = parsed.output;
-  const status = asString(parsed.status);
-  const exit = asNumber(parsed.exit);
-  const text = [
-    command ? `$ ${command}` : "shell",
-    status ? `status: ${status}${exit !== undefined ? ` (exit ${exit})` : ""}` : undefined,
-    output !== undefined ? stringifyValue(output) : undefined,
-  ].filter((value): value is string => Boolean(value)).join("\n");
-  appendTextBlock(content, text || "shell command evidence", true);
-}
-
-function extractContentText(value: unknown): string | undefined {
-  if (typeof value === "string") {
-    return value.trim() || undefined;
-  }
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-  const parts: string[] = [];
-  for (const item of value) {
-    if (isObject(item)) {
-      const text = asString(item.text);
-      if (text) {
-        parts.push(text);
-      }
-    }
-  }
-  return parts.join("\n").trim() || undefined;
-}
-
-function normalizeOpenCodeUsage(tokens: unknown): Record<string, number> | undefined {
-  if (!isObject(tokens)) {
-    return undefined;
-  }
-  const cache = isObject(tokens.cache) ? tokens.cache : undefined;
-  const inputTokens = asNumber(tokens.input);
-  const outputTokens = asNumber(tokens.output);
-  const reasoningTokens = asNumber(tokens.reasoning);
-  const cacheReadTokens = asNumber(cache?.read);
-  const cacheCreationTokens = asNumber(cache?.write);
-  const values = [inputTokens, outputTokens, reasoningTokens, cacheReadTokens, cacheCreationTokens];
-  if (values.every((value) => value === undefined)) {
-    return undefined;
-  }
-  const totalTokens = values.reduce<number>((total, value) => total + (value ?? 0), 0);
-  return {
-    ...(inputTokens !== undefined ? { inputTokens } : {}),
-    ...(outputTokens !== undefined ? { outputTokens } : {}),
-    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
-    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
-    ...(cacheCreationTokens !== undefined ? { cacheCreationTokens } : {}),
-    totalTokens,
-  };
-}
-
-function parseJsonObject(
-  raw: string | undefined,
-  messageId: string | undefined,
-  diagnostics: OpenCodeSeedDiagnostic[],
-  kind: string,
-): Record<string, unknown> | undefined {
-  if (!raw) {
-    diagnostics.push({
-      code: "opencode_empty_payload",
-      detail: `OpenCode ${kind} record${messageId ? ` ${messageId}` : ""} has no JSON payload.`,
-    });
-    return undefined;
-  }
-  const parsed = safeJsonParse(raw);
-  if (!isObject(parsed)) {
-    diagnostics.push({
-      code: "opencode_malformed_payload",
-      detail: `OpenCode ${kind} record${messageId ? ` ${messageId}` : ""} is not a JSON object.`,
-    });
-    return undefined;
-  }
-  return parsed;
-}
-
-function describeValue(value: unknown): string {
-  const text = typeof value === "string" ? value : stringifyValue(value);
-  return truncateLabel(text);
-}
-
-function stringifyValue(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  try {
-    return JSON.stringify(value) ?? String(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function truncateLabel(value: string, limit = 160): string {
-  return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
-}
-
-function normalizeDirectory(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  return trimmed.replace(/\\/gu, "/").replace(/\/+$/u, "") || "/";
-}
-
-function epochMillisIso(value: unknown): string | undefined {
-  const millis = asNumber(value);
-  if (millis === undefined || !Number.isFinite(millis)) {
-    return undefined;
-  }
-  const date = new Date(millis);
-  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }

@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { normalizePathSeparators } from "../core/utils.js";
 import type { PlatformAdapter } from "./types.js";
 
 const PI_CONFIG_DIR = ".pi";
@@ -61,9 +60,6 @@ export const piAdapter: PlatformAdapter = {
     }
     return [...new Set(candidates)];
   },
-  matchesSourceFile: (filePath) => {
-    const normalized = normalizePathSeparators(filePath);
-    return normalized.includes("/agent/sessions/") && normalized.endsWith(".jsonl");
-  },
+  matchesSourceFile: (filePath) => filePath.endsWith(".jsonl"),
   filterSourceFiles: (files) => [...files].sort((left, right) => left.localeCompare(right)),
 };

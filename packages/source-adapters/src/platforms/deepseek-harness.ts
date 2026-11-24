@@ -1,5 +1,4 @@
 import path from "node:path";
-import { normalizePathSeparators } from "../core/utils.js";
 import type { PlatformAdapter } from "./types.js";
 
 /**
@@ -81,11 +80,5 @@ export const deepSeekHarnessAdapter: PlatformAdapter = {
     // parsed last when an incomplete retained tree is the only evidence.
     return readSessionFileVersion(filePath) ?? 0;
   },
-  getSourceRoots: (baseDir) => {
-    const normalized = normalizePathSeparators(baseDir);
-    if (normalized.endsWith("/sessions")) {
-      return [baseDir];
-    }
-    return [baseDir];
-  },
+  getSourceRoots: (baseDir) => [baseDir],
 };

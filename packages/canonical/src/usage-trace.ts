@@ -197,20 +197,13 @@ export function buildSessionTraceReport(
     }
   }
 
-  // Sources that only record session/model aggregates attach every call event
-  // to no turn; report session granularity instead of pretending each aggregate
-  // row is one call.
-  const aggregateRows = summaryEvaluated.filter((item) => item.row.total_tokens > 0);
-  const aggregateOnly =
-    aggregateRows.length > 0
-    && aggregateRows.every((item) => item.row.is_call_event && !item.row.turn_id);
   const usageGranularity: UsageGranularity =
     summaryEvaluated.length === 0
       ? "unavailable"
-      : aggregateOnly
-        ? "session"
-        : summaryEvaluated.some((item) => item.row.is_call_event)
-          ? "call"
+      : summaryEvaluated.some((item) => item.row.is_call_event)
+        ? "call"
+        : summaryEvaluated.some((item) => item.row.usage_scope === "session")
+          ? "session"
           : "turn";
 
   const source = sourcesById.get(targetSession.source_id);

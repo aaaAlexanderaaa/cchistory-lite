@@ -70,7 +70,6 @@ const EVIDENCE_ONLY_EVENT_TYPES = new Set([
   "turn/end",
   "turn/start",
   "web/deepseek-search-llm-request",
-  "working-directory/change",
   "workspace/changes",
 ]);
 

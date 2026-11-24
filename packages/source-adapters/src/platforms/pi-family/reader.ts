@@ -54,6 +54,15 @@ const EVIDENCE_ONLY_ENTRY_TYPES = new Set([
   "session_info",
 ]);
 
+const NON_USAGE_INACTIVE_ENTRY_TYPES = new Set([
+  ...EVIDENCE_ONLY_ENTRY_TYPES,
+  "model_change",
+  "title_change",
+  "reset_boundary",
+]);
+
+const HEADER_PREFIX_SCAN_BYTES = 64 * 1024;
+
 export function extractPiFamilySessionSeed(
   platform: PiFamilyPlatform,
   filePath: string,
@@ -116,9 +125,9 @@ export function extractPiFamilySessionSeed(
   const entries = records.filter((record) => record !== headerRecord && record.value.type !== "title");
   const version = asNumber(header.version) ?? 1;
   const activeEntries = selectActiveBranch(entries, version, diagnostics);
-  const activeIds = new Set(
-    activeEntries.map((entry) => asString(entry.value.id)).filter((id): id is string => id !== undefined),
-  );
+  // Track active entries by physical line number rather than entry id so v1
+  // linear files and entries without ids are never emitted a second time.
+  const activeLineNumbers = new Set(activeEntries.map((entry) => entry.lineNumber));
 
   const rawSessionId =
     asString(header.id) ??
@@ -266,16 +275,19 @@ export function extractPiFamilySessionSeed(
   }
 
   // Native totals include compacted-away and abandoned-branch calls. Emit
-  // usage-only records for every offset entry that the active branch skipped.
+  // usage-only records for every entry that the active branch skipped.
   for (const entry of entries) {
-    const entryId = asString(entry.value.id);
-    if (entryId && activeIds.has(entryId)) {
+    if (activeLineNumbers.has(entry.lineNumber)) {
       continue;
     }
     appendInactiveUsage(entry, platform, output, diagnostics);
   }
 
   const lastActivity = lastMessageIso(activeEntries) ?? startedAt;
+  const forkParentPath =
+    !delegated && rawParentSession && (rawParentSession.includes("/") || rawParentSession.endsWith(".jsonl"))
+      ? rawParentSession
+      : undefined;
   return {
     seed: {
       sessionId,
@@ -283,9 +295,7 @@ export function extractPiFamilySessionSeed(
       ...(startedAt ? { createdAt: startedAt } : {}),
       ...(lastActivity ? { updatedAt: lastActivity } : {}),
       ...(workingDirectory ? { workingDirectory } : {}),
-      ...(rawParentSession && (rawParentSession.includes("/") || rawParentSession.endsWith(".jsonl"))
-        ? { parent_session_path: rawParentSession }
-        : {}),
+      ...(forkParentPath ? { parent_session_path: forkParentPath } : {}),
       ...(diagnostics.length > 0 ? { diagnostics } : {}),
       records: output,
     },
@@ -340,7 +350,7 @@ function appendInactiveUsage(
     pushUsage(entry.value.usage, undefined, entryType);
     return;
   }
-  if (entryType !== undefined && !EVIDENCE_ONLY_ENTRY_TYPES.has(entryType)) {
+  if (entryType !== undefined && !NON_USAGE_INACTIVE_ENTRY_TYPES.has(entryType)) {
     diagnostics.push({
       code: "pi_family_unhandled_inactive_entry",
       detail: `Unhandled inactive ${entryType} entry; kept only as a diagnostic.`,
@@ -464,7 +474,9 @@ function lastMessageIso(entries: readonly ParsedRecord[]): string | undefined {
  */
 function nestedSessionParent(filePath: string): string | undefined {
   const normalized = filePath.replace(/\\/gu, "/");
-  const match = normalized.match(/\/sessions\/[^/]+\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}_([^/]+)\/[^/]+\.jsonl$/u);
+  const match = normalized.match(
+    /\/sessions\/[^/]+\/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:[.-]\d+)?Z?_([^/]+)\/[^/]+\.jsonl$/u,
+  );
   return match?.[1] ?? undefined;
 }
 
@@ -514,14 +526,46 @@ function normalizeDirectory(value: string | undefined): string | undefined {
   return trimmed.replace(/\\/gu, "/").replace(/\/+$/u, "") || "/";
 }
 
-export function isPiFamilySessionFile(filePath: string): boolean {
-  const normalized = filePath.replace(/\\/gu, "/");
-  return normalized.includes("/agent/sessions/") && normalized.endsWith(".jsonl");
+export interface PiFamilyHeaderPrefixMetadata {
+  sessionId: string;
+  workingDirectory?: string;
+  delegatedParentId?: string;
 }
 
-export function parsePiFamilyRecordJson(raw: string | undefined): Record<string, unknown> | undefined {
-  const parsed = safeJsonParse(raw);
-  return isObject(parsed) ? parsed : undefined;
+/**
+ * Inspect only the leading JSONL header lines (optional OMP title slot plus
+ * session header) so targeted reads can identify sessions and delegated child
+ * transcripts without reading full files.
+ */
+export function inspectPiFamilyHeaderPrefix(
+  platform: PiFamilyPlatform,
+  filePath: string,
+  headLines: readonly string[],
+): PiFamilyHeaderPrefixMetadata {
+  let header: Record<string, unknown> | undefined;
+  for (const rawLine of headLines) {
+    const parsed = safeJsonParse(rawLine);
+    if (isObject(parsed) && parsed.type === "session") {
+      header = parsed;
+      break;
+    }
+  }
+  const rawSessionId =
+    asString(header?.id) ??
+    deriveSessionIdFromFileName(filePath) ??
+    `session-${path.basename(filePath, ".jsonl")}`;
+  const workingDirectory = normalizeDirectory(asString(header?.cwd));
+  const rawParentSession = asString(header?.parentSession);
+  const parentSession = resolveParentSessionRef(rawParentSession);
+  const nestedParent = nestedSessionParent(filePath);
+  const taskPromptCacheKey = asString(header?.taskPromptCacheKey);
+  const delegated = platform === "oh_my_pi" && Boolean(nestedParent ?? taskPromptCacheKey);
+  const delegatedParentId = delegated ? (nestedParent ?? parentSession) : undefined;
+  return {
+    sessionId: `sess:${platform}:${rawSessionId}`,
+    ...(workingDirectory ? { workingDirectory } : {}),
+    ...(delegatedParentId ? { delegatedParentId } : {}),
+  };
 }
 
 function headerOnlySeed(
@@ -530,9 +574,33 @@ function headerOnlySeed(
   fileBuffer: Buffer,
   diagnostics: PiSeedDiagnostic[],
 ): ExtractedSessionSeed | undefined {
-  const headerLine = fileBuffer.toString("utf8").split("\n", 1)[0];
-  const header = safeJsonParse(headerLine);
-  if (!isObject(header) || header.type !== "session") {
+  // Decode only a bounded leading slice so over-budget files never materialize
+  // a full UTF-8 string, while still reaching Oh My Pi's line-2 session header.
+  const prefixLines = fileBuffer
+    .subarray(0, HEADER_PREFIX_SCAN_BYTES)
+    .toString("utf8")
+    .split("\n")
+    .slice(0, 8);
+  let header: Record<string, unknown> | undefined;
+  let slotTitle: string | undefined;
+  for (const rawLine of prefixLines) {
+    if (!rawLine.trim()) {
+      continue;
+    }
+    const parsed = safeJsonParse(rawLine);
+    if (!isObject(parsed)) {
+      continue;
+    }
+    if (parsed.type === "title") {
+      slotTitle = asString(parsed.title)?.trim() || slotTitle;
+      continue;
+    }
+    if (parsed.type === "session") {
+      header = parsed;
+      break;
+    }
+  }
+  if (!header) {
     return undefined;
   }
   const rawSessionId = asString(header.id) ?? deriveSessionIdFromFileName(filePath);
@@ -540,16 +608,23 @@ function headerOnlySeed(
     return undefined;
   }
   const timestamp = normalizeIso(asString(header.timestamp));
+  const title = slotTitle || asString(header.title)?.trim() || undefined;
+  const workingDirectory = normalizeDirectory(asString(header.cwd));
   return {
     sessionId: `sess:${platform}:${rawSessionId}`,
-    ...(asString(header.title) ? { title: asString(header.title) } : {}),
+    ...(title ? { title } : {}),
     ...(timestamp ? { createdAt: timestamp } : {}),
-    ...(normalizeDirectory(asString(header.cwd)) ? { workingDirectory: normalizeDirectory(asString(header.cwd)) } : {}),
+    ...(workingDirectory ? { workingDirectory } : {}),
     diagnostics,
     records: [{
       pointer: "session header",
       observedAt: timestamp,
-      rawJson: JSON.stringify({ kind: "session", id: rawSessionId, ...(header.title ? { title: header.title } : {}) }),
+      rawJson: JSON.stringify({
+        kind: "session",
+        id: rawSessionId,
+        ...(title ? { title } : {}),
+        ...(workingDirectory ? { cwd: workingDirectory } : {}),
+      }),
     }],
   };
 }

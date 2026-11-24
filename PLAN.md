@@ -316,10 +316,65 @@ the file as raw evidence and contribute usage-only records, but their text is no
 projected; `thinking` blocks are collapsed reasoning evidence; image content is
 not projected as text; Pi v1 files have no tree, so their file order is the
 active order. Inherited fork prefixes are resolved only when `parentSession`
-names a readable path (id-shaped references stay duplicated and are reported by
-the source's raw evidence); a file above the read budget keeps only its header
-with a diagnostic instead of being streamed. Named OMP profiles are discovered
-from the config root for the default and derived agent directories.
+names a readable `.jsonl` path inside the selected source roots (id-shaped
+references stay duplicated and are reported by the source's raw evidence); a
+file above the read budget keeps only its header (including behind Oh My Pi's
+line-1 title slot) with a diagnostic instead of being streamed. Named OMP
+profiles are discovered under `<config-root>/profiles/*/agent/sessions` beside
+the default agent directory.
+
+### Node 22 & multi-adapter review fixes (2026-11-24)
+
+An independent code and runtime audit on Node v22.23.5 surfaced nine defects
+across the remote DeepSeek Harness adapter commits (`b41fe2b`–`b80da17`), now
+fixed with regression coverage:
+
+- **DeepSeek Harness**: Node 22's `zlib.createZstdDecompress()` stops silently
+  after the first frame in concatenated `.jsonl.zstd` logs; `reader.ts` now
+  walks RFC 8878 frame boundaries, decompresses each frame with
+  `maxOutputLength`, charges expansion to `SourceReadBudget.admit()`, enforces
+  a per-record byte cap, reports corrupt `.zstd` headers as
+  `dsh_zstd_decode_failed`, and supports `cacheWriteTokens` in `domain`.
+- **Hermes Agent & canonical `usage_scope`**: Node 22's `node:sqlite` truncates
+  TEXT columns at leading `\x00` bytes, erasing `\x00json:` multimodal rows;
+  `hermes/sqlite.ts` now selects `CAST(content AS BLOB) AS content`, handles
+  id-less `messages` tables, surfaces malformed `tool_calls`, re-throws
+  `SourceReadBudgetExceededError`, and includes `_delegate_from` descendants on
+  targeted parent reads. `SessionUsageEvent.usage_scope` (`"call" | "session"`)
+  now carries session-aggregate granularity explicitly through `canonical` so
+  Hermes aggregates report `session` in `trace` and SQL `calls`, never trigger
+  `>200K` per-call tier surcharges or fake per-call cache anomalies, and never
+  downgrade turn-less per-call sessions (such as Codex delegated children).
+- **OpenCode SQLite**: `generic/runtime.ts` and `opencode/sqlite.ts` now keep
+  `model` and `stop_reason` on `usage_only` call records (fixing 100%
+  `"unknown"` / `$0` pricing on SQLite installs), remove the stale
+  `opencode_compaction_usage_not_attributed` diagnostic, re-throw budget errors,
+  and split pure record formatting into `opencode/sqlite-records.ts`.
+- **Pi & Oh My Pi**: custom `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR`
+  and `--source-root` paths now match `.jsonl` session files (while OMP
+  `profiles/` stays scoped to `sessions/` subtrees); Pi v1 id-less entries track
+  active lines by line number so usage is never double-counted; `headerOnlySeed`
+  reads a bounded 64 KiB prefix to find OMP's line-2 session header;
+  `dropInheritedPiForkPrefix` excludes delegated task children, restricts parent
+  reads to `.jsonl` files inside the source's own roots under `SourceReadBudget`,
+  and matches `(entry_id, timestamp)`; `nestedSessionParent` accepts millisecond
+  and `Z` timestamps; `oh-my-pi.ts` no longer leaks global `process.env` /
+  `os.homedir()` in `getSourceRoots`; and targeted OMP parent reads include
+  delegated children via header prefix metadata.
+
+Verification (2026-11-24, Node v22.23.5, runtime 0.8.3): `pnpm run build:lite`
+passed; `pnpm test` (`verify:lite`) passed **931 package tests** (`@cchistory/domain`
+104, `@cchistory/canonical` 185, `@cchistory/source-adapters` 320,
+`@cchistory/live-runtime` 142, `@cchistory/lite-cli` 79, `@cchistory/lite-tui`
+101), 4 catalog tests, and dependency boundaries; `pnpm run verify:governance`
+passed (14 JS tests, 5 Python tests, 5 architecture rules across 166 matches,
+38 docs / 21 adapters, 32 advisories); `pnpm run mock-data:validate` passed
+across 208 files; `verify:lite-artifact -- --skip-build` passed (standalone
+tarball and local npm install); `git diff --check` passed. Direct built-CLI
+checks verified Hermes SQL `calls` (`granularity: "session"`,
+`high_context_tier: false`, base-rate cost `0.41875` USD), OpenCode SQLite
+`stats --by model` (`mock-opencode-v2`, 1,778 tokens), and targeted OMP `trace`
+including the delegated task child.
 
 ## Previous work — 2026-11-21 Per-call usage telemetry, anomaly diagnostics, and `trace`
 

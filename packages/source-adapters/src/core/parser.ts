@@ -1,4 +1,5 @@
-import type { SourceReadBudget } from "./read-budget.js";
+import { SourceReadBudgetExceededError, type SourceReadBudget } from "./read-budget.js";
+import { getPlatformAdapter } from "../platforms/registry.js";
 import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import { applyMaskTemplates } from "../masks.js";
@@ -647,13 +648,20 @@ export async function extractMultiSessionSeeds(
     return extractHermesSqliteSeeds(filePath, { targetSessionRefs, budget });
   }
   if (source.platform === "pi" || source.platform === "oh_my_pi") {
-    const { seed } = extractPiFamilySessionSeed(source.platform, filePath, fileBuffer, {
+    const { seed, diagnostics } = extractPiFamilySessionSeed(source.platform, filePath, fileBuffer, {
       maxBytes: budget?.maximumUnitBytes?.(),
     });
     if (!seed) {
+      if (diagnostics.length > 0) {
+        return [{
+          sessionId: deriveSessionId(source.platform, filePath, fileBuffer),
+          diagnostics,
+          records: [],
+        }];
+      }
       return [];
     }
-    return [await dropInheritedPiForkPrefix(seed, filePath)];
+    return [await dropInheritedPiForkPrefix(seed, filePath, source, budget)];
   }
   if (source.platform === "opencode" || source.platform === "gemini") {
     const exportSeeds = await extractConversationExportSeeds(source, filePath, fileBuffer, blobId);
@@ -1609,15 +1617,18 @@ export async function readOptionalTextFile(targetPath: string): Promise<string |
 }
 
 /**
- * Pi/OMP forks copy the parent session's entries (including their ids and
- * usage) into a new file. Those inherited entries are not new work: drop records
- * whose native entry id already exists in the parent file so the fork does not
- * duplicate conversation or billing. Only path-shaped parent references can be
- * resolved without scanning unrelated roots.
+ * Pi/OMP forks copy the parent session's entries (including their ids,
+ * timestamps, and usage) into a new file. Those inherited entries are not new
+ * work: drop records whose native `(entry_id, timestamp)` matches the parent
+ * file so the fork does not duplicate conversation or billing. Only `.jsonl`
+ * parent paths inside the source's own roots are read, under the shared read
+ * budget.
  */
 async function dropInheritedPiForkPrefix(
   seed: ExtractedSessionSeed,
   filePath: string,
+  source: SourceDefinition,
+  budget?: SourceReadBudget,
 ): Promise<ExtractedSessionSeed> {
   const parentPath = seed.parent_session_path;
   if (!parentPath) {
@@ -1626,17 +1637,89 @@ async function dropInheritedPiForkPrefix(
   const resolvedPath = path.isAbsolute(parentPath)
     ? parentPath
     : path.resolve(path.dirname(filePath), parentPath);
-  let parentText: string;
+  if (!resolvedPath.toLowerCase().endsWith(".jsonl")) {
+    return seed;
+  }
+  const adapter = getPlatformAdapter(source.platform);
+  const candidateRoots = [
+    source.base_dir,
+    ...(adapter?.getSourceRoots?.(source.base_dir) ?? []),
+    ...(adapter?.getSupplementalSourceRoots?.(source.base_dir) ?? []),
+  ];
+  let realParentPath: string;
+  let realFilePath: string;
   try {
-    const stats = await fs.stat(resolvedPath);
-    if (stats.size > 64 * 1024 * 1024) {
-      return seed;
-    }
-    parentText = await fs.readFile(resolvedPath, "utf8");
+    [realParentPath, realFilePath] = await Promise.all([fs.realpath(resolvedPath), fs.realpath(filePath)]);
   } catch {
     return seed;
   }
-  const inheritedIds = new Set<string>();
+  if (realParentPath === realFilePath) {
+    return seed;
+  }
+  const realRoots = (
+    await Promise.all(
+      [...new Set(candidateRoots)].map(async (rootDir) => {
+        try {
+          return await fs.realpath(rootDir);
+        } catch {
+          return undefined;
+        }
+      }),
+    )
+  ).filter((rootDir): rootDir is string => rootDir !== undefined);
+  const insideAllowedRoot = realRoots.some((rootDir) => {
+    const relative = path.relative(rootDir, realParentPath);
+    return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
+  });
+  if (!insideAllowedRoot) {
+    return {
+      ...seed,
+      diagnostics: [
+        ...(seed.diagnostics ?? []),
+        {
+          code: "pi_family_fork_parent_outside_root",
+          detail: "Fork parentSession path lies outside the selected source roots and was not read.",
+          severity: "info",
+        },
+      ],
+    };
+  }
+  const maxParentBytes = Math.min(budget?.maximumUnitBytes?.() ?? 64 * 1024 * 1024, 64 * 1024 * 1024);
+  let parentText: string;
+  try {
+    const stats = await fs.stat(realParentPath);
+    if (!stats.isFile() || stats.size > maxParentBytes) {
+      return {
+        ...seed,
+        diagnostics: [
+          ...(seed.diagnostics ?? []),
+          {
+            code: "pi_family_fork_parent_over_budget",
+            detail: `Fork parent session exceeds the ${maxParentBytes}-byte read ceiling; inherited entries could not be separated.`,
+            severity: "info",
+          },
+        ],
+      };
+    }
+    budget?.admit(stats.size, `${realParentPath}:pi fork parent`);
+    parentText = await fs.readFile(realParentPath, "utf8");
+  } catch (error) {
+    if (error instanceof SourceReadBudgetExceededError) {
+      return {
+        ...seed,
+        diagnostics: [
+          ...(seed.diagnostics ?? []),
+          {
+            code: "pi_family_fork_parent_over_budget",
+            detail: error.message,
+            severity: "info",
+          },
+        ],
+      };
+    }
+    return seed;
+  }
+  const inheritedById = new Map<string, Set<string>>();
   for (const line of parentText.split("\n")) {
     if (!line.trim()) {
       continue;
@@ -1645,23 +1728,43 @@ async function dropInheritedPiForkPrefix(
     if (isObject(parsed)) {
       const id = asString(parsed.id);
       if (id) {
-        inheritedIds.add(id);
+        const ts = coerceIso(parsed.timestamp) ?? "";
+        const set = inheritedById.get(id) ?? new Set<string>();
+        set.add(ts);
+        inheritedById.set(id, set);
       }
     }
   }
-  if (inheritedIds.size === 0) {
+  if (inheritedById.size === 0) {
     return seed;
   }
   const records = seed.records.filter((record) => {
     const parsed = safeJsonParse(record.rawJson);
     const entryId = isObject(parsed) ? asString(parsed.entry_id) : undefined;
-    return entryId === undefined || !inheritedIds.has(entryId);
+    if (entryId === undefined) {
+      return true;
+    }
+    const parentTimestamps = inheritedById.get(entryId);
+    if (!parentTimestamps) {
+      return true;
+    }
+    const recordTs = record.observedAt ?? coerceIso(isObject(parsed) ? parsed.timestamp : undefined) ?? "";
+    return !parentTimestamps.has(recordTs);
   });
   if (records.length === seed.records.length) {
     return seed;
   }
+  let updatedAt = seed.createdAt;
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const candidate = records[index];
+    if (candidate && candidate.pointer !== "session header" && candidate.observedAt) {
+      updatedAt = candidate.observedAt;
+      break;
+    }
+  }
   return {
     ...seed,
+    ...(updatedAt ? { updatedAt } : {}),
     records,
     diagnostics: [
       ...(seed.diagnostics ?? []),

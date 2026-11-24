@@ -362,6 +362,7 @@ export function buildSessionUsageEvents(params: {
     atomIndex: number;
     atom: ConversationAtom;
     id: string;
+    usageScope: "call" | "session";
     threadKey: string;
     subagentKey?: string;
     messageId?: string;
@@ -389,6 +390,7 @@ export function buildSessionUsageEvents(params: {
     if (!id || seenCallIds.has(id) || !extractTokenUsageFromPayload(atom.payload)) continue;
     seenCallIds.add(id);
 
+    const usageScope: "call" | "session" = asString(atom.payload.scope) === "session" ? "session" : "call";
     const messageId = asString(atom.payload.message_id);
     const coveredRaw = atom.payload.covered_step_indices;
     const coveredStepIndices = Array.isArray(coveredRaw)
@@ -400,17 +402,24 @@ export function buildSessionUsageEvents(params: {
       atomIndex,
       atom,
       id,
+      usageScope,
       threadKey,
       subagentKey,
       messageId,
       coveredStepIndices: coveredStepIndices && coveredStepIndices.size > 0 ? coveredStepIndices : undefined,
-      compactionBefore: compactionPendingByThread.get(threadKey) === true,
+      compactionBefore: usageScope === "call" && compactionPendingByThread.get(threadKey) === true,
       emittedTools: [],
       precedingTools: [],
       truncatedCount: 0,
     };
-    compactionPendingByThread.set(threadKey, false);
+    if (usageScope === "call") {
+      compactionPendingByThread.set(threadKey, false);
+    }
     calls.push(entry);
+
+    if (usageScope === "session") {
+      continue;
+    }
 
     const threadCalls = callsByThread.get(threadKey) ?? [];
     threadCalls.push(entry);
@@ -554,6 +563,7 @@ export function buildSessionUsageEvents(params: {
       created_at: entry.atom.time_key,
       model: asString(entry.atom.payload.model),
       token_usage: extractTokenUsageFromPayload(entry.atom.payload)!,
+      ...(entry.usageScope === "session" ? { usage_scope: "session" as const } : {}),
       seq: idx + 1,
       ...(stopReason ? { stop_reason: stopReason } : {}),
       ...(entry.subagentKey ? { subagent_key: entry.subagentKey } : {}),

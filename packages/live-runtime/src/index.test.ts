@@ -1,4 +1,4 @@
-import { buildConversationEvidence, interpretSessionEvidence } from "@cchistory/canonical";
+import { buildConversationEvidence, executeCanonicalQuery, interpretSessionEvidence } from "@cchistory/canonical";
 import assert from "node:assert/strict";
 import { access, appendFile, copyFile, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
@@ -12,6 +12,7 @@ import { listPlatformAdapters, runSourceProbe } from "@cchistory/source-adapters
 import {
   assertLiteSourceRoot,
   buildLiveSnapshot,
+  compileSql,
   LiveHistorySnapshot,
   maskCompactPreview,
   resolveLiteSources,
@@ -2488,6 +2489,11 @@ test("Codex inherited embedded usage stays on the parent while child calls remai
   const child = snapshot.listResolvedSessions().find(session => session.source_session_id === "codex-delegation-child")!;
   assert.equal(child.turn_count, 0);
   assert.deepEqual(child.usage_events!.map(event => [event.turn_id, event.token_usage.total_tokens]), [[null, 11]]);
+  assert.equal(
+    snapshot.getSessionTrace({ sessionRef: child.id, filters: { timezone: "UTC" } })?.usage_granularity,
+    "call",
+    "turn-less per-call delegated children must keep call granularity",
+  );
 });
 
 test("OpenCode SQLite stores project v1 and v2 sessions without projection issues", async () => {
@@ -2514,6 +2520,16 @@ test("OpenCode SQLite stores project v1 and v2 sessions without projection issue
     const overview = snapshot.getUsageOverview({ timezone: "UTC" });
     assert.equal(overview.total_tokens, 1_778);
     assert.equal(overview.usage_event_count, 2);
+    const breakdown = snapshot.getUsageBreakdown({
+      filters: { timezone: "UTC" },
+      time_dimension: "day",
+      matrix_dimensions: ["model", "day"],
+    });
+    assert.deepEqual(
+      breakdown.by_model.rows.map((row) => [row.key, row.total_tokens]),
+      [["mock-opencode-v2", 1_778]],
+      "OpenCode SQLite usage_only events must retain their model rather than falling into unknown",
+    );
 
     const trace = snapshot.getSessionTrace({
       sessionRef: snapshot.listResolvedSessions()[0]!.id,
@@ -2593,6 +2609,12 @@ test("OpenCode v1 and pre-split SQLite stores project without issues and keep de
         assert.equal(snapshot.listResolvedSessions().length, 2, fixture);
         assert.equal(snapshot.listResolvedTurns().length, 2, fixture);
         assert.equal(snapshot.getUsageOverview({ timezone: "UTC" }).total_tokens, 1_423, fixture);
+        assert.deepEqual(
+          snapshot.getUsageBreakdown({ filters: { timezone: "UTC" }, time_dimension: "day", matrix_dimensions: ["model", "day"] })
+            .by_model.rows.map((row) => [row.key, row.total_tokens]),
+          [["mock-opencode-v1", 1_423]],
+          fixture,
+        );
         const parent = snapshot.listTopLevelSessions()[0]!;
         assert.ok(
           snapshot.listSessionRelatedWork(parent.id).some((entry) =>
@@ -2603,6 +2625,12 @@ test("OpenCode v1 and pre-split SQLite stores project without issues and keep de
         assert.equal(snapshot.listResolvedSessions().length, 1, fixture);
         assert.equal(snapshot.listResolvedTurns().length, 1, fixture);
         assert.equal(snapshot.getUsageOverview({ timezone: "UTC" }).total_tokens, 840, fixture);
+        assert.deepEqual(
+          snapshot.getUsageBreakdown({ filters: { timezone: "UTC" }, time_dimension: "day", matrix_dimensions: ["model", "day"] })
+            .by_model.rows.map((row) => [row.key, row.total_tokens]),
+          [["mock-opencode-presplit", 840]],
+          fixture,
+        );
         assert.equal(snapshot.getReadStatus().loss_warning_count, 0, fixture);
       }
     } finally {
@@ -2655,6 +2683,9 @@ test("Hermes per-model usage survives a final turn with no text reply", async ()
         .by_model.rows.map((row) => row.key),
       ["hermes-model"],
     );
+    const sqlQuery = await compileSql("SELECT granularity, high_context_tier, total_tokens FROM calls WHERE total_tokens > 0 LIMIT 10");
+    const sqlResult = executeCanonicalQuery(snapshot.data, sqlQuery);
+    assert.deepEqual(sqlResult.rows, [{ granularity: "session", high_context_tier: false, total_tokens: 120 }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -2692,5 +2723,20 @@ test("Pi family projection keeps call-granularity usage and task-child lineage",
   assert.ok(
     ompSnapshot.listSessionRelatedWork(main.id).some((entry) =>
       entry.relation_kind === "delegated_session" && entry.child_session_ref?.includes("omp-fixture-task")),
+  );
+
+  // Targeted parent read must also include the delegated task child and related work.
+  const ompTargeted = await scanLiteHistory({
+    homeDir: path.join(mockDataRoot, "empty-home"),
+    sourceRefs: ["oh_my_pi"],
+    sourceRoots: [{ sourceRef: "oh_my_pi", baseDir: path.join(mockDataRoot, ".omp/agent/sessions") }],
+    sessionRefs: [main.id],
+    contextMode: "none",
+  });
+  assert.deepEqual(ompTargeted.projectionIssues, []);
+  assert.ok(
+    ompTargeted.listSessionRelatedWork(main.id).some((entry) =>
+      entry.relation_kind === "delegated_session" && entry.child_session_ref?.includes("omp-fixture-task")),
+    "targeted OMP parent read keeps delegated task child resolvable",
   );
 });

@@ -142,7 +142,7 @@ export function parsePiFamilyRecord(
       return { fragments, lossAudits };
     }
     const entryId = helpers.asString(parsed.entry_id);
-    appendMessage(context, record, message, entryId, timeKey, fragments, push, loss, helpers);
+    appendMessage(context, record, message, entryId, draft, timeKey, fragments, push, loss, helpers);
     return { fragments, lossAudits };
   }
 
@@ -201,6 +201,7 @@ function appendMessage(
   record: RawRecord,
   message: Record<string, unknown>,
   entryId: string | undefined,
+  draft: SessionDraftLike,
   timeKey: string,
   fragments: SourceFragment[],
   push: PushFragment,
@@ -268,6 +269,7 @@ function appendMessage(
     }
     const assistantModel = helpers.asString(message.responseModel) ?? helpers.asString(message.model);
     if (assistantModel) {
+      draft.model = assistantModel;
       fragments.push(helpers.createFragment(context, record, fragments.length, "model_signal", messageTimeKey, {
         model: assistantModel,
         provider: helpers.asString(message.provider),

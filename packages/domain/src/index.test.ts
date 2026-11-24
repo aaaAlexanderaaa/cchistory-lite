@@ -5,6 +5,7 @@ import {
   deriveHostId,
   deriveSourceInstanceId,
   deriveSourceSlotId,
+  extractTokenUsage,
   getLocalPathBasename,
   isLegacySourceInstanceId,
   localPathIdentitiesMatch,
@@ -621,4 +622,15 @@ describe("formatRelativeTime", () => {
     assert.equal(formatRelativeTime(undefined, now), "");
     assert.equal(formatRelativeTime("not-a-date", now), "not-a-date".slice(0, 10));
   });
+});
+
+test("extractTokenUsage accepts camelCase and snake_case cacheWriteTokens aliases", () => {
+  const camel = extractTokenUsage({ inputTokens: 100, outputTokens: 20, cacheReadTokens: 500, cacheWriteTokens: 40 });
+  assert.equal(camel?.cache_creation_input_tokens, 40);
+  assert.equal(camel?.cache_read_input_tokens, 500);
+  assert.equal(camel?.total_tokens, 660);
+
+  const snake = extractTokenUsage({ input_tokens: 10, output_tokens: 5, cache_write_tokens: 15 });
+  assert.equal(snake?.cache_creation_input_tokens, 15);
+  assert.equal(snake?.total_tokens, 30);
 });

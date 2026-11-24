@@ -376,3 +376,82 @@ test("buildSessionTraceReport honestly reports turn granularity when session has
   assert.equal(trace.usage_granularity, "turn");
   assert.equal(trace.total_calls, 1);
 });
+
+test("usage_scope separates session aggregates from turn-less per-call events without triggering >200K surcharges", () => {
+  const hermesSessionId = "sess:hermes:agg-1";
+  const hermesTurn = makeTurn("turn-hermes", hermesSessionId, "2026-11-20T14:00:01.000Z", "Long Hermes session", 0);
+  const hermesSession: SessionProjection = {
+    id: hermesSessionId,
+    source_id: "src-claude",
+    source_platform: "hermes",
+    host_id: "host-1",
+    title: "Hermes session rollup",
+    created_at: "2026-11-20T14:00:00.000Z",
+    updated_at: "2026-11-20T14:10:00.000Z",
+    turn_count: 1,
+    sync_axis: "current",
+    usage_events: [
+      {
+        id: "agg-primary",
+        turn_id: null,
+        created_at: "2026-11-20T14:00:00.000Z",
+        model: "gemini-2.5-pro",
+        usage_scope: "session",
+        token_usage: {
+          input_tokens: 250_000,
+          output_tokens: 10_000,
+          cache_read_input_tokens: 50_000,
+          total_tokens: 310_000,
+        },
+        seq: 1,
+      },
+    ],
+  };
+
+  const codexChildId = "sess:codex:child-turnless";
+  const codexChild: SessionProjection = {
+    id: codexChildId,
+    source_id: "src-claude",
+    source_platform: "codex",
+    host_id: "host-1",
+    title: "Turn-less delegated child",
+    created_at: "2026-11-20T14:00:00.000Z",
+    updated_at: "2026-11-20T14:00:05.000Z",
+    turn_count: 0,
+    sync_axis: "current",
+    usage_events: [
+      {
+        id: "child-call-1",
+        turn_id: null,
+        created_at: "2026-11-20T14:00:02.000Z",
+        model: "gpt-5",
+        token_usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+        seq: 1,
+      },
+    ],
+  };
+
+  const sourceData = {
+    listResolvedTurns: () => [hermesTurn],
+    listResolvedSessions: () => [hermesSession, codexChild],
+    listSources: () => [makeSource()],
+    listProjects: () => [makeProject()],
+  };
+
+  const hermesBreakdown = computeUsageBreakdown({
+    ...sourceData,
+    filters: { timezone: "UTC", session_ids: [hermesSessionId] },
+  });
+  // Base rate for gemini-2.5-pro ($1.25/M in, $10/M out, $0.125/M cache read) = $0.41875,
+  // NOT the >200K single-call tier surcharge ($0.7875).
+  assert.equal(hermesBreakdown.overview.cost?.high_context_call_count, 0);
+  assert.ok(Math.abs((hermesBreakdown.overview.cost?.list_cost_usd ?? 0) - 0.41875) < 1e-6);
+  assert.equal(hermesBreakdown.diagnostics?.cache_distribution.evaluated_call_count, 0);
+  assert.equal(hermesBreakdown.diagnostics?.anomalies.length, 0);
+
+  const hermesTrace = buildSessionTraceReport(sourceData, { sessionId: hermesSessionId, filters: { timezone: "UTC" } });
+  assert.equal(hermesTrace?.usage_granularity, "session");
+
+  const childTrace = buildSessionTraceReport(sourceData, { sessionId: codexChildId, filters: { timezone: "UTC" } });
+  assert.equal(childTrace?.usage_granularity, "call", "turn-less per-call sessions remain call-granular");
+});

@@ -162,7 +162,9 @@ export function normalizeTokenUsageObject(value: Record<string, unknown>): Token
     asNumber(value.cache_creation_input_tokens) ??
     asNumber(value.cacheCreationInputTokens) ??
     asNumber(value.cacheCreationTokens) ??
-    asNumber(value.cache_creation_tokens);
+    asNumber(value.cache_creation_tokens) ??
+    asNumber(value.cacheWriteTokens) ??
+    asNumber(value.cache_write_tokens);
   const rawCachedInput = asNumber(value.cached_input_tokens) ?? asNumber(value.cachedInputTokens);
   const reasoningOutput =
     asNumber(value.reasoning_output_tokens) ??

@@ -305,7 +305,7 @@ function projectCallQueryRows(data: QuerySnapshotData, directoryScope?: string):
       project_id: r.project_id === "__unassigned__" ? null : (r.project_id ?? null),
       role: item.isSubagent ? "subagent" : "main",
       subagent_key: r.subagent_key ?? null,
-      granularity: r.is_call_event ? "call" : "turn",
+      granularity: r.usage_scope === "session" ? "session" : r.is_call_event ? "call" : "turn",
       seq,
       created_at: createdAt,
       gap_ms: item.gapMs,

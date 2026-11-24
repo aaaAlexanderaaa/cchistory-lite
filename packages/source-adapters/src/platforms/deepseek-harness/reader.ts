@@ -1,7 +1,7 @@
 import path from "node:path";
 import * as zlib from "node:zlib";
 import { isObject, asString, asNumber } from "../../core/type-guards.js";
-import type { SourceReadBudget } from "../../core/read-budget.js";
+import { SourceReadBudgetExceededError, type SourceReadBudget } from "../../core/read-budget.js";
 import type { ExtractedSessionSeed } from "../../core/conversation-seeds.js";
 
 /**
@@ -14,29 +14,26 @@ import type { ExtractedSessionSeed } from "../../core/conversation-seeds.js";
  * Lite keeps its zero-store, read-only contract.
  */
 
-const ZSTD_FRAME_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+const ZSTD_FRAME_MAGIC = 0xfd2fb528;
+const ZSTD_SKIPPABLE_MAGIC_MIN = 0x184d2a50;
+const ZSTD_SKIPPABLE_MAGIC_MAX = 0x184d2a5f;
 /** Current logical session format this adapter interprets. */
 export const SUPPORTED_SESSION_FORMAT_VERSION = 4;
 const MAX_DECODED_BYTES = 256 * 1024 * 1024;
+const MAX_RECORD_BYTES = 16 * 1024 * 1024;
 
 interface SeedDiagnostic {
   code: string;
   detail: string;
 }
 
-interface ZstdDecoder {
-  on(event: "data", listener: (chunk: Buffer) => void): ZstdDecoder;
-  on(event: "error", listener: (error: Error) => void): ZstdDecoder;
-  on(event: "end", listener: () => void): ZstdDecoder;
-  end(chunk: Buffer): void;
-  destroy(): void;
-}
+type ZstdDecompressSync = (buffer: Buffer, options?: { maxOutputLength?: number }) => Buffer;
 
 // Resolved lazily so an older Node.js still loads this module and reports an
 // actionable diagnostic instead of failing at import time.
-function createZstdDecoder(): ZstdDecoder | undefined {
-  const factory = (zlib as unknown as { createZstdDecompress?: () => ZstdDecoder }).createZstdDecompress;
-  return typeof factory === "function" ? factory() : undefined;
+function getZstdDecompressSync(): ZstdDecompressSync | undefined {
+  const fn = (zlib as unknown as { zstdDecompressSync?: ZstdDecompressSync }).zstdDecompressSync;
+  return typeof fn === "function" ? fn : undefined;
 }
 
 export interface DeepSeekHarnessLog {
@@ -47,8 +44,94 @@ export interface DeepSeekHarnessLog {
   diagnostics: SeedDiagnostic[];
 }
 
-function isZstdFrame(fileBuffer: Buffer): boolean {
-  return fileBuffer.length >= 4 && fileBuffer.subarray(0, 4).equals(ZSTD_FRAME_MAGIC);
+function isZstdMagic(fileBuffer: Buffer): boolean {
+  if (fileBuffer.length < 4) {
+    return false;
+  }
+  const magic = fileBuffer.readUInt32LE(0);
+  return (
+    magic === ZSTD_FRAME_MAGIC ||
+    (magic >= ZSTD_SKIPPABLE_MAGIC_MIN && magic <= ZSTD_SKIPPABLE_MAGIC_MAX)
+  );
+}
+
+type FrameScanResult =
+  | { kind: "frame"; start: number; end: number }
+  | { kind: "skippable"; start: number; end: number }
+  | { kind: "truncated" | "invalid"; reason: string };
+
+/**
+ * Locate the exact RFC 8878 byte span of one Zstandard (or skippable) frame.
+ * Node 22's `node:zlib` Zstd decoder stops after the first frame in a
+ * concatenated stream, so slicing frames explicitly keeps multi-frame decoding
+ * and torn-tail detection consistent across Node 22 and newer runtimes.
+ */
+function scanNextZstdFrame(buffer: Buffer, offset: number): FrameScanResult {
+  if (offset + 4 > buffer.length) {
+    return { kind: "truncated", reason: "incomplete Zstandard frame magic" };
+  }
+  const magic = buffer.readUInt32LE(offset);
+  if (magic >= ZSTD_SKIPPABLE_MAGIC_MIN && magic <= ZSTD_SKIPPABLE_MAGIC_MAX) {
+    if (offset + 8 > buffer.length) {
+      return { kind: "truncated", reason: "incomplete skippable frame header" };
+    }
+    const frameSize = buffer.readUInt32LE(offset + 4);
+    const end = offset + 8 + frameSize;
+    if (end > buffer.length) {
+      return { kind: "truncated", reason: "incomplete skippable frame body" };
+    }
+    return { kind: "skippable", start: offset, end };
+  }
+  if (magic !== ZSTD_FRAME_MAGIC) {
+    return { kind: "invalid", reason: `unexpected Zstandard frame magic 0x${magic.toString(16)}` };
+  }
+  if (offset + 5 > buffer.length) {
+    return { kind: "truncated", reason: "incomplete Zstandard frame header descriptor" };
+  }
+  let pos = offset + 4;
+  const fhd = buffer[pos++]!;
+  const fcsFlag = (fhd >>> 6) & 3;
+  const singleSegment = (fhd & 0x20) !== 0;
+  if ((fhd & 0x08) !== 0) {
+    return { kind: "invalid", reason: "reserved bit set in Zstandard frame header" };
+  }
+  const hasChecksum = (fhd & 0x04) !== 0;
+  const dictFlag = fhd & 3;
+  if (!singleSegment) {
+    pos += 1;
+  }
+  pos += dictFlag === 0 ? 0 : dictFlag === 1 ? 1 : dictFlag === 2 ? 2 : 4;
+  pos += fcsFlag === 0 ? (singleSegment ? 1 : 0) : fcsFlag === 1 ? 2 : fcsFlag === 2 ? 4 : 8;
+  if (pos > buffer.length) {
+    return { kind: "truncated", reason: "incomplete Zstandard frame header" };
+  }
+  while (true) {
+    if (pos + 3 > buffer.length) {
+      return { kind: "truncated", reason: "incomplete Zstandard block header" };
+    }
+    const blockHeader = buffer[pos]! | (buffer[pos + 1]! << 8) | (buffer[pos + 2]! << 16);
+    pos += 3;
+    const lastBlock = (blockHeader & 1) === 1;
+    const blockType = (blockHeader >>> 1) & 3;
+    const blockSize = blockHeader >>> 3;
+    if (blockType === 3) {
+      return { kind: "invalid", reason: "reserved Zstandard block type" };
+    }
+    pos += blockType === 1 ? 1 : blockSize;
+    if (pos > buffer.length) {
+      return { kind: "truncated", reason: "incomplete Zstandard block payload" };
+    }
+    if (lastBlock) {
+      break;
+    }
+  }
+  if (hasChecksum) {
+    pos += 4;
+    if (pos > buffer.length) {
+      return { kind: "truncated", reason: "incomplete Zstandard content checksum" };
+    }
+  }
+  return { kind: "frame", start: offset, end: pos };
 }
 
 function readMaxDecodedBytes(budget: SourceReadBudget | undefined): number {
@@ -71,12 +154,14 @@ function splitLines(decoded: Buffer): string[] {
  * crashed writer still yields its complete predecessor frames; the partial
  * suffix is reported instead of dropping the whole readable prefix.
  */
-async function decodeZstdFrames(
+function decodeZstdFrames(
   fileBuffer: Buffer,
   maxDecodedBytes: number,
-): Promise<DeepSeekHarnessLog> {
-  const decoder = createZstdDecoder();
-  if (!decoder) {
+  budget?: SourceReadBudget,
+  unitLabel = "deepseek_harness zstd log",
+): DeepSeekHarnessLog {
+  const decompress = getZstdDecompressSync();
+  if (!decompress) {
     return {
       lines: [],
       decodedBytes: 0,
@@ -86,64 +171,125 @@ async function decodeZstdFrames(
       }],
     };
   }
-  return await new Promise((resolve) => {
-    const chunks: Buffer[] = [];
-    const diagnostics: SeedDiagnostic[] = [];
-    let decodedBytes = 0;
-    let settled = false;
-    const finish = (): void => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      resolve({ lines: splitLines(Buffer.concat(chunks)), decodedBytes, diagnostics });
-    };
+  const chunks: Buffer[] = [];
+  const diagnostics: SeedDiagnostic[] = [];
+  let decodedBytes = 0;
+  let admittedExtraBytes = 0;
+  let offset = 0;
 
-    decoder.on("data", (chunk: Buffer) => {
-      if (settled) {
-        return;
-      }
-      decodedBytes += chunk.length;
-      if (decodedBytes > maxDecodedBytes) {
-        diagnostics.push({
-          code: "dsh_decoded_size_exceeded",
-          detail: `Decoded session log exceeds the ${maxDecodedBytes}-byte read budget; readable prefix discarded.`,
-        });
-        chunks.length = 0;
-        decodedBytes = 0;
-        decoder.destroy();
-        finish();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    decoder.on("error", (error: Error) => {
+  while (offset < fileBuffer.length) {
+    const scan = scanNextZstdFrame(fileBuffer, offset);
+    if (scan.kind === "skippable") {
+      offset = scan.end;
+      continue;
+    }
+    if (scan.kind !== "frame") {
       if (decodedBytes > 0) {
         diagnostics.push({
           code: "dsh_zstd_partial_frame",
-          detail: `Zstandard stream ended after ${decodedBytes} decoded bytes: ${error.message}. Complete predecessor frames were retained.`,
+          detail: `Zstandard stream ended after ${decodedBytes} decoded bytes (${scan.reason}). Complete predecessor frames were retained.`,
         });
       } else {
         diagnostics.push({
           code: "dsh_zstd_decode_failed",
-          detail: `Zstandard decompression failed before any readable record: ${error.message}.`,
+          detail: `Zstandard decompression failed before any readable record (${scan.reason}).`,
         });
       }
-      finish();
-    });
-    decoder.on("end", finish);
-    decoder.end(fileBuffer);
-  });
+      break;
+    }
+
+    const remainingBytes = maxDecodedBytes - decodedBytes;
+    if (remainingBytes <= 0) {
+      diagnostics.push({
+        code: "dsh_decoded_size_exceeded",
+        detail: `Decoded session log exceeds the ${maxDecodedBytes}-byte read budget; readable prefix discarded.`,
+      });
+      return { lines: [], decodedBytes: 0, diagnostics };
+    }
+
+    let frameDecoded: Buffer;
+    try {
+      frameDecoded = decompress(fileBuffer.subarray(scan.start, scan.end), {
+        maxOutputLength: remainingBytes,
+      });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ERR_BUFFER_TOO_LARGE") {
+        diagnostics.push({
+          code: "dsh_decoded_size_exceeded",
+          detail: `Decoded session log exceeds the ${maxDecodedBytes}-byte read budget; readable prefix discarded.`,
+        });
+        return { lines: [], decodedBytes: 0, diagnostics };
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      if (decodedBytes > 0) {
+        diagnostics.push({
+          code: "dsh_zstd_partial_frame",
+          detail: `Zstandard frame at byte ${scan.start} failed after ${decodedBytes} decoded bytes: ${message}. Complete predecessor frames were retained.`,
+        });
+      } else {
+        diagnostics.push({
+          code: "dsh_zstd_decode_failed",
+          detail: `Zstandard decompression failed before any readable record: ${message}.`,
+        });
+      }
+      break;
+    }
+
+    decodedBytes += frameDecoded.length;
+    if (decodedBytes > maxDecodedBytes) {
+      diagnostics.push({
+        code: "dsh_decoded_size_exceeded",
+        detail: `Decoded session log exceeds the ${maxDecodedBytes}-byte read budget; readable prefix discarded.`,
+      });
+      return { lines: [], decodedBytes: 0, diagnostics };
+    }
+    // Charge incremental expansion beyond the compressed bytes already admitted
+    // when the file was captured so many compressed logs cannot bypass the scan budget.
+    const totalExtraBytes = Math.max(0, decodedBytes - fileBuffer.length);
+    const deltaExtraBytes = totalExtraBytes - admittedExtraBytes;
+    if (deltaExtraBytes > 0 && budget) {
+      try {
+        budget.admit(deltaExtraBytes, `${unitLabel}:zstd decoded`);
+        admittedExtraBytes = totalExtraBytes;
+      } catch (error) {
+        if (error instanceof SourceReadBudgetExceededError) {
+          throw error;
+        }
+        throw error;
+      }
+    }
+    chunks.push(frameDecoded);
+    offset = scan.end;
+  }
+
+  return {
+    lines: chunks.length > 0 ? splitLines(Buffer.concat(chunks)) : [],
+    decodedBytes,
+    diagnostics,
+  };
 }
 
 export async function readDeepSeekHarnessLog(
   fileBuffer: Buffer,
   budget?: SourceReadBudget,
+  options?: { compressedHint?: boolean; unitLabel?: string },
 ): Promise<DeepSeekHarnessLog> {
-  if (!isZstdFrame(fileBuffer)) {
+  if (!isZstdMagic(fileBuffer) && !options?.compressedHint) {
+    const maxBytes = readMaxDecodedBytes(budget);
+    if (fileBuffer.length > maxBytes) {
+      return {
+        lines: [],
+        decodedBytes: 0,
+        diagnostics: [{
+          code: "dsh_decoded_size_exceeded",
+          detail: `Session log exceeds the ${maxBytes}-byte read budget; readable prefix discarded.`,
+        }],
+      };
+    }
     return { lines: splitLines(fileBuffer), decodedBytes: fileBuffer.length, diagnostics: [] };
   }
-  return await decodeZstdFrames(fileBuffer, readMaxDecodedBytes(budget));
+  return decodeZstdFrames(fileBuffer, readMaxDecodedBytes(budget), budget, options?.unitLabel);
 }
 
 interface ParsedRow {
@@ -175,10 +321,22 @@ export async function extractDeepSeekHarnessSeeds(
   fileBuffer: Buffer,
   budget?: SourceReadBudget,
 ): Promise<ExtractedSessionSeed[]> {
-  const { lines, diagnostics } = await readDeepSeekHarnessLog(fileBuffer, budget);
+  const { lines, diagnostics } = await readDeepSeekHarnessLog(fileBuffer, budget, {
+    compressedHint: filePath.endsWith(".zstd"),
+    unitLabel: filePath,
+  });
   const seedDiagnostics: SeedDiagnostic[] = [...diagnostics];
   const rows: ParsedRow[] = [];
+  const maxRecordBytes = Math.min(MAX_RECORD_BYTES, readMaxDecodedBytes(budget));
   for (const [index, rawLine] of lines.entries()) {
+    const lineBytes = Buffer.byteLength(rawLine, "utf8");
+    if (lineBytes > maxRecordBytes) {
+      seedDiagnostics.push({
+        code: "dsh_record_too_large",
+        detail: `Line ${index + 1} is ${lineBytes} bytes, exceeding the ${maxRecordBytes}-byte record cap; skipped.`,
+      });
+      continue;
+    }
     let value: unknown;
     try {
       value = JSON.parse(rawLine);

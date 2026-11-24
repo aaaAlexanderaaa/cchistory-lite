@@ -4,6 +4,7 @@ import { availableParallelism } from "node:os";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 import type { SourcePlatform } from "@cchistory/domain";
+import { inspectPiFamilyHeaderPrefix } from "../platforms/pi-family/reader.js";
 import { deriveSessionId } from "./source-identity.js";
 import { coerceIso } from "./type-guards.js";
 
@@ -102,6 +103,9 @@ export async function inspectSourceFileLogicalSessionMetadata(
   filePath: string,
   options: LogicalSessionMetadataOptions = {},
 ): Promise<SourceFileLogicalSessionMetadata> {
+  if (platform === "pi" || platform === "oh_my_pi") {
+    return inspectPiFamilyFileLogicalSessionMetadata(platform, filePath);
+  }
   if (platform !== "codex" && platform !== "claude_code") {
     return {
       sessionKey: await deriveSourceFileLogicalSessionKey(platform, filePath),
@@ -166,6 +170,46 @@ export async function inspectSourceFileLogicalSessionMetadata(
       sessionKeyState: "uncertain",
       workingDirectoryState: "uncertain",
     };
+  }
+}
+
+async function inspectPiFamilyFileLogicalSessionMetadata(
+  platform: "pi" | "oh_my_pi",
+  filePath: string,
+): Promise<SourceFileLogicalSessionMetadata> {
+  const headLines: string[] = [];
+  let oversized = false;
+  const input = createReadStream(filePath);
+  try {
+    for await (const line of streamBoundedJsonlLines(input, SESSION_METADATA_MAX_LINE_BYTES)) {
+      if (!hasNonWhitespaceBytes(line.buffer) && !line.oversized) continue;
+      if (line.oversized) {
+        oversized = true;
+        break;
+      }
+      headLines.push(line.buffer.toString("utf8"));
+      // Oh My Pi stores a title slot on line 1 and the session header on line 2.
+      if (headLines.length >= 2) break;
+    }
+    const header = inspectPiFamilyHeaderPrefix(platform, filePath, headLines);
+    const relatedSessionRefs = header.delegatedParentId
+      ? [header.delegatedParentId, `sess:${platform}:${header.delegatedParentId}`]
+      : undefined;
+    return {
+      sessionKey: header.sessionId,
+      sessionKeyState: oversized ? "uncertain" : "known",
+      workingDirectoryState: header.workingDirectory ? "known" : "absent",
+      ...(header.workingDirectory ? { workingDirectory: header.workingDirectory } : {}),
+      ...(relatedSessionRefs ? { relatedSessionRefs } : {}),
+    };
+  } catch {
+    return {
+      sessionKey: deriveSessionId(platform, filePath, Buffer.alloc(0)),
+      sessionKeyState: "uncertain",
+      workingDirectoryState: "uncertain",
+    };
+  } finally {
+    input.destroy();
   }
 }
 

@@ -38,12 +38,22 @@ export function parseGenericConversationRecord(
   if (parsed.usage_only === true) {
     const usageOnly = helpers.extractTokenUsage(parsed.usage ?? parsed);
     if (usageOnly) {
-      fragments.push(helpers.createTokenUsageFragment(context, record, 0, timeKey, usageOnly, undefined, {
-        scope: "call",
-        independent_usage_event_id: record.id,
-        source_event_type: helpers.asString(parsed.source_event_type) ?? "usage_record",
-        ...(helpers.asString(parsed.call_kind) ? { call_kind: helpers.asString(parsed.call_kind) } : {}),
-      }));
+      const usageModel = helpers.asString(parsed.model) ?? usageOnly.model;
+      const usageStopReason = helpers.normalizeStopReason(parsed.stop_reason ?? parsed.stopReason);
+      fragments.push(helpers.createTokenUsageFragment(
+        context,
+        record,
+        0,
+        timeKey,
+        usageModel ? { ...usageOnly, model: usageModel } : usageOnly,
+        usageStopReason,
+        {
+          scope: "call",
+          independent_usage_event_id: record.id,
+          source_event_type: helpers.asString(parsed.source_event_type) ?? "usage_record",
+          ...(helpers.asString(parsed.call_kind) ? { call_kind: helpers.asString(parsed.call_kind) } : {}),
+        },
+      ));
     }
     return { fragments, lossAudits };
   }

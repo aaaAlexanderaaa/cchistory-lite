@@ -55,6 +55,7 @@ export function detectUsageAnomalies(params: {
 
   const byThread = new Map<string, EvaluatedUsageRow[]>();
   for (const item of evaluated) {
+    if (item.row.usage_scope === "session") continue;
     const list = byThread.get(item.threadKey) ?? [];
     list.push(item);
     byThread.set(item.threadKey, list);

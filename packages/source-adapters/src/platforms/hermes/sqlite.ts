@@ -1,6 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import type { SourceReadBudget } from "../../core/read-budget.js";
-import { readBudgetedSqliteRows } from "../../core/read-budget.js";
+import { readBudgetedSqliteRows, SourceReadBudgetExceededError, type SourceReadBudget } from "../../core/read-budget.js";
 import type { ExtractedSessionSeed } from "../../core/conversation-seeds.js";
 import { asNumber, asString, isObject, safeJsonParse } from "../../core/type-guards.js";
 
@@ -190,14 +189,24 @@ function listSessions(
       matchedIds.add(id);
     }
   }
-  // A parent target includes direct children so family/related work and
-  // delegated usage stay resolvable; a child target stays one session.
-  for (const row of rows) {
-    const parentId = asString(row.parent_session_id);
-    if (parentId && matchedIds.has(parentId)) {
+  // A parent target includes descendants linked by parent_session_id or
+  // model_config._delegate_from so family/related work stays resolvable.
+  let added = true;
+  while (added) {
+    added = false;
+    for (const row of rows) {
       const id = asString(row.id);
-      if (id) {
+      if (!id || matchedIds.has(id)) {
+        continue;
+      }
+      const parentId = asString(row.parent_session_id);
+      const lineage = resolveLineage(row.model_config, id);
+      if (
+        (parentId && matchedIds.has(parentId)) ||
+        (lineage.kind === "delegate" && lineage.parent && matchedIds.has(lineage.parent))
+      ) {
         matchedIds.add(id);
+        added = true;
       }
     }
   }
@@ -218,10 +227,9 @@ interface BuildSeedContext {
 }
 
 function buildSessionSeed(db: DatabaseSync, context: BuildSeedContext): ExtractedSessionSeed | undefined {
-  const { sessionRow, rawSessionId, budget } = context;
+  const { sessionRow, rawSessionId } = context;
   const diagnostics: HermesSeedDiagnostic[] = [];
   const records: ExtractedSessionSeed["records"] = [];
-  let lastMessageObservedAt: string | undefined;
 
   const startedAt = epochSecondsIso(sessionRow.started_at);
   const updatedAt =
@@ -258,7 +266,6 @@ function buildSessionSeed(db: DatabaseSync, context: BuildSeedContext): Extracte
     const messageId = asNumber(message.id);
     const content = decodeContent(message.content, diagnostics, messageId);
     const messageObservedAt = epochSecondsIso(message.timestamp) ?? updatedAt;
-    lastMessageObservedAt = messageObservedAt ?? lastMessageObservedAt;
     const role = asString(message.role);
     const displayKind = asString(message.display_kind);
     const summary = splitCompressedSummary(message, content, role);
@@ -338,8 +345,15 @@ function readMessages(
   if (columns.has("active")) {
     filters.push("active = 1");
   }
+  // Read `content` as raw UTF-8 bytes via CAST(... AS BLOB) because Node 22's
+  // node:sqlite truncates TEXT columns at the first NUL byte, erasing Hermes's
+  // `\x00json:` multimodal payloads.
+  const selectExprs = selected.map((column) =>
+    column === "content" ? "CAST(content AS BLOB) AS content" : column,
+  );
+  const order = columns.has("id") ? "id ASC" : "timestamp ASC, rowid ASC";
   const query =
-    `SELECT ${selected.join(", ")} FROM messages WHERE ${filters.join(" AND ")} ORDER BY id ASC`;
+    `SELECT ${selectExprs.join(", ")} FROM messages WHERE ${filters.join(" AND ")} ORDER BY ${order}`;
   try {
     return readBudgetedSqliteRows(
       db,
@@ -350,6 +364,9 @@ function readMessages(
       "messages rows",
     ) as unknown as MessageRow[];
   } catch (error) {
+    if (error instanceof SourceReadBudgetExceededError) {
+      throw error;
+    }
     diagnostics.push({
       code: "hermes_message_read_failed",
       detail: `Could not read messages for session ${context.rawSessionId}: ${(error as Error).message}`,
@@ -419,6 +436,9 @@ function appendUsageRecords(
           return;
         }
       } catch (error) {
+        if (error instanceof SourceReadBudgetExceededError) {
+          throw error;
+        }
         diagnostics.push({
           code: "hermes_usage_read_failed",
           detail: `Could not read per-model usage for session ${rawSessionId}: ${(error as Error).message}`,
@@ -457,10 +477,18 @@ function decodeContent(
   diagnostics: HermesSeedDiagnostic[],
   messageId: number | undefined,
 ): unknown {
-  if (typeof raw !== "string" || !raw.startsWith(HERMES_CONTENT_JSON_PREFIX)) {
+  const text = raw instanceof Uint8Array
+    ? Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength).toString("utf8")
+    : typeof raw === "string"
+      ? raw
+      : undefined;
+  if (text === undefined) {
     return raw ?? null;
   }
-  const payload = raw.slice(HERMES_CONTENT_JSON_PREFIX.length);
+  if (!text.startsWith(HERMES_CONTENT_JSON_PREFIX)) {
+    return text;
+  }
+  const payload = text.slice(HERMES_CONTENT_JSON_PREFIX.length);
   const parsed = safeJsonParse(payload);
   if (parsed === undefined) {
     diagnostics.push({
@@ -468,17 +496,24 @@ function decodeContent(
       detail: `Message ${messageId ?? "?"} has a structured content marker that is not valid JSON; kept as the raw stored text.`,
     });
     // Upstream returns the original string, including the reserved prefix.
-    return raw;
+    return text;
   }
   return parsed;
 }
 
 function parseToolCalls(raw: unknown): unknown {
+  if (raw === null || raw === undefined) {
+    return null;
+  }
   if (typeof raw !== "string") {
-    return raw ?? null;
+    return raw;
+  }
+  if (!raw.trim()) {
+    return null;
   }
   const parsed = safeJsonParse(raw);
-  return parsed ?? null;
+  // Keep malformed non-empty strings so the runtime records hermes_tool_calls_malformed.
+  return parsed !== undefined ? parsed : raw;
 }
 
 function isDisplayOnlyRow(displayKind: string | undefined): boolean {

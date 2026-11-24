@@ -64,6 +64,7 @@ export interface UsageAggregationRow {
   preceding_tool_results?: readonly UsageToolSummary[];
   emitted_tool_calls?: readonly UsageToolSummary[];
   is_call_event?: boolean;
+  usage_scope?: "call" | "session";
   turn_id: string | null;
   session_id: string;
   session_label: string;
@@ -403,21 +404,25 @@ export function extractUnfilteredUsageRows(
 
     const events = eventsByTurn.get(turn.id);
     if (!events?.length) return [baseRow];
-    return events.map((event) => ({
-      ...baseRow,
-      event_id: event.id,
-      seq: event.seq,
-      created_at: event.created_at,
-      subagent_key: event.subagent_key,
-      stop_reason: event.stop_reason,
-      compaction_before: event.compaction_before,
-      preceding_tool_results: event.preceding_tool_results,
-      emitted_tool_calls: event.emitted_tool_calls,
-      is_call_event: true,
-      model: event.model ?? "unknown",
-      ...bucketTime(event.created_at),
-      ...usageAmounts(event.token_usage, true),
-    }));
+    return events.map((event) => {
+      const isCallEvent = event.usage_scope !== "session";
+      return {
+        ...baseRow,
+        event_id: event.id,
+        seq: event.seq,
+        created_at: event.created_at,
+        subagent_key: event.subagent_key,
+        stop_reason: event.stop_reason,
+        compaction_before: event.compaction_before,
+        preceding_tool_results: event.preceding_tool_results,
+        emitted_tool_calls: event.emitted_tool_calls,
+        is_call_event: isCallEvent,
+        usage_scope: event.usage_scope ?? "call",
+        model: event.model ?? "unknown",
+        ...bucketTime(event.created_at),
+        ...usageAmounts(event.token_usage, isCallEvent),
+      };
+    });
   });
 
   for (const session of sessionsById.values()) {
@@ -425,6 +430,7 @@ export function extractUnfilteredUsageRows(
     const project = session.primary_project_id ? projectsById.get(session.primary_project_id) : undefined;
     for (const event of session.usage_events ?? []) {
       if (event.turn_id !== null) continue;
+      const isCallEvent = event.usage_scope !== "session";
       const time = bucketTime(event.created_at);
       rows.push({
         event_id: event.id,
@@ -435,7 +441,8 @@ export function extractUnfilteredUsageRows(
         compaction_before: event.compaction_before,
         preceding_tool_results: event.preceding_tool_results,
         emitted_tool_calls: event.emitted_tool_calls,
-        is_call_event: true,
+        is_call_event: isCallEvent,
+        usage_scope: event.usage_scope ?? "call",
         turn_id: null,
         session_id: session.id,
         session_label: resolveSessionLabel(session, session.id),
@@ -447,7 +454,7 @@ export function extractUnfilteredUsageRows(
         model: event.model ?? "unknown",
         ...time,
         has_token_usage: true,
-        ...usageAmounts(event.token_usage, true),
+        ...usageAmounts(event.token_usage, isCallEvent),
       });
     }
   }

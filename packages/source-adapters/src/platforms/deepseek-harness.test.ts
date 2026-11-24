@@ -319,3 +319,63 @@ test("[deepseek_harness] a tagged fork seed does not duplicate inherited parent 
     assert.equal(payload.turns[0]?.context_summary?.assistant_reply_count, 1);
   });
 });
+
+test("[deepseek_harness] multi-frame concatenated zstd decodes every frame, charges read budget, and preserves cacheWriteTokens", async () => {
+  await withTempRoot("cchistory-dsh-multiframe-", async (root) => {
+    const plainPath = path.join(fixtureRoot, "--Users-mock-user-workspace-dsh-demo--", "session-fixture-dsh-main", "session.v4.jsonl");
+    const lines = (await readFile(plainPath, "utf8")).split("\n").filter(Boolean);
+    const firstTurnCut = lines.findIndex((line) => JSON.parse(line).type === "turn/start" && JSON.parse(line).data.turn === 2);
+    assert.ok(firstTurnCut > 0);
+    // Inject cacheWriteTokens into turn 2's assistant message to verify cache creation extraction.
+    const secondHalf = lines.slice(firstTurnCut).map((line) => {
+      const parsed = JSON.parse(line);
+      if (parsed.type === "assistant/message" && parsed.data?.usage) {
+        parsed.data.usage.cacheWriteTokens = 100;
+        parsed.data.usage.totalTokens += 100;
+        return JSON.stringify(parsed);
+      }
+      return line;
+    });
+    const frame1 = zstdCompress(Buffer.from(`${lines.slice(0, firstTurnCut).join("\n")}\n`));
+    const frame2 = zstdCompress(Buffer.from(`${secondHalf.join("\n")}\n`));
+    if (!frame1 || !frame2) {
+      return;
+    }
+    const sessionDir = path.join(root, "sessions", "--project--", "session-fixture-dsh-main");
+    await mkdir(sessionDir, { recursive: true });
+    const multiFramePath = path.join(sessionDir, "session.v4.jsonl.zstd");
+    const combined = Buffer.concat([frame1, frame2]);
+    await writeFile(multiFramePath, combined);
+
+    const admittedUnits: string[] = [];
+    const budget = {
+      admit(_bytes: number, unit: string): void {
+        admittedUnits.push(unit);
+      },
+      maximumUnitBytes(): number {
+        return 64 * 1024 * 1024;
+      },
+    };
+    const source = deepSeekHarnessSource(root);
+    const [payload] = (await runSourceProbe({ source_ids: [source.id], read_budget: budget }, [source])).sources;
+    assert.ok(payload);
+    assert.deepEqual(
+      payload.turns.map((turn) => [turn.canonical_text, turn.context_summary?.token_usage?.total_tokens]),
+      [
+        ["Find the retry helper and explain its backoff.", 44_396],
+        ["Now show the timeout constant.", 22_784],
+      ],
+      "every concatenated Zstandard frame must be decoded on Node 22+",
+    );
+    assert.equal(payload.turns[1]?.context_summary?.token_usage?.cache_creation_input_tokens, 100);
+    assert.ok(admittedUnits.some((unit) => unit.endsWith(":zstd decoded")), "zstd expansion must charge the read budget");
+    assert.deepEqual(payload.loss_audits, []);
+
+    // Corrupt .zstd with broken magic reports dsh_zstd_decode_failed instead of parsing binary as JSONL.
+    const corruptDir = path.join(root, "sessions", "--project--", "session-fixture-corrupt-zstd");
+    await mkdir(corruptDir, { recursive: true });
+    await writeFile(path.join(corruptDir, "session.v4.jsonl.zstd"), Buffer.from([0x28, 0xb5]));
+    const [withCorrupt] = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources;
+    assert.ok(withCorrupt?.loss_audits.some((audit) => audit.diagnostic_code === "dsh_zstd_decode_failed"));
+  });
+});

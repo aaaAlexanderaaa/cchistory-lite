@@ -303,7 +303,129 @@ test("[pi/oh_my_pi] an over-budget session file keeps only its header and report
     assert.ok(seed);
     assert.equal(seed.records.length, 1);
     assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "pi_family_file_too_large"));
+
+    // Oh My Pi starts with a line-1 title slot and puts the session header on line 2.
+    const ompOverBudget = [
+      JSON.stringify({ type: "title", v: 1, title: "Large OMP session", pad: "    " }),
+      JSON.stringify({ type: "session", version: 3, id: "omp-budget", timestamp: "2026-04-01T00:00:00.000Z", cwd: "/workspace/omp" }),
+      JSON.stringify({ type: "message", id: "u1", parentId: null, timestamp: "2026-04-01T00:00:01.000Z", message: { role: "user", content: "Over budget body." } }),
+    ].join("\n") + "\n";
+    const ompResult = extractPiFamilySessionSeed("oh_my_pi", file, Buffer.from(ompOverBudget), { maxBytes: 10 });
+    assert.ok(ompResult.seed, "over-budget OMP files must still resolve their line-2 session header");
+    assert.equal(ompResult.seed.title, "Large OMP session");
+    assert.equal(ompResult.seed.records.length, 1);
+    assert.ok(ompResult.diagnostics.some((diagnostic) => diagnostic.code === "pi_family_file_too_large"));
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("[pi/oh_my_pi] custom roots match session files, v1 id-less usage is counted once, and task children keep colliding short ids", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-pi-hardening-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "cchistory-pi-outside-"));
+  try {
+    // 1. Custom PI_CODING_AGENT_DIR / PI_CODING_AGENT_SESSION_DIR without /agent/sessions/ still matches .jsonl.
+    const customPiSessions = path.join(root, "custom-pi", "sessions", "--w--");
+    await mkdir(customPiSessions, { recursive: true });
+    const piV1File = path.join(customPiSessions, "2026-01-01T00-00-00_pi-v1-noid.jsonl");
+    await writeFile(
+      piV1File,
+      [
+        JSON.stringify({ type: "session", version: 1, id: "pi-v1-noid", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/workspace/pi" }),
+        JSON.stringify({ type: "message", timestamp: "2026-01-01T00:00:01.000Z", message: { role: "user", content: "No-id v1 prompt.", timestamp: Date.UTC(2026, 0, 1, 0, 0, 1) } }),
+        JSON.stringify({ type: "message", timestamp: "2026-01-01T00:00:02.000Z", message: { role: "assistant", model: "gpt-5", content: [{ type: "text", text: "No-id v1 reply." }], usage: { input: 100, output: 20, totalTokens: 120 }, stopReason: "stop", timestamp: Date.UTC(2026, 0, 1, 0, 0, 2) } }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    assert.deepEqual(await listSourceFiles("pi", path.join(root, "custom-pi", "sessions")), [piV1File]);
+    const piSource = createSourceDefinition("src-pi-v1-noid", "pi", path.join(root, "custom-pi", "sessions"));
+    const [piPayload] = (await runSourceProbe({ source_ids: [piSource.id] }, [piSource])).sources;
+    assert.ok(piPayload);
+    const v1Usage = piPayload.fragments.filter((fragment) => fragment.fragment_kind === "token_usage_signal");
+    assert.equal(v1Usage.length, 1, "id-less v1 assistant messages must not be double-counted as inactive usage");
+    assert.equal((v1Usage[0]?.payload.token_usage as Record<string, number>).total_tokens, 120);
+
+    // 2. OMP profiles ignore non-session .jsonl outside sessions/, and delegated task children with real absolute
+    // parentSession paths and short ids (u1/a1) are not stripped by fork-prefix deduplication.
+    const ompRoot = path.join(root, "omp");
+    const ompSessions = path.join(ompRoot, "agent", "sessions", "--w--");
+    const ompNestedChildDir = path.join(ompSessions, "2026-10-04T09-00-00.123Z_omp-parent");
+    await mkdir(ompNestedChildDir, { recursive: true });
+    await mkdir(path.join(ompRoot, "profiles", "work", "agent"), { recursive: true });
+    await writeFile(path.join(ompRoot, "profiles", "work", "agent", "notes.jsonl"), "{}\n", "utf8");
+    const parentFile = path.join(ompSessions, "2026-10-04T09-00-00.123Z_omp-parent.jsonl");
+    const taskFile = path.join(ompSessions, "2026-10-04T10-00-00_omp-task.jsonl");
+    const nestedChildFile = path.join(ompNestedChildDir, "2026-10-04T10-05-00_omp-nested.jsonl");
+    const outsideParentFile = path.join(outside, "2026-10-04T08-00-00_outside.jsonl");
+    const outsideForkFile = path.join(ompSessions, "2026-10-04T11-00-00_omp-outside-fork.jsonl");
+    await writeFile(
+      outsideParentFile,
+      [
+        JSON.stringify({ type: "session", version: 3, id: "outside", timestamp: "2026-10-04T08:00:00.000Z", cwd: "/w" }),
+        JSON.stringify({ type: "message", id: "u1", parentId: null, timestamp: "2026-10-04T08:00:01.000Z", message: { role: "user", content: "Outside secret.", timestamp: Date.UTC(2026, 9, 4, 8, 0, 1) } }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    await writeFile(
+      parentFile,
+      [
+        JSON.stringify({ type: "session", version: 3, id: "omp-parent", timestamp: "2026-10-04T09:00:00.000Z", cwd: "/w" }),
+        JSON.stringify({ type: "message", id: "u1", parentId: null, timestamp: "2026-10-04T09:00:01.000Z", message: { role: "user", content: "Parent prompt.", timestamp: Date.UTC(2026, 9, 4, 9, 0, 1) } }),
+        JSON.stringify({ type: "message", id: "a1", parentId: "u1", timestamp: "2026-10-04T09:00:02.000Z", message: { role: "assistant", model: "gpt-5", content: [{ type: "text", text: "Parent reply." }], usage: { input: 10, output: 2, totalTokens: 12 }, stopReason: "stop", timestamp: Date.UTC(2026, 9, 4, 9, 0, 2) } }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    await writeFile(
+      taskFile,
+      [
+        JSON.stringify({ type: "session", version: 3, id: "omp-task", timestamp: "2026-10-04T10:00:00.000Z", cwd: "/w", parentSession: parentFile, taskPromptCacheKey: "k:1" }),
+        JSON.stringify({ type: "message", id: "u1", parentId: null, timestamp: "2026-10-04T10:00:01.000Z", message: { role: "user", content: "Task prompt.", timestamp: Date.UTC(2026, 9, 4, 10, 0, 1) } }),
+        JSON.stringify({ type: "message", id: "a1", parentId: "u1", timestamp: "2026-10-04T10:00:02.000Z", message: { role: "assistant", model: "gpt-5", content: [{ type: "text", text: "Task reply." }], usage: { input: 40, output: 8, totalTokens: 48 }, stopReason: "stop", timestamp: Date.UTC(2026, 9, 4, 10, 0, 2) } }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    await writeFile(
+      nestedChildFile,
+      [
+        JSON.stringify({ type: "session", version: 3, id: "omp-nested", timestamp: "2026-10-04T10:05:00.000Z", cwd: "/w" }),
+        JSON.stringify({ type: "message", id: "u1", parentId: null, timestamp: "2026-10-04T10:05:01.000Z", message: { role: "user", content: "Nested child prompt.", timestamp: Date.UTC(2026, 9, 4, 10, 5, 1) } }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    await writeFile(
+      outsideForkFile,
+      [
+        JSON.stringify({ type: "session", version: 3, id: "omp-outside-fork", timestamp: "2026-10-04T11:00:00.000Z", cwd: "/w", parentSession: outsideParentFile }),
+        JSON.stringify({ type: "message", id: "u1", parentId: null, timestamp: "2026-10-04T08:00:01.000Z", message: { role: "user", content: "Should not read outside root.", timestamp: Date.UTC(2026, 9, 4, 8, 0, 1) } }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+
+    const listedOmp = await listSourceFiles("oh_my_pi", path.join(ompRoot, "agent", "sessions"));
+    assert.equal(listedOmp.some((entry) => entry.endsWith("notes.jsonl")), false, "non-session files under profiles/ are excluded");
+
+    const ompSource = createSourceDefinition("src-omp-hardening", "oh_my_pi", path.join(ompRoot, "agent", "sessions"));
+    const [ompPayload] = (await runSourceProbe({ source_ids: [ompSource.id] }, [ompSource])).sources;
+    assert.ok(ompPayload);
+    const taskSession = ompPayload.sessions.find((session) => session.source_session_id === "omp-task");
+    assert.equal(taskSession?.turn_count, 1, "delegated task children must not have turns stripped by fork dedup");
+    const taskUsage = ompPayload.fragments
+      .filter((fragment) => fragment.fragment_kind === "token_usage_signal" && fragment.session_ref === "sess:oh_my_pi:omp-task")
+      .reduce((sum, fragment) => sum + ((fragment.payload.token_usage as Record<string, number>).total_tokens ?? 0), 0);
+    assert.equal(taskUsage, 48);
+    assert.ok(
+      ompPayload.fragments.some((fragment) =>
+        fragment.fragment_kind === "session_relation"
+        && fragment.session_ref === "sess:oh_my_pi:omp-nested"
+        && fragment.payload.parent_uuid === "omp-parent"),
+      "millisecond + Z nested subagent directories must link to their parent",
+    );
+    assert.ok(
+      ompPayload.loss_audits.some((audit) => audit.diagnostic_code === "pi_family_fork_parent_outside_root"),
+      "parentSession paths outside source roots must be refused instead of read",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });

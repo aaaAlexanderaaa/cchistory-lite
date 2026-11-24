@@ -1060,9 +1060,13 @@ async function selectTargetSourceFiles(
       selected.push(filePath);
       continue;
     }
-    const metadata = source.platform === "codex" || source.platform === "claude_code"
-      ? await inspectSourceFileLogicalSessionMetadata(source.platform, filePath, { includeWorkspaceMetadata: false })
-      : undefined;
+    const metadata =
+      source.platform === "codex" ||
+      source.platform === "claude_code" ||
+      source.platform === "pi" ||
+      source.platform === "oh_my_pi"
+        ? await inspectSourceFileLogicalSessionMetadata(source.platform, filePath, { includeWorkspaceMetadata: false })
+        : undefined;
     if (metadata?.sessionKeyState === "uncertain") {
       selected.push(filePath);
       continue;
@@ -1179,7 +1183,15 @@ function resultReferencesTargetSession(
   result: AdapterBlobResult,
   sessionRefs: readonly string[],
 ): boolean {
-  if (source.platform !== "openclaw" && source.platform !== "codex") return false;
+  if (
+    source.platform !== "openclaw" &&
+    source.platform !== "codex" &&
+    source.platform !== "oh_my_pi" &&
+    source.platform !== "pi" &&
+    source.platform !== "deepseek_harness"
+  ) {
+    return false;
+  }
   return result.fragments.some((fragment) => {
     if (fragment.fragment_kind !== "session_relation") return false;
     const parentRef = fragment.payload.parent_uuid;
@@ -2330,6 +2342,8 @@ async function tryProcessPathOpenedContainer(
   for (const seed of multiSessionSeeds) {
     if (
       source.platform !== "antigravity" &&
+      source.platform !== "oh_my_pi" &&
+      source.platform !== "pi" &&
       targetSessionRefs?.length &&
       !sourceFileHandlesSessionTargets(source.platform, filePath) &&
       !targetSessionRefs.some(ref => targetRefMatchesSession(ref, seed.sessionId))

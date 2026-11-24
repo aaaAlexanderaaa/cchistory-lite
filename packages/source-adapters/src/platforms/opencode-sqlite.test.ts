@@ -89,10 +89,14 @@ test("[opencode] SQLite v2 keeps assistant usage apart from compaction and proje
     assert.equal(payload.turns[0]?.canonical_text, "Compare the two OpenCode storage generations.");
     assert.equal(payload.turns[0]?.context_summary?.token_usage?.total_tokens, 1_778);
 
-    // The generic runtime applies assistant usage to its reply text rather than
-    // emitting a standalone signal; the turn total proves compaction tokens
-    // stayed out of reply accounting.
-    assert.equal(payload.turns[0]?.context_summary?.token_usage?.total_tokens, 1_778);
+    // Assistant and compaction rows emit independent usage_only call records
+    // that retain their model and stop reason cleanly.
+    const usageFragments = payload.fragments.filter((fragment) => fragment.fragment_kind === "token_usage_signal");
+    assert.equal(usageFragments.length, 2);
+    assert.equal(
+      usageFragments.every((fragment) => (fragment.payload.token_usage as Record<string, unknown>).model === "mock-opencode-v2"),
+      true,
+    );
 
     const toolResults = payload.fragments.filter((fragment) => fragment.fragment_kind === "tool_result");
     assert.equal(toolResults.length, 2);
@@ -107,9 +111,11 @@ test("[opencode] SQLite v2 keeps assistant usage apart from compaction and proje
     assert.ok(syntheticText.some((text) => text.includes("$ npm test")));
     assert.ok(syntheticText.some((text) => text.includes("ok")));
 
-    const compactionAudit = payload.loss_audits.find((audit) => audit.diagnostic_code === "opencode_compaction_usage_not_attributed");
-    assert.ok(compactionAudit);
-    assert.equal(compactionAudit.severity, "info");
+    assert.equal(
+      payload.loss_audits.some((audit) => audit.diagnostic_code === "opencode_compaction_usage_not_attributed"),
+      false,
+      "compaction usage is attributed as an independent call and must not emit a stale not-attributed diagnostic",
+    );
   });
 });
 
@@ -304,4 +310,31 @@ test("[opencode] a metadata-only migrated store does not hide the complete legac
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("[opencode] SQLite usage_only records preserve distinct models across assistant and compaction calls", async () => {
+  await withSqlite("v2.sql", async (root, dbPath) => {
+    execSql(
+      dbPath,
+      `UPDATE session_message
+         SET data = replace(data, '"id":"mock-opencode-v2"', '"id":"claude-opus-4-5"')
+         WHERE id = 'msg_v2_assistant';
+       UPDATE session_message
+         SET data = json_set(data, '$.modelID', 'claude-haiku-4-5')
+         WHERE id = 'msg_v2_compaction';`,
+    );
+    const source = opencodeSource(root);
+    const [payload] = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources;
+    assert.ok(payload);
+    const usageByKind = new Map(
+      payload.fragments
+        .filter((fragment) => fragment.fragment_kind === "token_usage_signal")
+        .map((fragment) => [
+          String(fragment.payload.call_kind),
+          (fragment.payload.token_usage as Record<string, unknown>).model,
+        ]),
+    );
+    assert.equal(usageByKind.get("assistant"), "claude-opus-4-5");
+    assert.equal(usageByKind.get("compaction"), "claude-haiku-4-5");
+  });
 });

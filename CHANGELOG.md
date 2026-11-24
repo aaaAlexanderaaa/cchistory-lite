@@ -43,12 +43,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `parentSession` + `taskPromptCacheKey`; ordinary forks stay top-level. Both
   honour `PI_CODING_AGENT_DIR` without indexing one installation twice.
 - Review hardening across the new sources: Pi/OMP inherited fork prefixes are
-  dropped when the parent path is resolvable, OMP profile roots are derived from
-  the config root for a custom agent directory, oversized Pi/OMP files keep only
-  their header with a read-budget diagnostic, Hermes keeps merged compaction
-  user turns separate from the folded summary, omits hidden bot/cron sessions,
-  and reports session-granularity traces; OpenCode metadata-only stores no longer
-  suppress complete legacy JSON sessions and compaction usage is retained.
+  dropped when the parent path is resolvable within the source root (matched by
+  entry id + timestamp, never applied to delegated task children), custom Pi/OMP
+  roots match `.jsonl` session files without requiring `/agent/sessions/`, Pi v1
+  id-less usage is counted once, oversized OMP files resolve their line-2
+  session header behind the title slot, and targeted OMP parent reads include
+  delegated task children; Hermes decodes `messages.content` via
+  `CAST(content AS BLOB)` so Node 22 `node:sqlite` preserves `\x00json:`
+  structured messages, keeps merged compaction user turns separate from the
+  folded summary, omits hidden bot/cron sessions, and propagates explicit
+  `usage_scope: "session"` so session aggregates report `session` granularity
+  in `trace` and SQL `calls` without triggering `>200K` per-call pricing tiers
+  or misclassifying turn-less per-call delegated sessions; DeepSeek Harness
+  decodes concatenated Zstandard frames via RFC 8878 frame boundaries on Node 22+
+  with per-record caps, read-budget admission, and `cacheWriteTokens` support;
+  OpenCode SQLite preserves per-call `model` and `stop_reason` on `usage_only`
+  records, splits record builders into `sqlite-records.ts`, drops the stale
+  `opencode_compaction_usage_not_attributed` diagnostic, and prevents
+  metadata-only stores from suppressing complete legacy JSON sessions.
 
 ## [0.8.3] - 2026-11-21
 

@@ -150,8 +150,10 @@ export function evaluateUsageRowsForDiagnostics(
   });
 
   // Group by execution thread (session + main/sidecar) so interleaved sidecar calls never corrupt continuity.
+  // Session-aggregate rows (e.g. Hermes per-model session totals) are excluded from per-call continuity.
   const byThread = new Map<string, EvaluatedUsageRow[]>();
   for (const item of evaluated) {
+    if (item.row.usage_scope === "session") continue;
     const list = byThread.get(item.threadKey) ?? [];
     list.push(item);
     byThread.set(item.threadKey, list);
@@ -229,7 +231,7 @@ export function computeCacheHitDistribution(evaluated: readonly EvaluatedUsageRo
   let totalCost = 0;
 
   for (const item of evaluated) {
-    if (item.cacheHitRatio === null) continue;
+    if (item.row.usage_scope === "session" || item.cacheHitRatio === null) continue;
     evaluatedCount += 1;
     totalCost += item.adjustedCostUsd;
     const key =
