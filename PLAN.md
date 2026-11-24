@@ -1,5 +1,26 @@
 # Project work
 
+## Queued work — 2026-11-25 Read-only agent inventory & multi-host project Git metadata
+
+Status: **ready to start** (queued as the next authorized local implementation track; cut feature branch `feat/agent-inventory-and-project-git-meta` from `main` before editing code).
+
+Outcome: add two read-only CLI capabilities to Lite while preserving zero-store isolation, one-way package layering (`lite-cli`/`lite-tui` → `live-runtime` → `source-adapters`/`canonical` → `domain`), and strict secret hygiene:
+
+1. **Slice A — Read-only AI Agent / MCP / skills config inventory + 30-day tool activity correlation**:
+   - Add a read-only CLI subcommand (`cchistory-lite inventory --json`, aligned with `agent-contract.ts` and `help.ts`) with `--home` override support for deterministic fixture testing.
+   - Read-only scan common agent configuration locations: Codex (`~/.codex/config.toml`), Claude Code (`~/.claude.json`, `.mcp.json`), Grok CLI (`~/.grok/config.toml`), Antigravity (`~/.gemini/config/mcp_config.json`), and OpenCode / DeepSeek Harness (`$DSH_HOME` / `~/.dsh`).
+   - Emit configured agents, MCP servers (`server_id`, `client`, `transport`, redacted `command`/`url` with query tokens and basic auth stripped, and `env_keys` key names only — never read or output env values, tokens, or `Authorization` headers), and local skills/rules entry names.
+   - Correlate configured servers/clients against `live-runtime` tool-call usage over a configurable window (`--since 30d` default) to emit `used_in_window`, `call_count`, `last_used_at`, and highlight configured-but-unused items.
+   - Support `--envelope --host-id <name>` emitting the shared read-only v1 JSON envelope (`schema_version: 1`, `domain: "ai_agents"`, `owner: "cchistory-lite"`, `host_id`, `generated_at`, `stale_after_seconds: 86400`, `status`, `error`, `summary`, `delta`, `items`).
+2. **Slice B — Opt-in project Git metadata & pure cross-host reconciliation**:
+   - Add an opt-in flag `ls projects --with-git` (off by default to keep existing scan speed and zero regressions) that runs bounded, short-timeout, offline-only read-only Git inspection for each project with a local `repo_root`: normalized `repo_remote` (`host/owner/repo`, lowercase, `.git` and embedded credentials stripped), `branch`, `head_sha`, `head_committed_at`, `dirty_files`, and upstream `ahead`/`behind`.
+   - Implement pure, zero-I/O multi-host snapshot merging in `packages/canonical` and expose a CLI subcommand (`merge-projects <file1.json> <file2.json> --json`): reconcile by normalized `repo_remote` (falling back to normalized directory name with `match_kind: "directory_fallback"` for non-Git projects), reporting hosts carrying each project, latest-commit host, branch divergence, dirty/unpushed hosts, and per-host recent AI session activity.
+
+Acceptance gates:
+- Update `agent-contract.ts`, `help.ts`, and user/architecture docs in the same change.
+- Add sanitized `mock_data/` fixtures and unit tests covering config parsing, strict redaction (asserting secret/env values never appear in output), 30-day activity correlation, Git URL normalization, and multi-host merge states (ahead, behind, diverged, dirty, non-Git fallback).
+- Pass `pnpm run build:lite`, `pnpm test`, `pnpm run verify:governance`, `pnpm run verify:lite-artifact`, and `git diff --check` with zero projection issues.
+
 ## Current work — 2026-11-23 Source compatibility expansion
 
 Status: source inventory, pinned-reference investigation and Ask ChatGPT research complete.
