@@ -42,6 +42,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `reset_boundary` entries, named profile stores, and task children linked from
   `parentSession` + `taskPromptCacheKey`; ordinary forks stay top-level. Both
   honour `PI_CODING_AGENT_DIR` without indexing one installation twice.
+- Review hardening across the new sources: Pi/OMP inherited fork prefixes are
+  dropped when the parent path is resolvable, OMP profile roots are derived from
+  the config root for a custom agent directory, oversized Pi/OMP files keep only
+  their header with a read-budget diagnostic, Hermes keeps merged compaction
+  user turns separate from the folded summary, omits hidden bot/cron sessions,
+  and reports session-granularity traces; OpenCode metadata-only stores no longer
+  suppress complete legacy JSON sessions and compaction usage is retained.
 
 ## [0.8.3] - 2026-11-21
 

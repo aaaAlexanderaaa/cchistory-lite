@@ -135,14 +135,18 @@ tool calls and results; session `parent_id` links delegated child sessions.
 
 `hermes` reads Hermes Agent profile stores (`state.db`, including
 `profiles/<name>/state.db`). Live transcript rows (`active = 1`) become
-conversation evidence; `display_kind = 'hidden'` and rewound rows are omitted.
+conversation evidence; `display_kind = 'hidden'`, rewound rows and hidden
+(`hidden = 1`) bot/cron sessions are omitted, while archived sessions stay
+readable.
 Reasoning columns stay collapsed as reasoning instead of becoming visible
 assistant text, OpenAI-style `tool_calls` become tool calls paired with their
 `role: tool` results, and `model_config` lineage markers distinguish delegated
 children (`_delegate_from`, linked under the parent) from branch/compression
 continuations (`_branched_from` / `_reset_from`, kept as their own top-level
 sessions). Hermes records usage per session/model, not per call, so those totals
-keep session granularity.
+are independent aggregate events (no turn identity) and trace reports `session`
+granularity. A merged compaction carrier keeps its real user prefix as a turn
+and folds only the summary suffix.
 
 `pi` and `oh_my_pi` read the shared Pi-family session JSONL layout:
 `<agent-dir>/sessions/<encoded-cwd>/<timestamp>_<session>.jsonl`. Entries form a
@@ -158,7 +162,10 @@ ordinary forks keep their `parentSession` lineage as a top-level session. Pi
 honours `PI_CODING_AGENT_DIR`/`PI_CODING_AGENT_SESSION_DIR`; Oh My Pi honours
 `PI_CODING_AGENT_DIR` and `PI_CONFIG_DIR`. A marker-less `PI_CODING_AGENT_DIR` is
 accepted only by the product whose default root exists and the other product's
-does not, so a dual install requires explicit source selection.
+does not, so a dual install requires explicit source selection. Copied fork
+histories are resolved through a path-shaped `parentSession`: entries inherited
+from the parent are omitted from the fork so conversation and billing are not
+duplicated. Files above the read budget keep only their header plus a warning.
 
 `cursor_agent` is opt-in (`--source cursor_agent`) so a default scan does not
 emit those transcripts twice.

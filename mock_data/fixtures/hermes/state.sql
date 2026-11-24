@@ -101,6 +101,8 @@ INSERT INTO messages (session_id, role, content, display_kind, timestamp) VALUES
   ('sess_fixture_hermes_main', 'assistant', 'Turn failed: provider timeout.', 'failed_turn', 1770000005.6);
 INSERT INTO messages (session_id, role, content, timestamp) VALUES
   ('sess_fixture_hermes_main', 'system', 'You are a helpful coding agent.', 1770000000.2);
+INSERT INTO messages (session_id, role, content, timestamp) VALUES
+  ('sess_fixture_hermes_main', 'user', '[PRIOR CONTEXT — for reference only] old handoff body', 1770000006.5);
 
 INSERT INTO messages (session_id, role, content, timestamp) VALUES
   ('sess_fixture_hermes_child', 'user', 'Audit the delegated log output.', 1770000101.0);

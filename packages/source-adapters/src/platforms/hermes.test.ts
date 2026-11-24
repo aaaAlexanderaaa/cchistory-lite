@@ -310,3 +310,40 @@ test("[hermes] a parent target includes its delegated child and Windows uses LOC
   assert.ok(resolved);
   assert.equal(resolved.base_dir, localRoot);
 });
+
+test("[hermes] hidden sessions stay out of the transcript while archived history remains readable", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-hermes-hidden-"));
+  try {
+    const db = new DatabaseSync(path.join(root, "state.db"));
+    try {
+      db.exec(`
+        CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, model TEXT, started_at REAL NOT NULL,
+          hidden INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL,
+          content TEXT, timestamp REAL NOT NULL, active INTEGER NOT NULL DEFAULT 1);
+        INSERT INTO sessions VALUES ('sess_visible', 'cli', 'm', 1772000000.0, 0, 0);
+        INSERT INTO sessions VALUES ('sess_archived', 'cli', 'm', 1772000100.0, 0, 1);
+        INSERT INTO sessions VALUES ('sess_hidden', 'cron', 'm', 1772000200.0, 1, 0);
+        INSERT INTO messages (session_id, role, content, timestamp) VALUES
+          ('sess_visible', 'user', 'Visible prompt.', 1772000001.0),
+          ('sess_visible', 'assistant', 'Visible reply.', 1772000002.0),
+          ('sess_archived', 'user', 'Archived prompt.', 1772000101.0),
+          ('sess_archived', 'assistant', 'Archived reply.', 1772000102.0),
+          ('sess_hidden', 'user', 'Cron prompt.', 1772000201.0),
+          ('sess_hidden', 'assistant', 'Cron reply.', 1772000202.0);
+      `);
+    } finally {
+      db.close();
+    }
+    const source = hermesSource(root);
+    const [payload] = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources;
+    assert.ok(payload);
+    assert.deepEqual(
+      payload.sessions.map((session) => session.source_session_id).sort(),
+      ["sess_archived", "sess_visible"],
+      "hidden cron/bot sessions are omitted; archived history stays readable",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

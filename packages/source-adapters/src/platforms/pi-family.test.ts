@@ -244,3 +244,66 @@ test("[oh_my_pi] a late off-branch usage entry keeps the activeLeafId conversati
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("[pi] a copied fork drops inherited entries and usage but keeps the fork's own turn", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-pi-fork-"));
+  try {
+    const dir = path.join(root, "agent", "sessions", "--w--");
+    await mkdir(dir, { recursive: true });
+    const base = Date.UTC(2026, 2, 1, 0, 0, 0);
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const parentFile = path.join(dir, "2026-03-01T00-00-00_pi-parent.jsonl");
+    const parentRows = [
+      { type: "session", version: 3, id: "pi-parent", timestamp: iso(base), cwd: "/workspace/pi" },
+      { type: "message", id: "u1", parentId: null, timestamp: iso(base + 1000), message: { role: "user", content: "Parent prompt.", timestamp: base + 1000 } },
+      { type: "message", id: "a1", parentId: "u1", timestamp: iso(base + 2000), message: { role: "assistant", model: "gpt-5", content: [{ type: "text", text: "Parent reply." }], usage: { input: 90, output: 10, totalTokens: 100 }, stopReason: "stop", timestamp: base + 2000 } },
+    ];
+    await writeFile(parentFile, parentRows.map((row) => JSON.stringify(row)).join("\n") + "\n", "utf8");
+    const forkRows = [
+      { type: "session", version: 3, id: "pi-fork", timestamp: iso(base + 1000), cwd: "/workspace/pi", parentSession: parentFile },
+      ...parentRows.slice(1),
+      { type: "message", id: "u2", parentId: "a1", timestamp: iso(base + 3000), message: { role: "user", content: "Fork-only prompt.", timestamp: base + 3000 } },
+      { type: "message", id: "a2", parentId: "u2", timestamp: iso(base + 4000), message: { role: "assistant", model: "gpt-5", content: [{ type: "text", text: "Fork-only reply." }], usage: { input: 18, output: 2, totalTokens: 20 }, stopReason: "stop", timestamp: base + 4000 } },
+    ];
+    const forkFile = path.join(dir, "2026-03-01T01-00-00_pi-fork.jsonl");
+    await writeFile(forkFile, forkRows.map((row) => JSON.stringify(row)).join("\n") + "\n", "utf8");
+
+    const source = createSourceDefinition("src-pi-fork", "pi", root);
+    const [payload] = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources;
+    assert.ok(payload);
+    const fork = payload.sessions.find((session) => session.id === "sess:pi:pi-fork");
+    assert.ok(fork);
+    assert.equal(fork.turn_count, 1, "the copied parent turn is inherited, not a new fork turn");
+    const forkTurns = payload.turns.filter((turn) => turn.session_id === fork.id);
+    assert.deepEqual(forkTurns.map((turn) => turn.canonical_text), ["Fork-only prompt."]);
+    assert.ok(payload.loss_audits.some((audit) => audit.diagnostic_code === "pi_family_inherited_fork_prefix"));
+    assert.equal(payload.fragments.some((fragment) => fragment.session_ref === fork.id
+      && String(fragment.payload.text ?? "").includes("Parent reply.")), false);
+    // Parent 100 + fork's own 20; the copied 100 is not billed twice.
+    const forkUsage = payload.fragments.filter((fragment) => fragment.fragment_kind === "token_usage_signal"
+      && fragment.session_ref === fork.id);
+    assert.equal(forkUsage.reduce((sum, fragment) => sum + ((fragment.payload.token_usage as Record<string, number>).total_tokens ?? 0), 0), 20);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("[pi/oh_my_pi] an over-budget session file keeps only its header and reports a diagnostic", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-pi-budget-"));
+  try {
+    const dir = path.join(root, "agent", "sessions", "--w--");
+    await mkdir(dir, { recursive: true });
+    const file = path.join(dir, "2026-04-01T00-00-00_pi-budget.jsonl");
+    const content = [
+      JSON.stringify({ type: "session", version: 3, id: "pi-budget", timestamp: "2026-04-01T00:00:00.000Z", cwd: "/workspace/pi" }),
+      JSON.stringify({ type: "message", id: "u1", parentId: null, timestamp: "2026-04-01T00:00:01.000Z", message: { role: "user", content: "Too large for this budget.", timestamp: Date.UTC(2026, 3, 1, 0, 0, 1) } }),
+    ].join("\n") + "\n";
+    await writeFile(file, content, "utf8");
+    const { seed, diagnostics } = extractPiFamilySessionSeed("pi", file, Buffer.from(content), { maxBytes: 10 });
+    assert.ok(seed);
+    assert.equal(seed.records.length, 1);
+    assert.ok(diagnostics.some((diagnostic) => diagnostic.code === "pi_family_file_too_large"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

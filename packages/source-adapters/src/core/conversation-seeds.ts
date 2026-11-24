@@ -8,6 +8,8 @@ export interface ExtractedSessionSeed {
   updatedAt?: string;
   model?: string;
   workingDirectory?: string;
+  /** Raw native parent reference when it names a session file (Pi/OMP forks). */
+  parent_session_path?: string;
   diagnostics?: Array<{ code: string; detail: string; severity?: "info" | "warning" | "error" }>;
   records: Array<{
     pointer: string;

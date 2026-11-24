@@ -236,8 +236,8 @@ Implemented slice:
   continuation visible, 3,828 session tokens).
 
 Verification (2026-11-24, runtime 0.8.3): `pnpm run build:lite` passed. The
-`pnpm test` body (`pnpm run verify:lite`) passed **920 package tests** (domain 103,
-canonical 184, source-adapters 311, live-runtime 142, lite-cli 79, lite-tui 101),
+`pnpm test` body (`pnpm run verify:lite`) passed **925 package tests** (domain 103,
+canonical 184, source-adapters 316, live-runtime 142, lite-cli 79, lite-tui 101),
 4 catalog tests and dependency boundaries. `verify:governance` passed (14 JS
 tests, 5 Python tests, 5 architecture rules across 165 matches, 38 docs / 21
 adapters, 31 advisories). `mock-data:validate` passed across 208 files;
@@ -264,9 +264,10 @@ per-model rollup.
 
 Projection/coverage limits: only live (`active = 1`) transcript rows are
 projected, so compaction-archived and rewound rows stay as native evidence;
-usage carries session/model granularity (aggregate events have no turn identity,
-so trace reports `session`); tool results carry no native error flag, so
-`is_error` is not invented.
+hidden (`hidden = 1`) bot/cron sessions are omitted while archived sessions stay
+readable; usage carries session/model granularity (aggregate events have no turn
+identity, so trace reports `session`); tool results carry no native error flag,
+so `is_error` is not invented.
 
 ### Delivery record — Pi and Oh My Pi (2026-11-24)
 
@@ -294,25 +295,31 @@ Implemented slice:
   `parentSession` as top-level lineage.
 - Evidence: Pi fixture with a model change, compaction, tool loop and an
   abandoned branch; OMP fixtures with title slot, `title_change`, `model_usage`,
-  `reset_boundary`, a task child and an ordinary fork; one scenario; six
+  `reset_boundary`, a task child and an ordinary fork; one scenario; nine
   adapter tests (registration, profile discovery, active-branch projection,
-  OMP semantics, v1 linear/truncated tail, targeting) and live-runtime coverage
+  OMP semantics, v1 linear/truncated tail, targeting, activeLeafId, inherited
+  fork, read budget) and live-runtime coverage
   (matrix participation, call-granularity trace, task/fork visibility, usage
   totals).
 
 Verification (2026-11-24, runtime 0.8.3): the final `pnpm run verify:lite`
-passed **920 package tests**, 4 catalog tests and dependency boundaries;
+passed **925 package tests**, 4 catalog tests and dependency boundaries;
 `verify:governance` passed (165 architecture matches, 38 docs / 21 adapters,
-31 advisories); `mock-data:validate` passed across 208 files;
+32 advisories); `mock-data:validate` passed across 208 files;
 `verify:lite-artifact` passed; `git diff --check` passed. Pi and OMP fixture
 snapshots report zero projection issues; Pi usage stays call-granular
 (4,466 tokens including native inactive-branch usage) and OMP keeps its task child hidden with 1,794 total tokens
 including the ordinary fork.
 
 Projection/coverage limits: abandoned branches and non-active entries remain in
-the file as raw evidence but are not projected; `thinking` blocks are collapsed
-reasoning evidence; image content is not projected as text; Pi v1 files have no
-tree, so their file order is the active order.
+the file as raw evidence and contribute usage-only records, but their text is not
+projected; `thinking` blocks are collapsed reasoning evidence; image content is
+not projected as text; Pi v1 files have no tree, so their file order is the
+active order. Inherited fork prefixes are resolved only when `parentSession`
+names a readable path (id-shaped references stay duplicated and are reported by
+the source's raw evidence); a file above the read budget keeps only its header
+with a diagnostic instead of being streamed. Named OMP profiles are discovered
+from the config root for the default and derived agent directories.
 
 ## Previous work — 2026-11-21 Per-call usage telemetry, anomaly diagnostics, and `trace`
 

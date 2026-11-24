@@ -647,8 +647,13 @@ export async function extractMultiSessionSeeds(
     return extractHermesSqliteSeeds(filePath, { targetSessionRefs, budget });
   }
   if (source.platform === "pi" || source.platform === "oh_my_pi") {
-    const { seed } = extractPiFamilySessionSeed(source.platform, filePath, fileBuffer);
-    return seed ? [seed] : [];
+    const { seed } = extractPiFamilySessionSeed(source.platform, filePath, fileBuffer, {
+      maxBytes: budget?.maximumUnitBytes?.(),
+    });
+    if (!seed) {
+      return [];
+    }
+    return [await dropInheritedPiForkPrefix(seed, filePath)];
   }
   if (source.platform === "opencode" || source.platform === "gemini") {
     const exportSeeds = await extractConversationExportSeeds(source, filePath, fileBuffer, blobId);
@@ -1601,6 +1606,72 @@ export async function readOptionalTextFile(targetPath: string): Promise<string |
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Pi/OMP forks copy the parent session's entries (including their ids and
+ * usage) into a new file. Those inherited entries are not new work: drop records
+ * whose native entry id already exists in the parent file so the fork does not
+ * duplicate conversation or billing. Only path-shaped parent references can be
+ * resolved without scanning unrelated roots.
+ */
+async function dropInheritedPiForkPrefix(
+  seed: ExtractedSessionSeed,
+  filePath: string,
+): Promise<ExtractedSessionSeed> {
+  const parentPath = seed.parent_session_path;
+  if (!parentPath) {
+    return seed;
+  }
+  const resolvedPath = path.isAbsolute(parentPath)
+    ? parentPath
+    : path.resolve(path.dirname(filePath), parentPath);
+  let parentText: string;
+  try {
+    const stats = await fs.stat(resolvedPath);
+    if (stats.size > 64 * 1024 * 1024) {
+      return seed;
+    }
+    parentText = await fs.readFile(resolvedPath, "utf8");
+  } catch {
+    return seed;
+  }
+  const inheritedIds = new Set<string>();
+  for (const line of parentText.split("\n")) {
+    if (!line.trim()) {
+      continue;
+    }
+    const parsed = safeJsonParse(line);
+    if (isObject(parsed)) {
+      const id = asString(parsed.id);
+      if (id) {
+        inheritedIds.add(id);
+      }
+    }
+  }
+  if (inheritedIds.size === 0) {
+    return seed;
+  }
+  const records = seed.records.filter((record) => {
+    const parsed = safeJsonParse(record.rawJson);
+    const entryId = isObject(parsed) ? asString(parsed.entry_id) : undefined;
+    return entryId === undefined || !inheritedIds.has(entryId);
+  });
+  if (records.length === seed.records.length) {
+    return seed;
+  }
+  return {
+    ...seed,
+    records,
+    diagnostics: [
+      ...(seed.diagnostics ?? []),
+      {
+        code: "pi_family_inherited_fork_prefix",
+        detail: `${seed.records.length - records.length} inherited fork entries were omitted so parent history and usage are not projected twice.`,
+        severity: "info",
+      },
+    ],
+  };
 }
 
 export async function extractOpenCodeSessionSeed(

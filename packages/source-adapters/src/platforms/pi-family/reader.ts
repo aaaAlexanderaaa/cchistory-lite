@@ -28,8 +28,12 @@ interface PiSeedDiagnostic {
 
 interface ParsedRecord {
   lineNumber: number;
-  rawLine: string;
   value: Record<string, unknown>;
+}
+
+export interface PiFamilyReadOptions {
+  /** Whole-file capture ceiling already admitted by the runtime budget. */
+  maxBytes?: number;
 }
 
 export interface PiFamilyReadResult {
@@ -54,8 +58,17 @@ export function extractPiFamilySessionSeed(
   platform: PiFamilyPlatform,
   filePath: string,
   fileBuffer: Buffer,
+  options: PiFamilyReadOptions = {},
 ): PiFamilyReadResult {
   const diagnostics: PiSeedDiagnostic[] = [];
+  if (options.maxBytes !== undefined && fileBuffer.length > options.maxBytes) {
+    diagnostics.push({
+      code: "pi_family_file_too_large",
+      detail: `Session file is ${fileBuffer.length} bytes, above the ${options.maxBytes}-byte read budget; only the header was admitted.`,
+      severity: "warning",
+    });
+    return { seed: headerOnlySeed(platform, filePath, fileBuffer, diagnostics), diagnostics };
+  }
   const records: ParsedRecord[] = [];
   const lines = fileBuffer.toString("utf8").split("\n");
   let lastNonEmptyLine = -1;
@@ -87,7 +100,7 @@ export function extractPiFamilySessionSeed(
       });
       continue;
     }
-    records.push({ lineNumber: index + 1, rawLine, value });
+    records.push({ lineNumber: index + 1, value });
   }
 
   const headerRecord = records.find((record) => record.value.type === "session");
@@ -126,7 +139,8 @@ export function extractPiFamilySessionSeed(
   // Oh My Pi keeps the current title in the slot; Pi's `/name` lands in
   // session_info. Both are session-wide, independent of the active branch.
   const title = slotTitle || titleChanges.at(-1) || headerTitle || sessionInfoNames.at(-1);
-  const parentSession = resolveParentSessionRef(asString(header.parentSession));
+  const rawParentSession = asString(header.parentSession);
+  const parentSession = resolveParentSessionRef(rawParentSession);
   const nestedParent = nestedSessionParent(filePath);
   const taskPromptCacheKey = asString(header.taskPromptCacheKey);
   const delegated = platform === "oh_my_pi" && Boolean(nestedParent ?? taskPromptCacheKey);
@@ -143,6 +157,9 @@ export function extractPiFamilySessionSeed(
       title,
       cwd: workingDirectory,
       parent_session: nestedParent ?? parentSession,
+      parent_session_path: rawParentSession && (rawParentSession.includes("/") || rawParentSession.endsWith(".jsonl"))
+        ? rawParentSession
+        : undefined,
       delegated,
       taskPromptCacheKey,
       additional_directories: header.additionalDirectories,
@@ -181,6 +198,7 @@ export function extractPiFamilySessionSeed(
         observedAt: timestamp,
         rawJson: JSON.stringify({
           kind: "model_change",
+          entry_id: asString(entry.value.id),
           model: asString(entry.value.modelId) ?? asString(entry.value.model),
           provider: asString(entry.value.provider),
           role: asString(entry.value.role),
@@ -194,6 +212,7 @@ export function extractPiFamilySessionSeed(
         observedAt: timestamp,
         rawJson: JSON.stringify({
           kind: "usage",
+          entry_id: asString(entry.value.id),
           purpose: asString(entry.value.purpose) ?? asString(entry.value.kind),
           role: asString(entry.value.role),
           provider: asString(entry.value.provider),
@@ -210,6 +229,7 @@ export function extractPiFamilySessionSeed(
         observedAt: timestamp,
         rawJson: JSON.stringify({
           kind: entryType,
+          entry_id: asString(entry.value.id),
           summary: asString(entry.value.summary),
           usage: entry.value.usage,
           first_kept_entry_id: asString(entry.value.firstKeptEntryId),
@@ -223,7 +243,7 @@ export function extractPiFamilySessionSeed(
         output.push({
           pointer: `entry:${entry.lineNumber}`,
           observedAt: timestamp,
-          rawJson: JSON.stringify({ kind: "title", title: nextTitle }),
+          rawJson: JSON.stringify({ kind: "title", entry_id: asString(entry.value.id), title: nextTitle }),
         });
       }
       continue;
@@ -232,7 +252,7 @@ export function extractPiFamilySessionSeed(
       output.push({
         pointer: `entry:${entry.lineNumber}`,
         observedAt: timestamp,
-        rawJson: JSON.stringify({ kind: "reset_boundary" }),
+        rawJson: JSON.stringify({ kind: "reset_boundary", entry_id: asString(entry.value.id) }),
       });
       continue;
     }
@@ -263,6 +283,9 @@ export function extractPiFamilySessionSeed(
       ...(startedAt ? { createdAt: startedAt } : {}),
       ...(lastActivity ? { updatedAt: lastActivity } : {}),
       ...(workingDirectory ? { workingDirectory } : {}),
+      ...(rawParentSession && (rawParentSession.includes("/") || rawParentSession.endsWith(".jsonl"))
+        ? { parent_session_path: rawParentSession }
+        : {}),
       ...(diagnostics.length > 0 ? { diagnostics } : {}),
       records: output,
     },
@@ -499,4 +522,34 @@ export function isPiFamilySessionFile(filePath: string): boolean {
 export function parsePiFamilyRecordJson(raw: string | undefined): Record<string, unknown> | undefined {
   const parsed = safeJsonParse(raw);
   return isObject(parsed) ? parsed : undefined;
+}
+
+function headerOnlySeed(
+  platform: PiFamilyPlatform,
+  filePath: string,
+  fileBuffer: Buffer,
+  diagnostics: PiSeedDiagnostic[],
+): ExtractedSessionSeed | undefined {
+  const headerLine = fileBuffer.toString("utf8").split("\n", 1)[0];
+  const header = safeJsonParse(headerLine);
+  if (!isObject(header) || header.type !== "session") {
+    return undefined;
+  }
+  const rawSessionId = asString(header.id) ?? deriveSessionIdFromFileName(filePath);
+  if (!rawSessionId) {
+    return undefined;
+  }
+  const timestamp = normalizeIso(asString(header.timestamp));
+  return {
+    sessionId: `sess:${platform}:${rawSessionId}`,
+    ...(asString(header.title) ? { title: asString(header.title) } : {}),
+    ...(timestamp ? { createdAt: timestamp } : {}),
+    ...(normalizeDirectory(asString(header.cwd)) ? { workingDirectory: normalizeDirectory(asString(header.cwd)) } : {}),
+    diagnostics,
+    records: [{
+      pointer: "session header",
+      observedAt: timestamp,
+      rawJson: JSON.stringify({ kind: "session", id: rawSessionId, ...(header.title ? { title: header.title } : {}) }),
+    }],
+  };
 }

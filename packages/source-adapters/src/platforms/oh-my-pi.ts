@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { normalizePathSeparators } from "../core/utils.js";
 import type { PlatformAdapter } from "./types.js";
@@ -66,11 +67,22 @@ export const ohMyPiAdapter: PlatformAdapter = {
     // Named profiles keep their own agent directory; walking the profiles tree
     // finds them without guessing every profile name.
     const normalized = normalizePathSeparators(baseDir);
+    const roots = [baseDir];
     if (normalized.endsWith("/agent/sessions")) {
       const configRoot = path.dirname(path.dirname(baseDir));
-      return [baseDir, path.join(configRoot, "profiles")];
+      roots.push(path.join(configRoot, "profiles"));
     }
-    return [baseDir];
+    // A custom PI_CODING_AGENT_DIR relocates only the default profile's agent
+    // directory; named profiles still live under the config root.
+    const envAgentDir = process.env.PI_CODING_AGENT_DIR?.trim();
+    if (envAgentDir && normalized === normalizePathSeparators(path.join(envAgentDir, "sessions"))) {
+      const configDirName = process.env.PI_CONFIG_DIR?.trim() || ".omp";
+      const homeProfiles = path.join(os.homedir(), configDirName, "profiles");
+      if (existsSync(homeProfiles)) {
+        roots.push(homeProfiles);
+      }
+    }
+    return [...new Set(roots)];
   },
   matchesSourceFile: (filePath) => {
     const normalized = normalizePathSeparators(filePath);

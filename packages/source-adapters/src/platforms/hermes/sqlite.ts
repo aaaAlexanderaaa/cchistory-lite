@@ -24,6 +24,13 @@ const SYNTHETIC_USER_MARKERS = [
   "You've reached the maximum number of tool-calling iterations allowed.",
   "[IMPORTANT: Background process ",
   "[Your active task list was preserved across context compression]",
+  "[System:",
+  "[PRIOR CONTEXT",
+  "[Planning state preserved",
+  "[ASYNC DELEGATION",
+  "[OUT-OF-BAND",
+  "Cronjob Response:",
+  "[CONTEXT SUMMARY]:",
 ] as const;
 const DISPLAY_ONLY_KINDS = new Set([
   "failed_turn",
@@ -169,7 +176,8 @@ function listSessions(
   options: HermesSqliteReadOptions,
 ): Record<string, unknown>[] {
   const selected = SESSION_SELECT_COLUMNS.filter((column) => columns.has(column));
-  const query = `SELECT ${selected.join(", ")} FROM sessions ORDER BY id`;
+  const hiddenFilter = columns.has("hidden") ? " WHERE COALESCE(hidden, 0) <> 1" : "";
+  const query = `SELECT ${selected.join(", ")} FROM sessions${hiddenFilter} ORDER BY id`;
   const rows = readBudgetedSqliteRows(db, query, selected, [], options.budget, "sessions rows");
   const targetRefs = options.targetSessionRefs?.filter((ref) => ref.trim().length > 0) ?? [];
   if (targetRefs.length === 0) {
