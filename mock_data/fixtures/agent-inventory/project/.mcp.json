@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "project_lint": {
+      "command": "node",
+      "args": ["./scripts/lint-mcp.mjs", "--api-key", "mock_project_cli_secret"],
+      "env": {
+        "LINT_TOKEN": "mock_env_secret_project"
+      }
+    }
+  }
+}

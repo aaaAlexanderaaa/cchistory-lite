@@ -1,25 +1,35 @@
 # Project work
 
-## Queued work — 2026-11-25 Read-only agent inventory & multi-host project Git metadata
+## Current work — 2026-11-25 Read-only agent inventory & multi-host project Git metadata
 
-Status: **ready to start** (queued as the next authorized local implementation track; cut feature branch `feat/agent-inventory-and-project-git-meta` from `main` before editing code).
+Status: **implemented, verified, and merged into `main`** (from `feat/agent-inventory-and-project-git-meta` onto `v0.9.0` / `45f1d54`; ready for `0.9.1` release).
 
-Outcome: add two read-only CLI capabilities to Lite while preserving zero-store isolation, one-way package layering (`lite-cli`/`lite-tui` → `live-runtime` → `source-adapters`/`canonical` → `domain`), and strict secret hygiene:
+Owner decisions (2026-11-25):
+- Release `v0.9.0` cut via GitHub Actions first, then feature branch cut from `v0.9.0`.
+- Whole-machine `inventory` default with real path variants (including `~/.gemini/antigravity/mcp_config.json`, `~/.config/opencode/opencode.json[c]`), optional `--dir <path>` and repeatable `--agent <tool>`, and `--no-activity` fast mode.
+- Per-tool independent native pre-launch startup resolvers + thin shared shell (`files_read`, redacted `mcp_servers` + 30-day activity correlation, diagnostics, `--envelope`) instead of flattening tools into one lowest-common-denominator schema. Deep native resolvers cover Claude Code, Codex, Google Antigravity, OpenCode, and DeepSeek Harness; other registered adapters report explicit `resolution_tier: "basic" | "unsupported"`.
+- Shared read-only v1 JSON envelope (`--envelope --host-id <name>`, `delta: null`, `stale_after_seconds: 86400`) supported on `inventory` (`domain: "ai_agents"`), `ls projects` (`domain: "projects"`), and `merge-projects` (`domain: "projects"`).
 
-1. **Slice A — Read-only AI Agent / MCP / skills config inventory + 30-day tool activity correlation**:
-   - Add a read-only CLI subcommand (`cchistory-lite inventory --json`, aligned with `agent-contract.ts` and `help.ts`) with `--home` override support for deterministic fixture testing.
-   - Read-only scan common agent configuration locations: Codex (`~/.codex/config.toml`), Claude Code (`~/.claude.json`, `.mcp.json`), Grok CLI (`~/.grok/config.toml`), Antigravity (`~/.gemini/config/mcp_config.json`), and OpenCode / DeepSeek Harness (`$DSH_HOME` / `~/.dsh`).
-   - Emit configured agents, MCP servers (`server_id`, `client`, `transport`, redacted `command`/`url` with query tokens and basic auth stripped, and `env_keys` key names only — never read or output env values, tokens, or `Authorization` headers), and local skills/rules entry names.
-   - Correlate configured servers/clients against `live-runtime` tool-call usage over a configurable window (`--since 30d` default) to emit `used_in_window`, `call_count`, `last_used_at`, and highlight configured-but-unused items.
-   - Support `--envelope --host-id <name>` emitting the shared read-only v1 JSON envelope (`schema_version: 1`, `domain: "ai_agents"`, `owner: "cchistory-lite"`, `host_id`, `generated_at`, `stale_after_seconds: 86400`, `status`, `error`, `summary`, `delta`, `items`).
+Implemented slices:
+
+1. **Slice A — Read-only AI Agent / MCP / extension config inventory + per-tool native pre-launch startup resolvers**:
+   - `packages/domain/src/{agent-inventory.ts,agent-startup.ts}`: pure contracts for `AgentInventoryReport` (`cchistory-lite-inventory/v1`), `ReadOnlyEnvelopeV1`, and the native discriminated union `AgentStartupContext` + thin shared shell `AgentStartupResolution`.
+   - `packages/source-adapters/src/inventory/{toml.ts,redaction.ts,config-io.ts,agent-config-reader.ts}` & `packages/source-adapters/src/inventory/startup/{shared,claude-code,claude-code-helpers,codex,antigravity,antigravity-helpers,opencode,deepseek-harness,index}.ts`: zero-dependency TOML/JSONC/frontmatter/Cordis-YAML readers, strict URL/command/env/header redaction, `.credentials.yaml` never-read guard, and deep native startup resolution for the 5 core tools plus honest `basic`/`unsupported` reporting for other adapters.
+   - `packages/canonical/src/session-interpreter.ts` & `packages/canonical/src/agent-inventory.ts`: lightweight per-session `tool_usage_summary` across all 21 adapters, configurable-window (`--since 30d` default) per-client MCP correlation with static inventory counts invariant to `--agent` selection, unused server highlighting, and v1 envelope assembly.
+   - `packages/live-runtime/src/inventory-and-git.ts` & `apps/lite-cli/src/{inventory-command.ts,startup-render.ts}`: unified `cchistory-lite inventory` entrypoint, repeatable `--agent`, `--envelope --host-id <name>`, `--no-activity`, and native per-tool human rendering.
 2. **Slice B — Opt-in project Git metadata & pure cross-host reconciliation**:
-   - Add an opt-in flag `ls projects --with-git` (off by default to keep existing scan speed and zero regressions) that runs bounded, short-timeout, offline-only read-only Git inspection for each project with a local `repo_root`: normalized `repo_remote` (`host/owner/repo`, lowercase, `.git` and embedded credentials stripped), `branch`, `head_sha`, `head_committed_at`, `dirty_files`, and upstream `ahead`/`behind`.
-   - Implement pure, zero-I/O multi-host snapshot merging in `packages/canonical` and expose a CLI subcommand (`merge-projects <file1.json> <file2.json> --json`): reconcile by normalized `repo_remote` (falling back to normalized directory name with `match_kind: "directory_fallback"` for non-Git projects), reporting hosts carrying each project, latest-commit host, branch divergence, dirty/unpushed hosts, and per-host recent AI session activity.
+   - `packages/domain/src/project-git.ts`: pure `canonicalizeGitRemote` (`host/owner/repo`, lowercase, `.git`/credentials/query/standard ports stripped, custom ports preserved idempotently) and `ProjectGitMetadata` / `MergedProjectsReport` (`cchistory-lite-merged-projects/v1`) contracts.
+   - `packages/source-adapters/src/core/git-project.ts` & `packages/live-runtime/src/inventory-and-git.ts`: opt-in `inspectLocalProjectGitMetadata` (offline-only, `GIT_OPTIONAL_LOCKS=0`, `GIT_TERMINAL_PROMPT=0`, 1500ms timeout, concurrency-4 pool via `attachProjectGitMetadata`) for `ls projects --with-git`.
+   - `packages/canonical/src/project-merge.ts` & `apps/lite-cli/src/project-git-command.ts`: pure zero-I/O `mergeHostProjectSnapshots` reconciling by canonical `repo_remote` or normalized `directory_fallback` (`merge-projects <file1.json> <file2.json> [...]`), accepting `cchistory-lite/v2`, canonical, or v1 envelope JSON snapshots.
+3. **Contracts, Schemas, Fixtures & Docs**:
+   - Updated `apps/lite-cli/src/{index.ts,json-v2.ts,agent-contract.ts,help.ts}`, `schemas/{cchistory-lite-v2,cchistory-lite-agent-v1,cchistory-lite-inventory-v1,cchistory-lite-merged-projects-v1,cchistory-lite-envelope-v1}.schema.json`, `docs/guide/{lite,for-agents}.md`, `skills/using-cchistory-lite/SKILL.md`, `ARCHITECTURE.md`, `CHANGELOG.md`, and sanitized fixtures under `mock_data/fixtures/agent-inventory/`.
 
-Acceptance gates:
-- Update `agent-contract.ts`, `help.ts`, and user/architecture docs in the same change.
-- Add sanitized `mock_data/` fixtures and unit tests covering config parsing, strict redaction (asserting secret/env values never appear in output), 30-day activity correlation, Git URL normalization, and multi-host merge states (ahead, behind, diverged, dirty, non-Git fallback).
-- Pass `pnpm run build:lite`, `pnpm test`, `pnpm run verify:governance`, `pnpm run verify:lite-artifact`, and `git diff --check` with zero projection issues.
+Verification (2026-11-25, runtime 0.9.0):
+- `pnpm run build:lite` passed across all 6 workspace packages.
+- `pnpm test` passed **954 package tests** (`@cchistory/domain` 106, `@cchistory/canonical` 190, `@cchistory/source-adapters` 330, `@cchistory/live-runtime` 142, `@cchistory/lite-cli` 85, `@cchistory/lite-tui` 101), 4 catalog tests, and `verify-lite-boundaries.mjs` with zero projection issues.
+- `pnpm run verify:governance` passed (14 JS tests, 5 Python tests, 5 architecture rules across 188 rule-file matches, `check_docs.py`: 38 docs / 21 adapters / 32 advisories — zero new monolith advisories).
+- `pnpm run mock-data:validate` passed across 224 sanitized fixture files; `verify:lite-artifact -- --skip-build` passed (standalone tarball and local npm install); `git diff --check` passed.
+- Independent black-box subagent evaluation + closed-loop re-verification confirmed all P0/P1/P2 CLI UX issues resolved (`--agent` cwd default and focused rendering, invariant static MCP counts, DeepSeek Cordis YAML MCP parity, `ls projects --envelope` non-truncating export, `merge-projects` duplicate `host_id` rejection, `git_not_collected`/`behind`/`no_upstream` states, macOS `/private/tmp` scope normalization, v1 error envelopes, and zero secret leakage).
 
 ## Current work — 2026-11-23 Source compatibility expansion
 

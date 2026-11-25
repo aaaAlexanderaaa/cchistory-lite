@@ -18,7 +18,7 @@
     },
     "commands": {
       "type": "object",
-      "required": ["sources", "ls", "latest", "sample", "tree", "search", "show", "stats", "trace", "query", "shell", "export", "tui", "help", "agent"],
+      "required": ["sources", "ls", "latest", "sample", "tree", "search", "show", "stats", "trace", "inventory", "merge-projects", "query", "shell", "export", "tui", "help", "agent"],
       "properties": {
         "sources": { "$ref": "#/$defs/command" },
         "ls": { "$ref": "#/$defs/command" },
@@ -29,6 +29,8 @@
         "show": { "$ref": "#/$defs/command" },
         "stats": { "$ref": "#/$defs/command" },
         "trace": { "$ref": "#/$defs/command" },
+        "inventory": { "$ref": "#/$defs/command" },
+        "merge-projects": { "$ref": "#/$defs/command" },
         "query": { "$ref": "#/$defs/command" },
         "shell": { "$ref": "#/$defs/command" },
         "export": { "$ref": "#/$defs/command" },

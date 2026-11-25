@@ -50,3 +50,15 @@ export { inspectCodexActivityEvidence, type CodexActivityEvidence } from "./plat
 
 export { SourceReadBudgetExceededError } from "./core/read-budget.js";
 export type { SourceReadBudget } from "./core/read-budget.js";
+export { inspectLocalProjectGitMetadata, type InspectLocalProjectGitOptions } from "./core/git-project.js";
+export { readAgentConfigInventory, type ReadAgentConfigInventoryOptions } from "./inventory/agent-config-reader.js";
+export {
+  NATIVE_STARTUP_CLIENT_IDS,
+  resolveAgentStartupContexts,
+  validateAgentStartupRefs,
+  type AgentStartupRefValidation,
+  type NativeStartupClientId,
+  type ResolveAgentStartupContextsOptions,
+} from "./inventory/startup/index.js";
+export { extractSecretKeyNames, redactMcpCommand, redactMcpUrl } from "./inventory/redaction.js";
+export { parseToml, TomlParseError, type TomlTable, type TomlValue } from "./inventory/toml.js";

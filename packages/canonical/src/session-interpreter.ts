@@ -479,8 +479,49 @@ export function buildTurnsAndContext(
   if (usageEvents.length) {
     session.usage_events = usageEvents;
   }
+  const toolUsageSummary = summarizeSessionToolUsage(atoms);
+  if (toolUsageSummary.length) {
+    session.tool_usage_summary = toolUsageSummary;
+  }
 
   return { session, turnCandidates, contextCandidates, turns, contexts };
+}
+
+function summarizeSessionToolUsage(
+  atoms: readonly ConversationAtom[],
+): Array<{ tool_name: string; target_server?: string; call_count: number; last_used_at: string }> {
+  const byTool = new Map<string, { tool_name: string; target_server?: string; call_count: number; last_used_at: string }>();
+  for (const atom of atoms) {
+    if (atom.content_kind !== "tool_call") continue;
+    const rawName = asString(atom.payload.tool_name)?.trim();
+    if (!rawName) continue;
+    const lowerName = rawName.toLowerCase();
+    let targetServer: string | undefined;
+    if ((lowerName === "call_mcp_tool" || lowerName === "use_mcp_tool") && isObject(atom.payload.input)) {
+      targetServer =
+        asString(atom.payload.input.ServerName)?.trim() ??
+        asString(atom.payload.input.server_name)?.trim() ??
+        asString(atom.payload.input.server)?.trim();
+    }
+    const key = targetServer ? `${rawName}\0${targetServer}` : rawName;
+    const existing = byTool.get(key);
+    if (!existing) {
+      byTool.set(key, {
+        tool_name: rawName,
+        ...(targetServer ? { target_server: targetServer } : {}),
+        call_count: 1,
+        last_used_at: atom.time_key,
+      });
+      continue;
+    }
+    existing.call_count += 1;
+    if (atom.time_key > existing.last_used_at) {
+      existing.last_used_at = atom.time_key;
+    }
+  }
+  return [...byTool.values()].sort(
+    (a, b) => b.call_count - a.call_count || a.tool_name.localeCompare(b.tool_name),
+  );
 }
 
 function independentUsageAtoms(atoms: readonly ConversationAtom[]): ConversationAtom[] {

@@ -96,7 +96,7 @@ roots before probing them.
 
 ```text
 sources
-ls [projects|sessions|families|sources] [--limit <n>|--all] [--dir <path>]
+ls [projects|sessions|families|sources] [--limit <n>|--all] [--with-git] [--envelope --host-id <name>] [--dir <path>]
 latest [sessions|turns] [N] [--dir <path>]
 sample [N] [--dir <path>] [--no-dir]
 tree [projects|project <ref>|session <ref>] [--dir <path>]
@@ -110,6 +110,9 @@ stats [--by source|project|model|session|family|tool|turn|hour|hour_of_day|day|w
       [--explain-pricing] [--export-pricing <file|->] [--dir <path>] [--no-dir]
 trace <session_ref|turn_ref> [--include-subagents] [--only-anomalies] [--limit <n>] [--offset <n>]
       [--pricing <file>] [--tz <zone>]
+inventory [--home <path>] [--dir <path>] [--no-dir] [--since <window>] [--no-activity]
+          [--envelope --host-id <name>] [--json]
+merge-projects <file1.json> <file2.json> [...] [--json] [--envelope --host-id <name>]
 query --request <file|-> | --sql <text> | --sql-file <file|-> [--params <JSON-array>] [--complete]
       [--dir <path>] [--no-dir]
 shell [--dir <path>] [--no-dir] [--idle-timeout <seconds>]
@@ -167,7 +170,55 @@ rates in rollup tables (adapting to terminal width and degrading cleanly under
 `efficiency` and `quota_pace` fields.
 
 `ls` shows 20 rows by default. Pass `--limit <n>` or `--all`; JSON collection
-payloads include the untruncated `total` and returned `shown` counts. `ls families`
+payloads include the untruncated `total` and returned `shown` counts. Pass
+`--with-git` on `ls projects` (opt-in, off by default) to run bounded,
+offline-only, read-only Git inspection for each project with a local path:
+canonicalized `repo_remote` (`host/owner/repo`, lowercase, `.git` and embedded
+credentials stripped), `branch`, `head_sha`, `head_committed_at`, `dirty_files`,
+and upstream `ahead`/`behind`. Combine with `--envelope --host-id <name>` to
+emit the shared read-only v1 JSON envelope (`domain: "projects"`, `delta: null`;
+exports all rows by default unless `--limit` is passed). When exporting plain
+`--json` for `merge-projects`, pass `--no-dir --all --with-git --host-id <name>`.
+`merge-projects <file1.json> <file2.json> [...]` is a pure file-input command
+that reconciles project snapshots exported from multiple hosts by canonical
+`repo_remote` (falling back to normalized directory name with
+`match_kind: "directory_fallback"` for non-Git projects). It rejects duplicate
+`host_id` inputs (exit 2), warns on truncated or non-`--with-git` snapshots, and
+reports hosts carrying each project, latest-commit host(s), branch/commit
+divergence, dirty/unpushed/behind/no-upstream status, and per-host AI activity.
+
+`inventory` scans local AI coding-agent configurations read-only across Codex,
+Claude Code, Grok CLI, Google Antigravity, OpenCode, DeepSeek Harness, and
+Gemini CLI (defaults to whole machine; `--home <path>` overrides the home root
+for fixture testing). Parameterless `inventory` reports the machine-wide
+overview: configured agents, strictly redacted MCP servers (URL basic auth and
+query token values stripped, command secrets redacted, and `env_keys` /
+`header_keys` key names only), local extension entry names (skills, rules,
+subagent definitions, plugins, and hooks), and `--since 30d` tool-call activity
+correlation (`used_in_window`, `call_count`, `last_used_at`, and
+`unused_mcp_servers`). Passing `--agent <tool>` (repeatable or comma-separated,
+accepting aliases such as `claude`, `agy`, `dsh`) defaults `--dir` to `$PWD`
+(pass `--no-dir` for global only) and focuses terminal output on the requested
+tool(s)' native pre-launch startup context; passing `--dir <path>` resolves all
+5 native tools for that project. Each resolver preserves its native layers and
+budgets without flattening them:
+Claude Code (`CLAUDE.md` / `CLAUDE.local.md` recursive `@import` chains —
+standalone `@path` lines outside fenced code blocks — `.claude/rules` YAML
+`paths:` frontmatter, `settings.local.json` overrides, plugin bundles, and
+4-tier MCP precedence), Codex (`AGENTS.override.md` > `AGENTS.md` > fallbacks,
+32 KiB `project_doc_max_bytes` budget truncation, `[projects.<dir>].trust_level`
+gating, and profiles), Google Antigravity (`.agents`/`.agent` hierarchy,
+`skills.json`/`plugins.json` manifests, `config.json` plugin enablement, 24 KB
+per-file cap, and 20,000-token rules budget demotion), OpenCode (3-tier
+`opencode.json[c]` cascade, `CLAUDE.md` fallback, and v1/v2 MCP configs), and
+DeepSeek Harness (`$DSH_HOME` profiles, Cordis YAML `@deepseek-ai/dsh-mcp-client`
+blocks, and `.credentials.yaml` presence-only security boundary). Other
+registered adapters report explicit `resolution_tier: "basic" | "unsupported"`,
+and unknown `--agent` values exit 2. Pass `--no-activity` to skip the history
+scan, or `--envelope --host-id <name>` for the shared read-only v1 JSON envelope
+(`domain: "ai_agents"`, `stale_after_seconds: 86400`, `delta: null`).
+
+`ls families`
 is a read-only inventory of parent sessions that have delegated subagents: combined
 native storage, per-child bytes, token totals, tool success/error counts, and
 input/output previews. Lite does not delete those files. `latest`

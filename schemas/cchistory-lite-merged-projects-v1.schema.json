@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cchistory.dev/schemas/cchistory-lite-merged-projects-v1.schema.json",
+  "title": "CC History Lite multi-host project reconciliation report",
+  "type": "object",
+  "required": ["schema", "kind", "generated_at", "hosts", "summary", "projects"],
+  "properties": {
+    "schema": { "const": "cchistory-lite-merged-projects/v1" },
+    "kind": { "const": "merged_projects" },
+    "generated_at": { "type": "string" },
+    "hosts": { "type": "array", "items": { "type": "string" } },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "summary": {
+      "type": "object",
+      "required": [
+        "host_count",
+        "project_count",
+        "repo_remote_matched_count",
+        "directory_fallback_count",
+        "multi_host_project_count",
+        "diverged_project_count",
+        "dirty_project_count",
+        "unpushed_project_count",
+        "behind_project_count"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "host_count": { "type": "integer", "minimum": 0 },
+        "project_count": { "type": "integer", "minimum": 0 },
+        "repo_remote_matched_count": { "type": "integer", "minimum": 0 },
+        "directory_fallback_count": { "type": "integer", "minimum": 0 },
+        "multi_host_project_count": { "type": "integer", "minimum": 0 },
+        "diverged_project_count": { "type": "integer", "minimum": 0 },
+        "dirty_project_count": { "type": "integer", "minimum": 0 },
+        "unpushed_project_count": { "type": "integer", "minimum": 0 },
+        "behind_project_count": { "type": "integer", "minimum": 0 },
+        "no_upstream_project_count": { "type": "integer", "minimum": 0 },
+        "git_not_collected_project_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "projects": { "type": "array", "items": { "type": "object" } }
+  },
+  "additionalProperties": false
+}

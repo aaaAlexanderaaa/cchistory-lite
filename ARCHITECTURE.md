@@ -106,6 +106,10 @@ Storage-neutral semantics shared by every reader:
 - related-work projection (`related-work.ts`)
 - usage aggregation, offline pricing, and diagnostics (`usage.ts`, `usage-pricing.ts`,
   `usage-time.ts`, `usage-diagnostics.ts`, `usage-breakdown.ts`)
+- AI agent/MCP/extension activity correlation (`agent-inventory.ts`) with native
+  per-tool pre-launch startup context merging (`startup_contexts`) and pure
+  zero-I/O cross-host project reconciliation (`project-merge.ts`) plus shared
+  read-only v1 envelope builders (`domain: "ai_agents" | "projects"`, `delta: null`)
 
 This layer decides *what history means*. It must never learn where history is stored.
 
@@ -166,6 +170,12 @@ binding. File size is not a replacement for allocation admission.
 Codex also supplies bounded-line native activity evidence for one selective query plan: session
 identity, timestamp upper bounds and tool names. These are facts for runtime planning, not an
 adapter-owned interpretation of latest or delegated eligibility.
+
+For read-only configuration inventory and opt-in Git metadata, `inventory/` (`toml.ts`,
+`redaction.ts`, `agent-config-reader.ts`) parses local agent configs and extension names while
+stripping basic auth, query tokens, command secrets, and env/header values at the parse boundary,
+and `core/git-project.ts` (`inspectLocalProjectGitMetadata`) runs bounded, offline-only local
+Git commands (`GIT_OPTIONAL_LOCKS=0`, `GIT_TERMINAL_PROMPT=0`) without mutating repositories.
 
 ### `@cchistory/live-runtime`
 
@@ -237,7 +247,7 @@ Reading full assistant/tool context for every turn is the expensive path, so it 
 
 | Caller | Context mode |
 | --- | --- |
-| `sources`, `ls`, `latest`, `tree`, `search --prompts-only`, SQL `query`, `show project`, `show source`, `stats`, `shell` startup, TUI startup | `none` — tool/system display formatting skipped, context dropped after deriving turns |
+| `sources`, `ls`, `latest`, `tree`, `search --prompts-only`, SQL `query`, `show project`, `show source`, `stats`, `inventory`, `shell` startup, TUI startup | `none` — tool/system display formatting skipped, context dropped after deriving turns (lightweight `tool_usage_summary` retained per session for activity correlation) |
 | CLI `search` (default conversation), markdown `export`, TUI `Ctrl+F` conversation search, `query`/`shell` `content: "conversation"` | `none` with `retainConversationEvidence: true` — masked user and assistant text retained without heavy tool/system contexts |
 | `show session <complete-canonical-id>` | targeted `full` scan of that one logical session |
 | `show session <fuzzy-ref>`, `show turn <ref>` | one `matching` scan; context retained only for possible resolver matches |

@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cchistory.dev/schemas/cchistory-lite-inventory-v1.schema.json",
+  "title": "CC History Lite read-only AI agent inventory report",
+  "type": "object",
+  "required": [
+    "schema",
+    "kind",
+    "generated_at",
+    "home_dir",
+    "project_dir",
+    "summary",
+    "activity",
+    "agents",
+    "mcp_servers",
+    "extensions",
+    "unused_mcp_servers",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema": { "const": "cchistory-lite-inventory/v1" },
+    "kind": { "const": "agent_inventory" },
+    "generated_at": { "type": "string" },
+    "home_dir": { "type": "string" },
+    "project_dir": { "type": ["string", "null"] },
+    "summary": {
+      "type": "object",
+      "required": [
+        "agent_count",
+        "installed_agent_count",
+        "configured_agent_count",
+        "active_agent_count",
+        "mcp_server_count",
+        "used_mcp_server_count",
+        "unused_mcp_server_count",
+        "skill_count",
+        "rule_count",
+        "subagent_count",
+        "plugin_count",
+        "hook_count",
+        "extension_count",
+        "diagnostic_count"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "agent_count": { "type": "integer", "minimum": 0 },
+        "installed_agent_count": { "type": "integer", "minimum": 0 },
+        "configured_agent_count": { "type": "integer", "minimum": 0 },
+        "active_agent_count": { "type": ["integer", "null"], "minimum": 0 },
+        "mcp_server_count": { "type": "integer", "minimum": 0 },
+        "used_mcp_server_count": { "type": ["integer", "null"], "minimum": 0 },
+        "unused_mcp_server_count": { "type": ["integer", "null"], "minimum": 0 },
+        "skill_count": { "type": "integer", "minimum": 0 },
+        "rule_count": { "type": "integer", "minimum": 0 },
+        "subagent_count": { "type": "integer", "minimum": 0 },
+        "plugin_count": { "type": "integer", "minimum": 0 },
+        "hook_count": { "type": "integer", "minimum": 0 },
+        "extension_count": { "type": "integer", "minimum": 0 },
+        "diagnostic_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "activity": {
+      "type": "object",
+      "required": [
+        "correlated",
+        "window",
+        "since_at",
+        "until_at",
+        "total_sessions",
+        "total_tool_calls",
+        "matched_mcp_calls",
+        "unmatched_mcp_tool_names"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "correlated": { "type": "boolean" },
+        "window": { "type": "string" },
+        "since_at": { "type": ["string", "null"] },
+        "until_at": { "type": "string" },
+        "total_sessions": { "type": "integer", "minimum": 0 },
+        "total_tool_calls": { "type": "integer", "minimum": 0 },
+        "matched_mcp_calls": { "type": "integer", "minimum": 0 },
+        "unmatched_mcp_tool_names": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "agents": { "type": "array", "items": { "type": "object" } },
+    "mcp_servers": { "type": "array", "items": { "type": "object" } },
+    "extensions": { "type": "array", "items": { "type": "object" } },
+    "unused_mcp_servers": { "type": "array", "items": { "type": "object" } },
+    "diagnostics": { "type": "array", "items": { "type": "object" } },
+    "startup_contexts": { "type": "array", "items": { "type": "object" } }
+  },
+  "additionalProperties": false
+}

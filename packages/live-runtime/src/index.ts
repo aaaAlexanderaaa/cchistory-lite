@@ -2283,6 +2283,22 @@ export { BoundedCache } from "./bounded-cache.js";
 export type { ReadDiagnostic, ReadDiagnosticSink } from "./diagnostics.js";
 export { LiveHistoryReader } from "./history-reader.js";
 export {
+  NATIVE_STARTUP_CLIENT_IDS,
+  attachProjectGitMetadata,
+  scanAgentInventory,
+  validateAgentStartupRefs,
+  type AttachProjectGitMetadataOptions,
+  type ScanAgentInventoryOptions,
+} from "./inventory-and-git.js";
+export {
+  DEFAULT_INVENTORY_WINDOW,
+  buildAgentInventoryEnvelope,
+  buildMergedProjectsEnvelope,
+  buildProjectsEnvelope,
+  correlateAgentInventory,
+  matchesMcpServer,
+  mergeHostProjectSnapshots,
+  normalizeDirectoryFallbackKey,
   EvidenceCursorError,
   validateEvidenceBudget,
   DEFAULT_EVIDENCE_CHARS,

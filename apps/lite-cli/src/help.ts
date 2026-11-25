@@ -23,14 +23,14 @@ Common commands:
       Machine-wide token, cost, cache-hit distribution, anomaly, and quota diagnostics (pass --dir . for one directory).
   cchistory-lite trace <session_ref|turn_ref> [--only-anomalies] [--include-subagents] [--limit <n>]
       Step-by-step call waterfall, subagent family breakdown, tool loops, and cache-miss attribution.
-  cchistory-lite ls [projects|sessions|families|sources] [--limit <n>|--all]
-  cchistory-lite tree [projects|project <ref>|session <ref>]
-  cchistory-lite sources [--complete]
+  cchistory-lite inventory [--dir <path>] [--agent <tool>] [--since 30d] [--no-activity] [--envelope] [--json]
+  cchistory-lite ls [projects|sessions|families|sources] [--with-git] [--limit <n>|--all]
+  cchistory-lite merge-projects <file1.json> <file2.json> [...] [--json] [--envelope --host-id <name>]
+  cchistory-lite tree [projects|project <ref>|session <ref>]  |  cchistory-lite sources [--complete]
   cchistory-lite export --format jsonl|json|markdown [--out <file>|-]
 
 Scope & agents:
-  latest / search / ls / tree default to the current directory (--no-dir for whole machine).
-  stats and tui default to whole machine (pass --dir . to scope to current directory).
+  latest / search / ls / tree default to current directory (--no-dir for machine); stats, inventory, and tui default to whole machine.
   For AI agents & automation: cchistory-lite agent | agent skill | query | shell --json
   All flags for one command:  cchistory-lite help <command>  (or <command> --help)
 

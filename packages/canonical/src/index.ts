@@ -186,3 +186,20 @@ export { selectSampleSessions } from "./query.js";
 export { buildConversationEvidence, readConversationEvidence, prepareConversationEvidence, searchConversationEvidence, validateEvidenceBudget,
   EvidenceCursorError, DEFAULT_EVIDENCE_CHARS, MAX_EVIDENCE_CHARS } from "./conversation-evidence.js";
 export { summarizeReadStatus } from "./read-status.js";
+export {
+  DEFAULT_INVENTORY_WINDOW,
+  buildAgentInventoryEnvelope,
+  correlateAgentInventory,
+  matchesMcpServer,
+  type BuildAgentInventoryEnvelopeOptions,
+  type CorrelateAgentInventoryInput,
+} from "./agent-inventory.js";
+export {
+  buildMergedProjectsEnvelope,
+  buildProjectsEnvelope,
+  mergeHostProjectSnapshots,
+  normalizeDirectoryFallbackKey,
+  type BuildMergedProjectsEnvelopeOptions,
+  type BuildProjectsEnvelopeOptions,
+  type MergeHostProjectsOptions,
+} from "./project-merge.js";

@@ -7,6 +7,50 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Read-only `cchistory-lite inventory` subcommand: scans local AI agent
+  configurations across Codex, Claude Code, Grok CLI, Google Antigravity,
+  OpenCode, DeepSeek Harness, and Gemini CLI (with `--home` override, optional
+  `--dir` project scope, and repeatable/comma-separated `--agent` filter), emits
+  strictly redacted MCP server entries (URL basic auth and query values
+  stripped, command secrets redacted, `env_keys`/`header_keys` names only) plus
+  local skills, rules, subagent definitions, plugins, and hooks, correlates
+  configured clients/servers against recent history tool calls (`--since 30d`
+  default, `--no-activity` opt-out), and supports `--envelope --host-id <name>`
+  (`schema_version: 1`, `domain: "ai_agents"`, `stale_after_seconds: 86400`,
+  `delta: null`, with matching v1 error envelopes on stderr). Passing `--agent
+  <tool>` (including aliases `claude`, `agy`, `dsh`) defaults `--dir` to `$PWD`
+  (override with `--no-dir`) and focuses terminal output on the requested
+  tool(s); passing `--dir <path>` resolves all 5 core tools' native pre-launch
+  startup contexts (`startup_contexts`) without flattening tool-specific models
+  across Claude Code (`CLAUDE.md` recursive `@import`s, `.claude/rules`
+  `paths:`, `settings.local.json`, plugin bundles, 4-tier MCP precedence), Codex
+  (`AGENTS.override.md`, 32 KiB doc budget truncation/exhaustion,
+  `[projects.<dir>].trust_level` gate, profiles), Google Antigravity
+  (`.agents`/`.agent` walk, `skills.json`/`plugins.json` manifests,
+  `config.json` plugin override, 24,000-byte rule cap, 20,000-token rules budget
+  demotion), OpenCode (3-tier JSONC cascade, `CLAUDE.md` fallback, v1/v2 MCP),
+  and DeepSeek Harness (`$DSH_HOME` profiles, Cordis YAML MCP blocks,
+  `.credentials.yaml` never-read boundary), while reporting explicit
+  `resolution_tier: "basic" | "unsupported"` for other adapters and exiting 2 on
+  unknown `--agent` or missing `--dir`.
+- Opt-in `ls projects --with-git` metadata inspection: runs bounded, offline-only,
+  read-only local Git commands (`GIT_OPTIONAL_LOCKS=0`, `GIT_TERMINAL_PROMPT=0`)
+  to attach canonicalized `repo_remote` (`host/owner/repo`, lowercase, `.git`
+  and embedded credentials stripped), `branch`, `head_sha`, `head_committed_at`,
+  `dirty_files`, and upstream `ahead`/`behind` (also supports `--envelope
+  --host-id <name>`, exporting all projects by default unless `--limit` is set,
+  and normalizes macOS `/private/tmp` / `/private/var` scope paths).
+- Pure offline `merge-projects <file1.json> <file2.json> [...]` command and
+  `packages/canonical` reconciliation module: merges multi-host project
+  snapshots by canonical `repo_remote` (falling back to normalized directory
+  name with `match_kind: "directory_fallback"` for non-Git projects), rejects
+  duplicate `host_id` inputs (exit 2), warns on truncated or non-`--with-git`
+  snapshots (`git_not_collected`), and reports hosts carrying each project,
+  latest-commit host(s), branch/commit divergence, dirty/unpushed/behind/no-upstream
+  status, and per-host AI session activity.
+
 ## [0.9.0] - 2026-11-25
 
 ### Added

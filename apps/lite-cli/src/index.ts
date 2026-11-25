@@ -11,6 +11,7 @@ import { formatRelativeTime, normalizeLocalPathIdentity } from "@cchistory/domai
 import type {
   LossAuditRecord,
   ProjectIdentity,
+  ProjectWithGitMetadata,
   SessionProjection,
   SessionRelatedWorkProjection,
   SessionFamilyProjection,
@@ -20,6 +21,8 @@ import type {
   UserTurnProjection,
 } from "@cchistory/domain";
 import {
+  attachProjectGitMetadata,
+  buildProjectsEnvelope,
   QueryValidationError, SQL_REQUEST_SCHEMA, MAX_QUERY_REQUEST_BYTES,
   AmbiguousReferenceError,
   formatScanGuardWarning,
@@ -40,6 +43,7 @@ import {
   CANONICAL_JSON_SCHEMA,
   ERROR_JSON_SCHEMA,
   compactPayload,
+  projectSummary,
   type JsonOutputMode,
 } from "./json-v2.js";
 import {
@@ -53,6 +57,8 @@ import { resourceError } from "./resource-errors.js";
 import { runLiteShell } from "./shell.js";
 import { buildAgentContract } from "./agent-contract.js";
 import { renderLiteHelp } from "./help.js";
+import { runInventoryCommand } from "./inventory-command.js";
+import { formatProjectGitLine, runMergeProjectsCommand } from "./project-git-command.js";
 import { runStatsCommand } from "./stats-command.js";
 import { runTraceCommand } from "./trace-command.js";
 import { VERSION } from "./version.js";
@@ -101,12 +107,16 @@ const VALUE_FLAGS = new Set([
   "format",
   "out",
   "dir",
+  "home",
+  "agent",
+  "host-id",
   "request", "sql", "sql-file", "params", "idle-timeout",
 ]);
 const BOOLEAN_FLAGS = new Set([
   "safe", "json", "help", "version", "all", "no-dir", "complete", "diagnostics",
   "explain-pricing", "anomalies", "only-anomalies", "include-subagents",
   "prompts-only", "full", "compact", "stats", "color", "no-color",
+  "no-activity", "envelope", "with-git",
 ]);
 const FORBIDDEN_COMMANDS = new Set([
   "sync",
@@ -118,7 +128,10 @@ const FORBIDDEN_COMMANDS = new Set([
   "gc",
   "migration",
 ]);
-const KNOWN_COMMANDS = new Set(["sources", "ls", "latest", "sample", "tree", "search", "show", "stats", "trace", "export", "query", "shell", "tui", "agent"]);
+const KNOWN_COMMANDS = new Set([
+  "sources", "ls", "latest", "sample", "tree", "search", "show", "stats", "trace",
+  "inventory", "merge-projects", "export", "query", "shell", "tui", "agent",
+]);
 
 export interface LiteCliIo {
   cwd: string;
@@ -156,8 +169,14 @@ class UsageError extends Error {
 
 export async function runLiteCli(argv: string[], io: LiteCliIo = defaultIo()): Promise<number> {
   let structuredOutput = false;
+  let envelopeContext: { domain: "ai_agents" | "projects"; hostId: string } | undefined;
   try {
     const parsed = parseArgs(argv);
+    if (parsed.booleans.has("envelope")) {
+      const domain = parsed.command === "inventory" ? "ai_agents" : "projects";
+      const hostId = (parsed.values.get("host-id") ?? []).at(-1) ?? io.hostname ?? os.hostname();
+      envelopeContext = { domain, hostId };
+    }
     if (parsed.booleans.has("diagnostics")) {
       const stderr = io.stderr;
       io = { ...io, stderr: text => {
@@ -212,6 +231,19 @@ export async function runLiteCli(argv: string[], io: LiteCliIo = defaultIo()): P
     validateCommandShape(parsed);
     if (parsed.command === "query") return await runQueryCommand(parsed, io);
     const jsonMode = getJsonOutputMode(parsed);
+    if (parsed.command === "merge-projects") {
+      await runMergeProjectsCommand(parsed, io, jsonMode, { UsageError });
+      return 0;
+    }
+    if (parsed.command === "inventory") {
+      await runInventoryCommand(parsed, io, jsonMode, {
+        UsageError,
+        resolveDirectoryScope: () => resolveDirectoryScope(parsed, io),
+        scanHistory: (overrides) =>
+          scan(parsed, io, "none", jsonMode !== "none" || parsed.booleans.has("envelope"), overrides),
+      });
+      return 0;
+    }
     if (parsed.command === "show" && (parsed.positionals[0] === "session" || parsed.positionals[0] === "turn")) {
       await runShowWithContext(parsed, io, jsonMode);
       return 0;
@@ -258,7 +290,7 @@ export async function runLiteCli(argv: string[], io: LiteCliIo = defaultIo()): P
         output(io, jsonMode, buildSourcesPayload(snapshot), renderSources(snapshot.listSources()), snapshot);
         return 0;
       case "ls":
-        runList(parsed, snapshot, io, jsonMode);
+        await runList(parsed, snapshot, io, jsonMode);
         return 0;
       case "latest":
         runLatest(parsed, snapshot, io, jsonMode);
@@ -285,7 +317,28 @@ export async function runLiteCli(argv: string[], io: LiteCliIo = defaultIo()): P
     throw new UsageError(`Unhandled Lite command: ${parsed.command}.`);
   } catch (error) {
     const message = formatThrownMessage(error);
-    if (structuredOutput || (error instanceof UsageError && error.structuredOutput)) {
+    if (envelopeContext) {
+      const generatedAt = new Date((io.now ?? Date.now)()).toISOString();
+      io.stderr(
+        `${JSON.stringify(
+          {
+            schema_version: 1,
+            domain: envelopeContext.domain,
+            owner: "cchistory-lite",
+            host_id: envelopeContext.hostId,
+            generated_at: generatedAt,
+            stale_after_seconds: 86_400,
+            status: "error",
+            error: message,
+            summary: {},
+            delta: null,
+            items: [],
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    } else if (structuredOutput || (error instanceof UsageError && error.structuredOutput)) {
       io.stderr(`${JSON.stringify(buildErrorPayload(error, message), null, 2)}\n`);
     }
     else io.stderr(`${message}\n`);
@@ -492,22 +545,61 @@ async function runShowWithContext(parsed: ParsedArgs, io: LiteCliIo, jsonMode: J
   runShow(parsed, snapshot, io, jsonMode);
 }
 
-function runList(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliIo, jsonMode: JsonOutputMode): void {
+async function runList(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliIo, jsonMode: JsonOutputMode): Promise<void> {
   const target = parsed.positionals[0] ?? "projects";
   const directoryScope = resolveDirectoryScope(parsed, io);
   if (parsed.booleans.has("all") && value(parsed, "limit") !== undefined) {
     throw new UsageError("--all and --limit cannot be used together.");
   }
-  const limit = parsed.booleans.has("all") ? Infinity : optionalInteger(parsed, "limit", 1) ?? 20;
+  const useEnvelope = target === "projects" && parsed.booleans.has("envelope");
+  const limit = parsed.booleans.has("all")
+    ? Infinity
+    : optionalInteger(parsed, "limit", 1) ?? (useEnvelope ? Infinity : 20);
   if (target === "projects") {
     const allProjects = snapshot.listProjects({ directoryScope });
-    const projects = allProjects.slice(0, limit);
+    const selectedProjects = allProjects.slice(0, limit);
+    const withGit = parsed.booleans.has("with-git");
+    const hostIdOpt = value(parsed, "host-id");
+    const hostId = hostIdOpt ?? io.hostname ?? os.hostname();
+    const projects: ProjectWithGitMetadata[] = withGit
+      ? await attachProjectGitMetadata(selectedProjects)
+      : selectedProjects;
+
+    if (useEnvelope) {
+      const items = projects.map((project) => projectSummary(project)) as Array<Record<string, unknown> & { git?: ProjectWithGitMetadata["git"] }>;
+      const envelope = buildProjectsEnvelope(items, {
+        hostId,
+        generatedAt: snapshot.readIdentity.prepared_at,
+        readStatus: snapshot.getReadStatus(directoryScope),
+        totalProjectCount: allProjects.length,
+        gitInspected: withGit,
+      });
+      io.stdout(`${JSON.stringify(envelope, null, 2)}\n`);
+      return;
+    }
+
+    const renderedProjects = renderProjects(
+      projects,
+      collectionRenderOptions(io, "Projects", allProjects.length, "use --limit <n> or --all", "project"),
+    );
+    const emptyScopeHint =
+      projects.length === 0 && directoryScope && !parsed.values.has("dir")
+        ? `Hint: scoped to current directory (${directoryScope}); pass --no-dir to list all projects on this machine.\n`
+        : "";
     output(
       io,
       jsonMode,
-      { schema: JSON_SCHEMA, kind: "projects", total: allProjects.length, shown: projects.length, projects },
-      renderProjects(projects, collectionRenderOptions(io, "Projects", allProjects.length, "use --limit <n> or --all", "project")),
-      snapshot, resolveDirectoryScope(parsed, io),
+      {
+        schema: JSON_SCHEMA,
+        kind: "projects",
+        ...(withGit || hostIdOpt !== undefined ? { host_id: hostId } : {}),
+        total: allProjects.length,
+        shown: projects.length,
+        projects,
+      },
+      `${renderedProjects}${emptyScopeHint}`,
+      snapshot,
+      resolveDirectoryScope(parsed, io),
     );
     return;
   }
@@ -1224,7 +1316,7 @@ function renderSources(sources: SourceStatus[], options?: CollectionRenderOption
   return `${lines.join("\n")}\n`;
 }
 
-function renderProjects(projects: ProjectIdentity[], options: CollectionRenderOptions): string {
+function renderProjects(projects: ProjectWithGitMetadata[], options: CollectionRenderOptions): string {
   const lines = [renderCollectionHeading(options, projects.length, "most active first")];
   for (const project of projects) {
     const directory = foldHome(project.primary_workspace_path ?? project.repo_root ?? "-", options.homeDir);
@@ -1240,6 +1332,10 @@ function renderProjects(projects: ProjectIdentity[], options: CollectionRenderOp
       ).map(styleMeta),
       directory === "-" ? styleMeta(directoryLine) : styleDirectory(directoryLine),
     );
+    const gitLine = formatProjectGitLine(project.git);
+    if (gitLine) {
+      lines.push(...wrapHumanText(gitLine, options.columns, "  ", "    ").map(styleMeta));
+    }
   }
   appendCollectionFooter(lines, options, projects.length);
   return `${lines.join("\n")}\n`;
@@ -2117,7 +2213,12 @@ function parseArgs(argv: string[]): ParsedArgs {
     }
   } catch (error) {
     if (error instanceof UsageError) {
-      error.structuredOutput = positionals[0] === "query" || positionals[0] === "agent" || booleans.has("json") || booleans.has("json-canonical");
+      error.structuredOutput =
+        positionals[0] === "query" ||
+        positionals[0] === "agent" ||
+        booleans.has("json") ||
+        booleans.has("json-canonical") ||
+        booleans.has("envelope");
     }
     throw error;
   }
@@ -2156,9 +2257,15 @@ function validateCommandShape(parsed: ParsedArgs): void {
       if (parsed.positionals.length !== 1) throw new UsageError("trace requires exactly one session or turn reference.");
       break;
     case "stats":
+    case "inventory":
     case "export":
     case "query":
       assertNoPositionals(parsed, parsed.command);
+      break;
+    case "merge-projects":
+      if (parsed.positionals.length === 0) {
+        throw new UsageError("merge-projects requires at least one project snapshot JSON file.");
+      }
       break;
     default:
       break;
@@ -2166,15 +2273,20 @@ function validateCommandShape(parsed: ParsedArgs): void {
 }
 
 function validateCommandOptions(parsed: ParsedArgs): void {
-  if (parsed.booleans.has("diagnostics") && (parsed.command === "tui" || parsed.command === "agent")) {
+  if (parsed.booleans.has("diagnostics") && (parsed.command === "tui" || parsed.command === "agent" || parsed.command === "merge-projects")) {
     throw new UsageError(`--diagnostics is only available on CLI history reads and shell.`);
   }
   const allowedValues = new Set(["source-root", "source", "limit-files"]);
   if (parsed.command === "agent") {
     // agent is pure introspection: it never scans, so scan flags are rejected.
     allowedValues.clear();
+  } else if (parsed.command === "merge-projects") {
+    allowedValues.clear();
+    allowedValues.add("host-id");
+  } else if (parsed.command === "inventory") {
+    for (const name of ["home", "dir", "agent", "since", "host-id"]) allowedValues.add(name);
   } else if (parsed.command === "ls") {
-    for (const name of ["limit", "dir"]) allowedValues.add(name);
+    for (const name of ["limit", "dir", "host-id"]) allowedValues.add(name);
   } else if (parsed.command === "latest") {
     allowedValues.add("dir");
   } else if (parsed.command === "sample") {
@@ -2264,6 +2376,27 @@ function validateCommandOptions(parsed: ParsedArgs): void {
     const contentMode = resolveSearchContentMode(parsed);
     resolveSearchGroupBy(parsed, contentMode);
   }
+  if (parsed.booleans.has("no-activity") && parsed.command !== "inventory") {
+    throw new UsageError(`--no-activity is only valid for inventory.`);
+  }
+  const lsTarget = parsed.command === "ls" ? (parsed.positionals[0] ?? "projects") : undefined;
+  if (parsed.booleans.has("with-git") && !(parsed.command === "ls" && lsTarget === "projects")) {
+    throw new UsageError(`--with-git is only valid for ls projects.`);
+  }
+  if (
+    parsed.booleans.has("envelope") &&
+    parsed.command !== "inventory" &&
+    parsed.command !== "merge-projects" &&
+    !(parsed.command === "ls" && lsTarget === "projects")
+  ) {
+    throw new UsageError(`--envelope is only valid for inventory, ls projects, and merge-projects.`);
+  }
+  if (parsed.values.has("host-id") && parsed.command === "ls" && lsTarget !== "projects") {
+    throw new UsageError(`--host-id is only valid for ls projects, inventory, and merge-projects.`);
+  }
+  if (parsed.booleans.has("safe") && parsed.command === "merge-projects") {
+    throw new UsageError(`--safe is not valid for merge-projects.`);
+  }
   if (parsed.booleans.has("complete") && parsed.command !== "query" && parsed.command !== "sources" && !(parsed.command === "ls" && parsed.positionals[0] === "sources")) throw new UsageError("--complete is only valid for query SQL input or sources.");
   if (parsed.booleans.has("all") && parsed.command !== "ls") {
     throw new UsageError(`--all is not valid for ${parsed.command}.`);
@@ -2277,7 +2410,14 @@ function validateCommandOptions(parsed: ParsedArgs): void {
   if (parsed.values.has("dir") && parsed.command === "tree" && (parsed.positionals[0] ?? "projects") !== "projects") {
     throw new UsageError("--dir is only valid for tree projects.");
   }
-  if ((parsed.command === "export" || parsed.command === "query" || parsed.command === "agent") && parsed.booleans.has("json-canonical")) {
+  if (
+    (parsed.command === "export" ||
+      parsed.command === "query" ||
+      parsed.command === "agent" ||
+      parsed.command === "inventory" ||
+      parsed.command === "merge-projects") &&
+    parsed.booleans.has("json-canonical")
+  ) {
     throw new UsageError(`--json=canonical is not valid for ${parsed.command}.`);
   }
   if (parsed.booleans.has("no-dir") && parsed.values.has("dir")) {
@@ -2363,11 +2503,12 @@ function parseLatestPositionals(positionals: readonly string[]): { kind: "sessio
 
 function commandAcceptsDirectoryScope(command: string): boolean {
   return command === "ls" || command === "latest" || command === "sample" || command === "tree" || command === "search"
-    || command === "stats" || command === "query" || command === "shell" || command === "tui";
+    || command === "stats" || command === "inventory" || command === "query" || command === "shell" || command === "tui";
 }
 
 function defaultsDirectoryScopeToCwd(parsed: ParsedArgs): boolean {
   if (!commandAcceptsDirectoryScope(parsed.command)) return false;
+  if (parsed.command === "inventory") return parsed.values.has("agent");
   if (parsed.command === "stats" || parsed.command === "tui") return false;
   if (parsed.command === "ls" && (parsed.positionals[0] ?? "projects") === "sources") return false;
   if (parsed.command === "tree" && (parsed.positionals[0] ?? "projects") !== "projects") return false;
@@ -2387,13 +2528,18 @@ function emitDirectoryScopeNotice(
   if (directoryScope) {
     const scopedToCwd = path.resolve(directoryScope) === path.resolve(io.cwd);
     const where = scopedToCwd ? `${directoryScope} (current directory)` : directoryScope;
+    const verb = parsed.command === "inventory" ? "Correlating activity for sessions" : "Filtering sessions";
     io.stderr(
-      `Filtering sessions whose working directory is under ${where}. The memory estimate counts source files that may match this directory. Whole-machine listing: --no-dir\n`,
+      `${verb} whose working directory is under ${where}. The memory estimate counts source files that may match this directory. Whole-machine listing: --no-dir\n`,
     );
     return;
   }
+  const lead =
+    parsed.command === "inventory"
+      ? "Correlating activity across every selected source on this machine (no working-directory filter)."
+      : "Listing every selected source on this machine (no working-directory filter).";
   io.stderr(
-    "Listing every selected source on this machine (no working-directory filter). The memory estimate covers every selected source root. File and sample counts are not memory guarantees.\n",
+    `${lead} The memory estimate covers every selected source root. File and sample counts are not memory guarantees.\n`,
   );
 }
 
@@ -2480,7 +2626,12 @@ function defaultIo(): LiteCliIo {
 }
 
 function requestsStructuredOutput(parsed: ParsedArgs): boolean {
-  return parsed.command === "query" || parsed.command === "agent" || getJsonOutputMode(parsed) !== "none";
+  return (
+    parsed.command === "query" ||
+    parsed.command === "agent" ||
+    parsed.booleans.has("envelope") ||
+    getJsonOutputMode(parsed) !== "none"
+  );
 }
 
 function formatThrownMessage(error: unknown): string {

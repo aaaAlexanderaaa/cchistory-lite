@@ -1,0 +1,15 @@
+# Sanitized Codex config fixture for read-only inventory testing
+model = "gpt-5"
+
+[mcp_servers.portainer_ro]
+command = "node"
+args = ["/workspace/tools/portainer-mcp.js", "--token=mock_cli_arg_secret"]
+env = { PORTAINER_TOKEN = "mock_env_secret_portainer", PORTAINER_URL = "https://portainer.example.test" }
+
+[mcp_servers.uptime_kuma]
+url = "https://mockuser:mockpass@kuma-local:3001/sse?api_key=mock_query_secret&mode=ro"
+http_headers = { Authorization = "mock_header_secret_kuma" }
+
+[agents.code_reviewer]
+model = "gpt-5"
+description = "Read-only architecture reviewer"

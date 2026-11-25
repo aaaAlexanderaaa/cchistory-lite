@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cchistory.dev/schemas/cchistory-lite-envelope-v1.schema.json",
+  "title": "CC History Lite shared read-only v1 JSON envelope",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "domain",
+    "owner",
+    "host_id",
+    "generated_at",
+    "stale_after_seconds",
+    "status",
+    "error",
+    "summary",
+    "delta",
+    "items"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "domain": { "enum": ["ai_agents", "projects"] },
+    "owner": { "const": "cchistory-lite" },
+    "host_id": { "type": "string" },
+    "generated_at": { "type": "string" },
+    "stale_after_seconds": { "type": "integer", "minimum": 1 },
+    "status": { "enum": ["ok", "partial", "error"] },
+    "error": { "type": ["string", "null"] },
+    "summary": { "type": "object" },
+    "delta": { "type": "null" },
+    "items": { "type": "array", "items": { "type": "object" } }
+  },
+  "additionalProperties": false
+}

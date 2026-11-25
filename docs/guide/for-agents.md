@@ -125,6 +125,20 @@ error lines on stdout and leave the shell available for subsequent commands.
 
 ## Composition recipes
 
+- **Audit local agent/MCP configs & pre-launch startup contexts**: run
+  `cchistory-lite inventory --json` (or `--envelope --host-id <name>`) for the
+  machine-wide overview, redacted MCP servers (key names only), extensions, and
+  30-day tool activity. Add `--dir <path>` and/or `--agent <tool>`
+  (`claude_code`, `codex`, `antigravity`, `opencode`, `deepseek_harness`) to
+  resolve each tool's native pre-launch startup context (`CLAUDE.md` `@import`s,
+  Codex trust gates and 32 KiB doc budget, Antigravity rule caps/budgets and
+  plugin bundles, OpenCode JSONC cascade and `CLAUDE.md` fallback, DeepSeek
+  Harness Cordis YAML layers without reading `.credentials.yaml`). Pass
+  `--no-activity` for static inspection without a history scan.
+- **Reconcile projects across hosts**: run `cchistory-lite ls projects --no-dir --all --with-git --host-id <host> --json`
+  (or `--no-dir --with-git --envelope --host-id <host>`, which exports all rows by default)
+  on each machine, then run `cchistory-lite merge-projects host-a.json host-b.json --json`
+  to compare canonical remotes, branches, commits, dirty/unpushed/behind/no-upstream status, and AI activity. Duplicate `host_id` inputs exit 2.
 - **Find an answer, then read**: in shell, send
   `{"kind":"search","query":"<q>","content":"conversation"}` and then
   `{"kind":"read","turn_ref":"<turn_id>"}`. If the hit has a null turn ID,

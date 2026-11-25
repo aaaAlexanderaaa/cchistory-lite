@@ -118,6 +118,23 @@ stdout keeps its existing result format. Diagnostics contain no transcript bodie
 or query text, but can include local paths. Do not
 disable the guard or cycle through broader/sample reads to evade a failure.
 
+For local AI agent / MCP / skills / subagent / plugin configuration inventory, 30-day usage correlation, and per-tool native pre-launch startup context resolution:
+
+```sh
+cchistory-lite inventory --json
+cchistory-lite inventory --agent claude,codex --no-activity
+cchistory-lite inventory --dir /path/to/project --agent claude_code --no-activity
+cchistory-lite inventory --envelope --host-id "$(hostname)"
+```
+
+For opt-in local Git status per project and offline multi-host project reconciliation:
+
+```sh
+cchistory-lite ls projects --no-dir --all --with-git --host-id host-a --json > host-a.json
+cchistory-lite ls projects --no-dir --with-git --envelope --host-id host-b > host-b.json
+cchistory-lite merge-projects host-a.json host-b.json --json
+```
+
 ## Optional details
 
 No discovery or documentation command is required before a task query.

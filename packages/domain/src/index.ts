@@ -655,6 +655,8 @@ export interface SessionProjection {
   sync_axis: SyncAxis;
   /** Independent native model calls, including work without a user turn. */
   usage_events?: SessionUsageEvent[];
+  /** Compact per-session tool-call counts retained across all adapters for activity correlation. */
+  tool_usage_summary?: import("./agent-inventory.js").SessionToolUsageCount[];
 }
 
 export interface SessionUsageEvent {
@@ -1424,6 +1426,9 @@ export * from "./evidence-atoms.js";
 export * from "./masks.js";
 export * from "./usage-pricing.js";
 export * from "./usage-trace.js";
+export * from "./agent-inventory.js";
+export * from "./agent-startup.js";
+export * from "./project-git.js";
 
 export type { QueryCollection, QueryValue, QueryValueType, QueryColumn, QueryPredicate, LogicalQuery, CanonicalQueryResult } from "./query.js";
 export type { ConversationEvidence, EvidenceReadOptions, ReadStatus } from "./conversation-evidence.js";

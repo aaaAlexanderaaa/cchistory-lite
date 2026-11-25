@@ -1761,7 +1761,7 @@ test("Lite CLI agent prints the machine-readable contract without scanning", asy
   assert.equal(contract.cli.name, "cchistory-lite");
   assert.match(contract.cli.version, /^\d+\.\d+\.\d+/u);
 
-  const commandNames = ["sources", "ls", "latest", "sample", "tree", "search", "show", "stats", "trace", "query", "shell", "export", "tui", "help", "agent"];
+  const commandNames = ["sources", "ls", "latest", "sample", "tree", "search", "show", "stats", "trace", "inventory", "merge-projects", "query", "shell", "export", "tui", "help", "agent"];
   assert.deepEqual(Object.keys(contract.commands).sort(), [...commandNames].sort());
   for (const name of commandNames) {
     const command = contract.commands[name]!;
@@ -1889,11 +1889,18 @@ test("Lite CLI agent contract flags match the parser in both directions", async 
     "--model", "--from", "--to", "--since", "--tz", "--week-mode", "--sort",
     "--pricing", "--alias", "--multiplier", "--cache-read-multiplier", "--cache-write-multiplier",
     "--quota", "--export-pricing", "--explain-pricing",
-    "--format", "--out", "--dir", "--request", "--safe", "--json", "--all", "--no-dir",
+    "--format", "--out", "--dir", "--home", "--agent", "--host-id", "--no-activity", "--envelope", "--with-git",
+    "--request", "--safe", "--json", "--all", "--no-dir",
     "--help", "--version", "--sql", "--sql-file", "--params", "--complete", "--idle-timeout", "--diagnostics",
   ];
   assert.deepEqual([...universe].sort(), [...parserFlags].sort());
 
+  const tempMergeDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-contract-merge-"));
+  const tempMergeFile = path.join(tempMergeDir, "host-a.json");
+  await writeFile(tempMergeFile, JSON.stringify({ host_id: "host-a", projects: [] }), "utf8");
+  const emptyHomeDir = path.join(tempMergeDir, "empty-home");
+  await mkdir(emptyHomeDir, { recursive: true });
+  try {
   const tails: Record<string, string[]> = {
     sources: [],
     ls: ["sessions"],
@@ -1904,6 +1911,8 @@ test("Lite CLI agent contract flags match the parser in both directions", async 
     show: ["session", session.id],
     stats: [],
     trace: [session.id],
+    inventory: ["--home", emptyHomeDir],
+    "merge-projects": [tempMergeFile],
     query: ["--request", "-"],
     shell: [],
     export: ["--format", "jsonl", "--out", "-"],
@@ -1942,6 +1951,9 @@ test("Lite CLI agent contract flags match the parser in both directions", async 
       case "--format": return [name, "jsonl"];
       case "--out": return [name, "-"];
       case "--dir": return [name, repoRoot];
+      case "--home": return [name, emptyHomeDir];
+      case "--agent": return [name, "codex"];
+      case "--host-id": return [name, "test-host"];
       case "--request": return [name, "-"];
       case "--sql": return [name, "SELECT id FROM sessions LIMIT 1"];
       case "--sql-file": return [name, path.join(repoRoot, "docs/guide/queries/latest-turns.sql")];
@@ -1980,6 +1992,9 @@ test("Lite CLI agent contract flags match the parser in both directions", async 
         argv = [name, ...(["--sql", "--sql-file"].includes(flag) ? [] : ["--sql", "SELECT id FROM sessions LIMIT 1"]), ...flagArgs(flag)];
       }
       if (name === "ls" && flag === "--complete") argv = ["ls", "sources", "--complete"];
+      if (name === "ls" && ["--with-git", "--envelope", "--host-id"].includes(flag)) {
+        argv = ["ls", "projects", ...flagArgs(flag)];
+      }
       const code = await run(argv);
       if (accepted.has(flag)) {
         assert.equal(code, 0, `${name} must accept ${flag} (argv: ${argv.join(" ")})`);
@@ -1994,6 +2009,9 @@ test("Lite CLI agent contract flags match the parser in both directions", async 
       canonicalAccepted ? 0 : 2,
       `${name} ${canonicalAccepted ? "must accept" : "must reject"} --json=canonical`,
     );
+  }
+  } finally {
+    await rm(tempMergeDir, { recursive: true, force: true });
   }
 });
 

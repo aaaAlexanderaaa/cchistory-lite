@@ -18,7 +18,10 @@ export function normalizeDirectoryScopePath(
   const normalized = normalizeLocalPathIdentity(value);
   if (!normalized) return undefined;
   const platform = options.platform ?? process.platform;
-  return platform === "darwin" || platform === "win32" ? normalized.toLowerCase() : normalized;
+  if (platform === "darwin") {
+    return normalized.toLowerCase().replace(/^\/private(\/(?:tmp|var|etc)(?:\/|$))/u, "$1");
+  }
+  return platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 export function pathMatchesDirectoryScope(

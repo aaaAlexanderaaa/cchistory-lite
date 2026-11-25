@@ -98,6 +98,17 @@ ALLOWED_FILE_PATTERNS = [
     re.compile(r"Library/Application Support/openclaw/cron/runs/[0-9a-f-]+\.jsonl"),
     re.compile(r"fixtures/opencode-sqlite/(?:v1|v2|v2-presplit)\.sql"),
     re.compile(r"fixtures/hermes/state\.sql"),
+    re.compile(
+        r"fixtures/agent-inventory/"
+        r"(?:home/(?:\.codex/(?:config\.toml|AGENTS\.md|skills/[^/]+/SKILL\.md)|"
+        r"\.claude\.json|"
+        r"\.claude/(?:settings\.json|agents/[^/]+\.md|skills/[^/]+/SKILL\.md)|"
+        r"\.grok/config\.toml|"
+        r"\.gemini/(?:config/mcp_config\.json|antigravity/(?:skills/[^/]+/SKILL\.md|plugins/[^/]+/manifest\.json))|"
+        r"\.config/opencode/opencode\.jsonc|"
+        r"\.dsh/(?:config\.toml|skills/[^/]+/SKILL\.md))|"
+        r"project/(?:\.mcp\.json|\.claude/agents/[^/]+\.md))"
+    ),
     re.compile(r"\.pi/agent/sessions/[^/]+/[^/]+\.jsonl"),
     re.compile(r"\.omp/agent/sessions/[^/]+/[^/]+\.jsonl"),
     re.compile(r"\.local/share/opencode/storage/project/global\.json"),

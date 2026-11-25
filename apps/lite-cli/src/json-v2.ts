@@ -2,6 +2,7 @@ import type {
   AssistantReplyProjection,
   LossAuditRecord,
   ProjectIdentity,
+  ProjectWithGitMetadata,
   SessionProjection,
   SessionRelatedWorkProjection,
   SessionFamilyProjection,
@@ -35,7 +36,12 @@ export function compactPayload(
     case "sources":
       return { ...base, ...counts(payload), sources: records(payload.sources).map(sourceSummary) };
     case "projects":
-      return { ...base, ...counts(payload), projects: records(payload.projects).map(projectSummary) };
+      return {
+        ...base,
+        ...(payload.host_id !== undefined ? { host_id: payload.host_id } : {}),
+        ...counts(payload),
+        projects: records(payload.projects).map(projectSummary),
+      };
     case "sessions":
       return {
         ...base,
@@ -155,8 +161,8 @@ export function sourceSummary(source: SourceStatus | Record<string, unknown>): R
   };
 }
 
-export function projectSummary(project: ProjectIdentity | Record<string, unknown>): Record<string, unknown> {
-  const value = project as ProjectIdentity;
+export function projectSummary(project: ProjectWithGitMetadata | ProjectIdentity | Record<string, unknown>): Record<string, unknown> {
+  const value = project as ProjectWithGitMetadata;
   return {
     project_id: value.project_id,
     display_name: value.display_name,
@@ -165,12 +171,13 @@ export function projectSummary(project: ProjectIdentity | Record<string, unknown
     confidence: value.confidence,
     link_reason: value.link_reason,
     primary_workspace_path: value.primary_workspace_path ?? null,
-    repo_root: value.repo_root ?? null,
-    repo_remote: value.repo_remote ?? null,
+    repo_root: value.repo_root ?? value.git?.repo_root ?? null,
+    repo_remote: value.repo_remote ?? value.git?.repo_remote ?? null,
     source_platforms: value.source_platforms ?? [],
     session_count: value.session_count,
     turn_count: value.committed_turn_count + value.candidate_turn_count,
     last_activity_at: value.project_last_activity_at ?? null,
+    ...(value.git !== undefined ? { git: value.git } : {}),
   };
 }
 

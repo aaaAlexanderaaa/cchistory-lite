@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "portainer_ro": {
+      "serverUrl": "https://agyuser:agypass@portainer-local:9443/mcp?token=mock_agy_query_secret",
+      "headers": {
+        "Authorization": "mock_header_secret_agy"
+      }
+    },
+    "mcp_unused": {
+      "command": "python3",
+      "args": ["/workspace/tools/unused_mcp.py"],
+      "env": {
+        "UNUSED_SECRET": "mock_env_secret_unused"
+      }
+    }
+  }
+}

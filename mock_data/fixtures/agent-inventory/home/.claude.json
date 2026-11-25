@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace/demo"],
+      "env": {
+        "FS_ALLOWED_ROOT": "/workspace/demo",
+        "FS_API_TOKEN": "mock_env_secret_fs"
+      }
+    },
+    "unused_db": {
+      "type": "http",
+      "url": "https://db.example.test/mcp?token=mock_db_query_secret",
+      "headers": {
+        "X-Api-Key": "mock_header_secret_db"
+      }
+    }
+  }
+}

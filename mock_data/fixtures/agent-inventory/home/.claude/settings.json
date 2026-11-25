@@ -1,0 +1,10 @@
+{
+  "enabledPlugins": {
+    "claude-security-pack": true,
+    "legacy-lint-pack": false
+  },
+  "hooks": {
+    "PreToolUse": [],
+    "PostToolUse": []
+  }
+}

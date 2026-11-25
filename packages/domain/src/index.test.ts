@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
+  canonicalizeGitRemote,
   decodeUriPath,
   deriveHostId,
   deriveSourceInstanceId,
@@ -633,4 +634,38 @@ test("extractTokenUsage accepts camelCase and snake_case cacheWriteTokens aliase
   const snake = extractTokenUsage({ input_tokens: 10, output_tokens: 5, cache_write_tokens: 15 });
   assert.equal(snake?.cache_creation_input_tokens, 15);
   assert.equal(snake?.total_tokens, 30);
+});
+
+describe("canonicalizeGitRemote", () => {
+  test("normalizes SSH, HTTPS, credentials, ports, query strings, and case to host/owner/repo", () => {
+    assert.equal(canonicalizeGitRemote("git@github.com:ExampleOrg/My-Repo.git"), "github.com/exampleorg/my-repo");
+    assert.equal(
+      canonicalizeGitRemote("https://user:secret_token@github.com/ExampleOrg/My-Repo.git?ref=main#top"),
+      "github.com/exampleorg/my-repo",
+    );
+    assert.equal(
+      canonicalizeGitRemote("git+https://token@gitlab.example.test/Group/SubGroup/Service.git/"),
+      "gitlab.example.test/group/subgroup/service",
+    );
+    assert.equal(
+      canonicalizeGitRemote("ssh://git@github.com:22/ExampleOrg/My-Repo.git"),
+      "github.com/exampleorg/my-repo",
+    );
+    assert.equal(
+      canonicalizeGitRemote("ssh://git@git.internal.lan:2222/Team/Repo.git"),
+      "git.internal.lan:2222/team/repo",
+    );
+    assert.equal(
+      canonicalizeGitRemote("git.internal.lan:2222/team/repo"),
+      "git.internal.lan:2222/team/repo",
+    );
+    assert.equal(canonicalizeGitRemote("github.com/ExampleOrg/My-Repo"), "github.com/exampleorg/my-repo");
+  });
+
+  test("returns undefined for local paths and empty values", () => {
+    assert.equal(canonicalizeGitRemote(""), undefined);
+    assert.equal(canonicalizeGitRemote(undefined), undefined);
+    assert.equal(canonicalizeGitRemote("/Users/mock_user/repo.git"), undefined);
+    assert.equal(canonicalizeGitRemote("file:///Users/mock_user/repo.git"), undefined);
+  });
 });

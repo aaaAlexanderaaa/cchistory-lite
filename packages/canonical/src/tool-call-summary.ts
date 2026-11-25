@@ -203,6 +203,13 @@ function extractPrimaryToolTarget(toolName: string, input: Record<string, unknow
     return subType ?? (desc ? firstLine(desc, 60) : undefined);
   }
 
+  if (lowerTool === "call_mcp_tool" || lowerTool === "use_mcp_tool") {
+    const serverName = asString(input.ServerName) ?? asString(input.server_name) ?? asString(input.server);
+    const mcpTool = asString(input.ToolName) ?? asString(input.tool_name) ?? asString(input.tool);
+    if (serverName && mcpTool) return `${serverName}:${mcpTool}`;
+    if (serverName) return serverName;
+  }
+
   for (const key of ["url", "query", "command", "cmd", "path", "file_path", "target", "name", "id", "pattern", "description", "raw"]) {
     const candidate = asString(input[key]);
     if (candidate?.trim()) return candidate;

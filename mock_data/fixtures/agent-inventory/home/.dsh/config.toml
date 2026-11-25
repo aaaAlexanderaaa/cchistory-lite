@@ -1,0 +1,4 @@
+[mcp_servers.dsh_docs]
+command = "dsh-docs-mcp"
+args = ["--mode", "read-only"]
+env = { DSH_DOCS_KEY = "mock_env_secret_dsh" }

@@ -96,6 +96,7 @@
       }
     },
     "projection_issues": { "type": "array", "items": { "$ref": "#/$defs/projectionIssue" } },
+    "host_id": { "$ref": "#/$defs/nullableString" },
     "sources": { "type": "array", "items": { "$ref": "#/$defs/source" } },
     "projects": { "type": "array", "items": { "$ref": "#/$defs/project" } },
     "sessions": { "type": "array", "items": { "$ref": "#/$defs/session" } },
@@ -149,7 +150,27 @@
         "source_platforms": { "type": "array", "items": { "type": "string" } },
         "session_count": { "type": "integer", "minimum": 0 },
         "turn_count": { "type": "integer", "minimum": 0 },
-        "last_activity_at": { "$ref": "#/$defs/nullableString" }
+        "last_activity_at": { "$ref": "#/$defs/nullableString" },
+        "git": { "$ref": "#/$defs/projectGit" }
+      },
+      "additionalProperties": false
+    },
+    "projectGit": {
+      "type": "object",
+      "required": ["status", "repo_root", "repo_remote", "branch", "head_sha", "head_committed_at", "dirty_files", "ahead", "behind"],
+      "properties": {
+        "status": { "enum": ["ok", "not_git", "missing_path", "timeout", "error"] },
+        "repo_root": { "$ref": "#/$defs/nullableString" },
+        "repo_remote": { "$ref": "#/$defs/nullableString" },
+        "branch": { "$ref": "#/$defs/nullableString" },
+        "detached": { "type": "boolean" },
+        "head_sha": { "$ref": "#/$defs/nullableString" },
+        "head_committed_at": { "$ref": "#/$defs/nullableString" },
+        "dirty_files": { "type": ["integer", "null"], "minimum": 0 },
+        "ahead": { "type": ["integer", "null"], "minimum": 0 },
+        "behind": { "type": ["integer", "null"], "minimum": 0 },
+        "upstream": { "$ref": "#/$defs/nullableString" },
+        "error": { "type": "string" }
       },
       "additionalProperties": false
     },

@@ -1,0 +1,26 @@
+{
+  // Sanitized OpenCode JSONC fixture
+  "mcp": {
+    "opencode_docs": {
+      "type": "remote",
+      "url": "https://docs.example.test/mcp?api_key=mock_oc_query_secret",
+      "headers": {
+        "Authorization": "mock_header_secret_oc"
+      },
+      "enabled": true
+    },
+    "local_git_mcp": {
+      "type": "local",
+      "command": ["npx", "-y", "@example/git-mcp"],
+      "environment": {
+        "GIT_MCP_SECRET": "mock_env_secret_oc"
+      }
+    }
+  },
+  "agent": {
+    "plan-reviewer": {
+      "description": "Sanitized OpenCode agent"
+    }
+  },
+  "plugin": ["opencode-audit-plugin"],
+}

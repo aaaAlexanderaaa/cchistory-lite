@@ -1,0 +1,4 @@
+[mcp_servers.grok_search]
+command = "grok-mcp"
+args = ["--endpoint", "https://search.example.test/mcp?key=mock_grok_query_secret"]
+env = { GROK_SEARCH_TOKEN = "mock_env_secret_grok" }
