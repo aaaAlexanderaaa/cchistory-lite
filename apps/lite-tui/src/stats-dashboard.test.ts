@@ -420,3 +420,41 @@ test("TUI a:Anomalies cycles Anomalies/Families/Tools, drills into interactive T
     assert.equal(legendLineIndex(st), expectedIdx, `Legend line index drifted in ${label} view`);
   }
 });
+
+test("TUI S:Sessions marks delegated child sessions with sub in wide Signals column without changing layout", async () => {
+  configureColorPolicy({ color: false });
+  const snapshot = await scanLiteHistory({
+    homeDir: path.join(repoRoot, "mock_data", "empty-home"),
+    hostname: "cchistory-lite-tui-sub-signal-test",
+    sourceRefs: ["antigravity"],
+    sourceRoots: [{ sourceRef: "antigravity", baseDir: antigravityRoot }],
+    contextMode: "none",
+    safeMode: true,
+  });
+  const model = new LiteBrowserModel(snapshot);
+  const state = applyAll(
+    model,
+    createLiteBrowserState(model),
+    { type: "toggle-stats" },
+    { type: "stats-set-view", view: "sessions" },
+  );
+
+  const wideFrame = renderLiteFrame(model, state, { width: 120, height: 30 });
+  const wideLines = wideFrame.split("\n");
+  for (const line of wideLines) {
+    assert.ok(displayWidth(line) <= 120, `wide S:Sessions line overflowed 120 cols: ${line}`);
+  }
+  const parentRow = wideLines.find((line) => line.includes("1sub"));
+  const subRow = wideLines.find((line) => line.includes("Duplicate deployment title") && /\bsub\b/u.test(line));
+  assert.ok(parentRow, `expected parent row with 1sub signal:\n${wideFrame}`);
+  assert.ok(subRow, `expected delegated child row with "sub" in Signals column:\n${wideFrame}`);
+  assert.notEqual(subRow, parentRow, "delegated child row must be distinct from parent row");
+  assert.doesNotMatch(subRow, /\[sub\]/, "wide Signals mode should not prefix the title with [sub]");
+  assert.match(wideFrame, /Assistant-only fixture\s+antigravity-f…/, "turn-less session should link to its project");
+
+  const narrowFrame = renderLiteFrame(model, state, { width: 96, height: 24 });
+  for (const line of narrowFrame.split("\n")) {
+    assert.ok(displayWidth(line) <= 96, `narrow S:Sessions line overflowed 96 cols: ${line}`);
+  }
+  assert.doesNotMatch(narrowFrame, /\[sub\]/, "narrow layout should keep title width intact");
+});

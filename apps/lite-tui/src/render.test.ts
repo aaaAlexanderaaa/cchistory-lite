@@ -741,3 +741,37 @@ test("text helpers measure and clip by terminal columns, not string length", () 
     assert.ok(displayWidth(line) <= 8);
   }
 });
+
+test("TUI uses Unassigned consistently for project-less items and shows Tokens on turn-less session detail", async () => {
+  const codexModel = await buildModel();
+  const unlinkedIdx = codexModel.projects.findIndex((entry) => entry.project === undefined);
+  assert.ok(unlinkedIdx >= 0, "expected a project-less bucket in codex fixture");
+  let codexState = createLiteBrowserState(codexModel);
+  codexState = { ...codexState, selectedProjectIndex: unlinkedIdx, selectedTurnIndex: 0 };
+  const codexFrame = frame(codexModel, codexState);
+  assert.match(codexFrame, /\bUnassigned\b/);
+  assert.match(codexFrame, /Ask \d+\/\d+ in Unassigned/);
+  assert.doesNotMatch(codexFrame, /Unlinked \/ candidate-only/);
+
+  const antigravitySnapshot = await scanLiteHistory({
+    homeDir: path.join(repoRoot, "mock_data", "empty-home"),
+    hostname: "cchistory-lite-tui-turnless-detail-test",
+    sourceRefs: ["antigravity"],
+    sourceRoots: [{ sourceRef: "antigravity", baseDir: path.join(repoRoot, "mock_data", "fixtures", "antigravity-sqlite") }],
+    safeMode: true,
+    contextMode: "none",
+  });
+  const agModel = new LiteBrowserModel(antigravitySnapshot);
+  const assistantOnly = agModel.sessions.find((entry) => entry.turns.length === 0 && (entry.session.usage_events?.length ?? 0) > 0);
+  assert.ok(assistantOnly, "expected turn-less session with usage in Antigravity fixture");
+  const agState = apply(agModel, createLiteBrowserState(agModel), { type: "open-session-ref", ref: assistantOnly.session.id });
+  const agFrame = frame(agModel, agState);
+  assert.match(agFrame, /Turns:\s+0/);
+  assert.match(agFrame, /Tokens:\s+6 \(in=/);
+
+  const openclawModel = await buildModel(openclawRoot, "openclaw");
+  const ocState = apply(openclawModel, createLiteBrowserState(openclawModel), { type: "set-browse-scope", scope: "sessions" });
+  const ocFrame = frame(openclawModel, ocState);
+  assert.match(ocFrame, /Turns:\s+0/);
+  assert.doesNotMatch(ocFrame, /Tokens:/);
+});

@@ -139,8 +139,10 @@ export function resolveStructuredTokenTotal(usage: TokenUsageSummary | undefined
     : undefined;
 }
 
-export function resolveTurnUsage(turn: UserTurnProjection): TurnUsageProjection {
-  const usage = turn.context_summary.token_usage;
+export function resolveTokenUsageProjection(
+  usage: TokenUsageSummary | undefined,
+  fallbackTotalTokens?: number,
+): TurnUsageProjection {
   const cachedInputTokens = usage
     ? usage.cached_input_tokens ??
       (usage.cache_read_input_tokens !== undefined || usage.cache_creation_input_tokens !== undefined
@@ -162,15 +164,19 @@ export function resolveTurnUsage(turn: UserTurnProjection): TurnUsageProjection 
   return {
     has_token_usage:
       values.some((value) => typeof value === "number") ||
-      typeof turn.context_summary.total_tokens === "number",
+      typeof fallbackTotalTokens === "number",
     input_tokens: usage?.input_tokens,
     cache_read_input_tokens: usage?.cache_read_input_tokens,
     cache_creation_input_tokens: usage?.cache_creation_input_tokens,
     cached_input_tokens: cachedInputTokens,
     output_tokens: usage?.output_tokens,
     reasoning_output_tokens: usage?.reasoning_output_tokens,
-    total_tokens: structuredTotal ?? turn.context_summary.total_tokens,
+    total_tokens: structuredTotal ?? fallbackTotalTokens,
   };
+}
+
+export function resolveTurnUsage(turn: UserTurnProjection): TurnUsageProjection {
+  return resolveTokenUsageProjection(turn.context_summary.token_usage, turn.context_summary.total_tokens);
 }
 
 export function resolveSessionUsageMetrics(session: SessionProjection | undefined): TokenUsageSummary | undefined {
@@ -178,6 +184,26 @@ export function resolveSessionUsageMetrics(session: SessionProjection | undefine
     (sum, event) => mergeTokenUsageMetrics(sum, event.token_usage),
     undefined,
   );
+}
+
+export function resolveSessionTokenUsage(
+  turns: readonly UserTurnProjection[],
+  session?: SessionProjection,
+): TurnUsageProjection {
+  const fromEvents = resolveSessionUsageMetrics(session);
+  if (fromEvents) {
+    return resolveTokenUsageProjection(fromEvents);
+  }
+  const mergedFromTurns = turns.reduce<TokenUsageSummary | undefined>(
+    (sum, turn) => mergeTokenUsageMetrics(sum, turn.context_summary.token_usage),
+    undefined,
+  );
+  const fallbackTotal = turns.reduce<number | undefined>((sum, turn) => {
+    const t = resolveTurnUsage(turn).total_tokens;
+    if (t === undefined) return sum;
+    return (sum ?? 0) + t;
+  }, undefined);
+  return resolveTokenUsageProjection(mergedFromTurns, fallbackTotal);
 }
 
 export function summarizeSessionUsage(

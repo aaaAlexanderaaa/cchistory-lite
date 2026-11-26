@@ -318,7 +318,8 @@ export function renderTopSessionsView(
     if (wide) {
       const shareStr = `${renderTuiFractionalBar(barRatio, 10, cyan)} ${String(Math.round(shareRatio * 100)).padStart(3)}%`;
       const signals: string[] = [];
-      if (meta && meta.delegated_child_count > 0) signals.push(`${meta.delegated_child_count}sub`);
+      if (meta && meta.role === "subagent") signals.push(cyan("sub"));
+      else if (meta && meta.delegated_child_count > 0) signals.push(`${meta.delegated_child_count}sub`);
       if (meta && (meta.miss_call_count ?? 0) > 0) signals.push(danger(`${meta.miss_call_count}miss`));
       if (meta && meta.tool_error_count > 0) signals.push(danger(`${meta.tool_error_count}err`));
       else if (meta && meta.tool_call_count > 0 && signals.length < 2) signals.push(dim(`${meta.tool_call_count}tool`));

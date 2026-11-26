@@ -487,8 +487,8 @@ function buildDetailRows(
   const rows: string[] = [];
 
   const projectName = entry.turn.project_id
-    ? (model.snapshot.getProject(entry.turn.project_id)?.display_name ?? "Unlinked")
-    : "Unlinked";
+    ? (model.snapshot.getProject(entry.turn.project_id)?.display_name ?? "Unassigned")
+    : "Unassigned";
   const sessionTitle = entry.session?.title ? dim(` · ${compact(tameBrowseMarkup(entry.session.title), 28)}`) : "";
   rows.push(
     `${bold("Ask")} ${cyan(`${index + 1}/${turns.length}`)} ${dim("in")} ${cyan(projectName)}${sessionTitle} ${magenta(entry.turn.id.slice(0, 8))}`,
@@ -541,6 +541,11 @@ function buildSessionDetailRows(
     `${metaLabel("Activity:")} ${formatShortDate(activityAt)} ${dim(`(${formatRelativeTime(activityAt, now)})`)}`,
     `${metaLabel("Turns:")} ${entry.turns.length}`,
   ];
+  const sessionUsage = model.snapshot.getSessionTokenUsage(session.id);
+  const tokenBreakdown = sessionUsage ? formatTokenBreakdown(sessionUsage) : "";
+  if (tokenBreakdown) {
+    rows.push(`${metaLabel("Tokens:")} ${tokenBreakdown}`);
+  }
   if (session.resume_command) {
     for (const line of wrapText(session.resume_command, contentWidth)) rows.push(green(line));
   } else if (session.working_directory) {

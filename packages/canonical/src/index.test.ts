@@ -4,6 +4,7 @@ import test from "node:test";
 import type {
   ProjectIdentity,
   SessionProjection,
+  SessionRelatedWorkProjection,
   SourceFragment,
   SourceStatus,
   UserTurnProjection,
@@ -11,6 +12,7 @@ import type {
 import {
   auditProjectionConsistency,
   buildDirectoryScopedProjectTreeProjection,
+  buildFallbackProjectObservationCandidates,
   buildSessionRelatedWorkIndex,
   boundSearchCanonicalText,
   buildProjectDisplayList,
@@ -20,6 +22,7 @@ import {
   compareTurnsByChronology,
   compareTurnsByRecency,
   computeRelevanceScore,
+  computeUsageBreakdown,
   computeUsageOverview,
   computeUsageRollup,
   deriveProjectLinkSnapshot,
@@ -40,6 +43,7 @@ import {
   sessionMatchesDirectoryScope,
   stripSearchTruncationMarker,
   summarizeSessionUsage,
+  UNASSIGNED_PROJECT_KEY,
 } from "./index.js";
 
 test("projection audit accepts a coherent snapshot and reports cross-entity drift", () => {
@@ -322,6 +326,258 @@ test("project last activity follows the last real turn, not a scan-time empty-se
   assert.equal(linked.projects.length, 1);
   assert.equal(linked.projects[0]?.project_last_activity_at, "2026-08-27T16:59:11.110Z");
   assert.notEqual(linked.projects[0]?.project_last_activity_at, stubSession.updated_at);
+  assert.equal(
+    linked.sessions.find((session) => session.id === stubSession.id)?.primary_project_id,
+    linked.projects[0]?.project_id,
+  );
+  assert.deepEqual(
+    auditProjectionConsistency({
+      sources: [source],
+      projects: linked.projects,
+      sessions: linked.sessions,
+      turns: linked.turns,
+    }),
+    [],
+  );
+});
+
+test("turn-less sessions and delegated children inherit canonical projects instead of falling into Unassigned usage", () => {
+  const source = createSource();
+  const parentSession: SessionProjection = {
+    ...createSession(source),
+    id: "session-parent",
+    title: "Parent task",
+    working_directory: "/workspace/alpha",
+    turn_count: 1,
+    created_at: "2026-01-01T00:00:00.000Z",
+    updated_at: "2026-01-01T00:05:00.000Z",
+  };
+  const observedChild: SessionProjection = {
+    ...createSession(source),
+    id: "session-child-observed",
+    title: "Observed subagent",
+    working_directory: "/workspace/alpha",
+    turn_count: 0,
+    created_at: "2026-01-01T00:01:00.000Z",
+    updated_at: "2026-01-01T00:02:00.000Z",
+    usage_events: [
+      {
+        id: "ev-child-observed",
+        turn_id: null,
+        created_at: "2026-01-01T00:01:30.000Z",
+        model: "gpt-5",
+        token_usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
+      },
+    ],
+  };
+  const cwdlessGrandchild: SessionProjection = {
+    ...createSession(source),
+    id: "session-grandchild-nocwd",
+    title: "Nested subagent without cwd",
+    working_directory: undefined,
+    turn_count: 0,
+    created_at: "2026-01-01T00:02:00.000Z",
+    updated_at: "2026-01-01T00:03:00.000Z",
+    usage_events: [
+      {
+        id: "ev-grandchild",
+        turn_id: null,
+        created_at: "2026-01-01T00:02:30.000Z",
+        model: "gpt-5",
+        token_usage: { input_tokens: 50, output_tokens: 10, total_tokens: 60 },
+      },
+    ],
+  };
+  const cwdlessChildWithTurn: SessionProjection = {
+    ...createSession(source),
+    id: "session-child-turn-nocwd",
+    title: "Delegated child with turn but no cwd",
+    working_directory: undefined,
+    turn_count: 1,
+    created_at: "2026-01-01T00:03:00.000Z",
+    updated_at: "2026-01-01T00:04:00.000Z",
+  };
+  const emptyStubSession: SessionProjection = {
+    ...createSession(source),
+    id: "session-empty-stub",
+    working_directory: "/workspace/beta-single",
+    turn_count: 0,
+    created_at: "2026-01-01T00:06:00.000Z",
+    updated_at: "2026-01-01T00:06:00.000Z",
+  };
+  const usageOnlyTopLevel: SessionProjection = {
+    ...createSession(source),
+    id: "session-usage-fallback",
+    working_directory: "/workspace/gamma",
+    turn_count: 0,
+    created_at: "2026-01-01T00:07:00.000Z",
+    updated_at: "2026-01-01T00:07:00.000Z",
+    usage_events: [
+      {
+        id: "ev-fallback",
+        turn_id: null,
+        created_at: "2026-01-01T00:07:00.000Z",
+        model: "gpt-5",
+        token_usage: { input_tokens: 30, output_tokens: 5, total_tokens: 35 },
+      },
+    ],
+  };
+
+  const parentTurn: UserTurnProjection = {
+    ...createTurn(source, parentSession),
+    id: "turn-parent",
+    turn_id: "turn-parent",
+    created_at: "2026-01-01T00:00:00.000Z",
+    submission_started_at: "2026-01-01T00:00:00.000Z",
+    last_context_activity_at: "2026-01-01T00:05:00.000Z",
+  };
+  const childTurn: UserTurnProjection = {
+    ...createTurn(source, cwdlessChildWithTurn),
+    id: "turn-child-nocwd",
+    turn_id: "turn-child-nocwd",
+    created_at: "2026-01-01T00:03:00.000Z",
+    submission_started_at: "2026-01-01T00:03:00.000Z",
+    last_context_activity_at: "2026-01-01T00:04:00.000Z",
+  };
+
+  const makeDelegated = (parentId: string, childId: string): SessionRelatedWorkProjection => ({
+    id: `rel:${parentId}:${childId}`,
+    query_session_ref: childId,
+    source_id: source.id,
+    source_platform: source.platform,
+    source_session_ref: childId,
+    evidence_session_ref: childId,
+    parent_session_ref: parentId,
+    child_session_ref: childId,
+    relation_kind: "delegated_session",
+    target_kind: "session",
+    direction: "inbound",
+    target_session_ref: parentId,
+    transcript_primary: true,
+    evidence_confidence: 0.95,
+    created_at: "2026-01-01T00:01:00.000Z",
+    updated_at: "2026-01-01T00:01:00.000Z",
+    fragment_refs: [],
+    raw_detail: {},
+  });
+
+  const relatedWork: SessionRelatedWorkProjection[] = [
+    makeDelegated(parentSession.id, observedChild.id),
+    makeDelegated(observedChild.id, cwdlessGrandchild.id),
+    makeDelegated(parentSession.id, cwdlessChildWithTurn.id),
+  ];
+
+  const baseCandidates = [
+    {
+      id: "obs-parent",
+      source_id: source.id,
+      session_ref: parentSession.id,
+      candidate_kind: "project_observation" as const,
+      input_atom_refs: [],
+      started_at: parentTurn.created_at,
+      ended_at: parentTurn.last_context_activity_at,
+      rule_version: "test",
+      evidence: {
+        workspace_path: "/workspace/alpha",
+        workspace_path_normalized: "/workspace/alpha",
+        repo_root: "/workspace/alpha",
+        confidence: 0.9,
+      },
+    },
+    {
+      id: "obs-child-observed",
+      source_id: source.id,
+      session_ref: observedChild.id,
+      candidate_kind: "project_observation" as const,
+      input_atom_refs: [],
+      started_at: observedChild.created_at,
+      ended_at: observedChild.updated_at,
+      rule_version: "test",
+      evidence: {
+        workspace_path: "/workspace/alpha",
+        workspace_path_normalized: "/workspace/alpha",
+        repo_root: "/workspace/alpha",
+        confidence: 0.9,
+      },
+    },
+  ];
+
+  const allSessions = orderSessionsByLastMessage(
+    [parentSession, observedChild, cwdlessGrandchild, cwdlessChildWithTurn, emptyStubSession, usageOnlyTopLevel],
+    [childTurn, parentTurn],
+  );
+  const fallbackCandidates = buildFallbackProjectObservationCandidates({
+    sessions: allSessions,
+    turns: [childTurn, parentTurn],
+    candidates: baseCandidates,
+    sources: [source],
+    selectBlobsByIds: () => [],
+  });
+  // Usage-bearing turn-less session gets a fallback candidate; empty stub does not.
+  assert.equal(fallbackCandidates.some((c) => c.session_ref === usageOnlyTopLevel.id), true);
+  assert.equal(fallbackCandidates.some((c) => c.session_ref === emptyStubSession.id), false);
+
+  const linked = deriveProjectLinkSnapshot({
+    sessions: allSessions,
+    turns: [childTurn, parentTurn],
+    candidates: [...baseCandidates, ...fallbackCandidates],
+    related_work: relatedWork,
+  });
+
+  const alphaProject = linked.projects.find((p) => p.primary_workspace_path === "/workspace/alpha");
+  const gammaProject = linked.projects.find((p) => p.primary_workspace_path === "/workspace/gamma");
+  assert.ok(alphaProject);
+  assert.ok(gammaProject);
+
+  const sessionById = new Map(linked.sessions.map((s) => [s.id, s]));
+  assert.equal(sessionById.get(parentSession.id)?.primary_project_id, alphaProject.project_id);
+  assert.equal(sessionById.get(observedChild.id)?.primary_project_id, alphaProject.project_id);
+  assert.equal(sessionById.get(cwdlessGrandchild.id)?.primary_project_id, alphaProject.project_id);
+  assert.equal(sessionById.get(cwdlessChildWithTurn.id)?.primary_project_id, alphaProject.project_id);
+  assert.equal(sessionById.get(usageOnlyTopLevel.id)?.primary_project_id, gammaProject.project_id);
+  assert.equal(sessionById.get(emptyStubSession.id)?.primary_project_id, undefined);
+  assert.equal(
+    linked.turns.find((t) => t.id === childTurn.id)?.project_id,
+    alphaProject.project_id,
+  );
+
+  // Zero projection issues across all linked projects, turns, and sessions.
+  assert.deepEqual(
+    auditProjectionConsistency({
+      sources: [source],
+      projects: linked.projects,
+      sessions: linked.sessions,
+      turns: linked.turns,
+    }),
+    [],
+  );
+
+  // Usage breakdown attributes every token to its real project (zero Unassigned tokens)
+  // and keeps family project labels resolved to the parent project.
+  const breakdown = computeUsageBreakdown({
+    filters: { include_known_zero_token: true },
+    listResolvedTurns: () => linked.turns,
+    listResolvedSessions: () => linked.sessions,
+    listSources: () => [source],
+    listProjects: () => linked.projects,
+    listRelatedWork: () => relatedWork,
+  });
+  assert.equal(
+    breakdown.by_project.rows.find((row) => row.key === UNASSIGNED_PROJECT_KEY),
+    undefined,
+  );
+  assert.equal(
+    breakdown.by_project.rows.find((row) => row.key === alphaProject.project_id)?.total_tokens,
+    15 + 15 + 120 + 60,
+  );
+  assert.equal(
+    breakdown.by_project.rows.find((row) => row.key === gammaProject.project_id)?.total_tokens,
+    35,
+  );
+  assert.equal(
+    breakdown.diagnostics?.families.find((f) => f.parent_session_id === parentSession.id)?.project_label,
+    alphaProject.display_name,
+  );
 });
 
 test("in-memory search preserves exact totals and ranking while retaining only the requested page boundary", () => {

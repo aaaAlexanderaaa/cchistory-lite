@@ -24,8 +24,13 @@ export function buildFallbackProjectObservationCandidates(input: {
   );
   const turnSessionIds = new Set(input.turns.map((turn) => turn.session_id));
   const sourcesById = new Map(input.sources.map((source) => [source.id, source]));
+  const eligibleSessionIds = new Set(
+    input.sessions
+      .filter((session) => turnSessionIds.has(session.id) || (session.usage_events?.length ?? 0) > 0)
+      .map((session) => session.id),
+  );
   const fallbackSessionIds = input.sessions
-    .filter((session) => turnSessionIds.has(session.id) && !sessionsWithProjectObservation.has(session.id))
+    .filter((session) => eligibleSessionIds.has(session.id) && !sessionsWithProjectObservation.has(session.id))
     .map((session) => session.id);
   const blobOriginsBySession = listBlobOriginsBySession({
     sessionIds: fallbackSessionIds,
@@ -35,7 +40,7 @@ export function buildFallbackProjectObservationCandidates(input: {
   const fallbackCandidates: DerivedCandidate[] = [];
 
   for (const session of input.sessions) {
-    if (!turnSessionIds.has(session.id) || sessionsWithProjectObservation.has(session.id)) {
+    if (!eligibleSessionIds.has(session.id) || sessionsWithProjectObservation.has(session.id)) {
       continue;
     }
 

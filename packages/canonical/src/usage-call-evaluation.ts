@@ -304,6 +304,7 @@ export function computeFamilyUsageRows(
   delegation: DelegationIndex,
 ): FamilyUsageRow[] {
   const sessionsById = new Map(sourceData.listResolvedSessions().map((s) => [s.id, s]));
+  const projectsById = new Map(sourceData.listProjects().map((p) => [p.project_id, p]));
   const seenSessionIds = new Set<string>();
   interface FamilyAcc {
     parentId: string;
@@ -333,10 +334,13 @@ export function computeFamilyUsageRows(
     let acc = map.get(parentId);
     if (!acc) {
       const parentSession = sessionsById.get(parentId);
+      const parentProjectLabel = parentSession?.primary_project_id
+        ? projectsById.get(parentSession.primary_project_id)?.display_name
+        : undefined;
       acc = {
         parentId,
         title: parentSession?.canonical_title ?? parentSession?.title ?? item.row.session_label,
-        projectLabel: item.row.project_label,
+        projectLabel: parentProjectLabel ?? item.row.project_label,
         sourceLabel: item.row.source_label,
         subagents: new Set<string>(),
         selfCalls: 0,

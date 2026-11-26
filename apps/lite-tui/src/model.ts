@@ -140,8 +140,9 @@ export class LiteBrowserModel {
     const paneSessions: LiteSessionEntry[] = [];
     for (const session of sessions) {
       const relatedWorkCount = snapshot.listSessionRelatedWork(session.id).length;
+      const hasUsage = (session.usage_events?.length ?? 0) > 0;
       const requested = options.includeSessionRefs?.some((ref) => snapshot.getSession(ref)?.id === session.id);
-      if (session.turn_count === 0 && relatedWorkCount === 0 && !requested) continue;
+      if (session.turn_count === 0 && relatedWorkCount === 0 && !hasUsage && !requested) continue;
       paneSessions.push({
         session,
         sourceName: sourceNames.get(session.source_id) ?? session.source_platform,
@@ -415,7 +416,7 @@ function buildProjectEntries(
   if (unlinkedTurns.length > 0) {
     entries.push({
       key: UNLINKED_PROJECT_KEY,
-      displayName: "Unlinked / candidate-only",
+      displayName: "Unassigned",
       linkageState: "unlinked",
       sessionCount: new Set(unlinkedTurns.map((turn) => turn.session_id)).size,
       turnCount: unlinkedTurns.length,

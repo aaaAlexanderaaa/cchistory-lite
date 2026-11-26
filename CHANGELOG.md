@@ -7,6 +7,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Project attribution for turn-less and delegated subagent sessions:
+  `deriveProjectLinkSnapshot` now resolves `primary_project_id` from a
+  session's own linked `project_observation` (and falls back along its
+  `delegated_session` parent chain when it has no direct observation), and
+  `buildFallbackProjectObservationCandidates` covers turn-less sessions with
+  token usage events while still excluding empty zero-usage stubs. Subagent and
+  assistant-only token spend now aggregates under the owning project instead of
+  falling into `Unassigned`.
+- TUI browser and statistics consistency: top-level turn-less sessions carrying
+  token usage events now remain visible in the TUI session browser and open
+  cleanly from `S:Sessions`; wide `S:Sessions` marks delegated child sessions
+  with `sub` in the `Signals` column (matching the CLI); project-less buckets,
+  search groups, and turn details align on the `Unassigned` label; and
+  zero-turn session detail panels display a canonical `Tokens:` breakdown when
+  usage is present.
+
 ## [0.9.1] - 2026-11-25
 
 ### Added

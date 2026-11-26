@@ -8,6 +8,7 @@ import type {
   ProjectManualOverride,
   ProjectObservation,
   SessionProjection,
+  SessionRelatedWorkProjection,
   SourcePlatform,
   UserTurnProjection,
 } from "@cchistory/domain";
@@ -69,6 +70,7 @@ export function deriveProjectLinkSnapshot(input: {
   turns: UserTurnProjection[];
   candidates: DerivedCandidate[];
   overrides?: ProjectManualOverride[];
+  related_work?: readonly SessionRelatedWorkProjection[];
 }): ProjectLinkSnapshot {
   const sessionsById = new Map(input.sessions.map((session) => [session.id, session]));
   const overrides = input.overrides ?? [];
@@ -127,7 +129,7 @@ export function deriveProjectLinkSnapshot(input: {
     observationsBySession.set(observation.session_ref, [observation]);
   }
 
-  const turns = input.turns.map((turn) =>
+  const initialTurns = input.turns.map((turn) =>
     decorateTurn(
       turn,
       sessionsById.get(turn.session_id),
@@ -136,13 +138,54 @@ export function deriveProjectLinkSnapshot(input: {
       overrideByTurnId.get(turn.id) ?? overrideBySessionId.get(turn.session_id),
     ),
   );
-  const turnsBySessionId = buildTurnsBySessionId(turns);
-  const sessions = input.sessions.map((session) =>
+  const initialTurnsBySessionId = buildTurnsBySessionId(initialTurns);
+  const initialSessions = input.sessions.map((session) =>
     decorateSession(
       session,
-      turnsBySessionId.get(session.id) ?? [],
+      initialTurnsBySessionId.get(session.id) ?? [],
+      observationsBySession.get(session.id) ?? [],
+      overrideBySessionId.get(session.id),
     ),
   );
+  const delegatedParentByChild = buildDelegatedParentByChild(initialSessions, input.related_work ?? []);
+  const inheritedProjectIdBySessionId = resolveDelegatedInheritedProjects(
+    initialSessions,
+    delegatedParentByChild,
+    projectById,
+  );
+  const sessions = initialSessions.map((session) => {
+    if (session.primary_project_id) {
+      return session;
+    }
+    const inheritedProjectId = inheritedProjectIdBySessionId.get(session.id);
+    if (!inheritedProjectId) {
+      return session;
+    }
+    return {
+      ...session,
+      primary_project_id: inheritedProjectId,
+    };
+  });
+  const turns = initialTurns.map((turn) => {
+    if (turn.project_id || overrideByTurnId.has(turn.id) || overrideBySessionId.has(turn.session_id)) {
+      return turn;
+    }
+    const inheritedProjectId = inheritedProjectIdBySessionId.get(turn.session_id);
+    const project = inheritedProjectId ? projectById.get(inheritedProjectId) : undefined;
+    if (!project) {
+      return turn;
+    }
+    return {
+      ...turn,
+      project_id: project.project_id,
+      project_ref: project.slug,
+      link_state: project.linkage_state,
+      project_link_state: project.linkage_state,
+      project_confidence: project.confidence,
+      candidate_project_ids: project.linkage_state === "candidate" ? [project.project_id] : undefined,
+      path_text: buildTurnPathText(turn, sessionsById.get(turn.session_id), project),
+    };
+  });
 
   const projectTurnCounts = new Map<
     string,
@@ -721,16 +764,111 @@ function decorateTurn(
   };
 }
 
-function decorateSession(session: SessionProjection, turns: UserTurnProjection[]): SessionProjection {
+function decorateSession(
+  session: SessionProjection,
+  turns: UserTurnProjection[],
+  observations: readonly LinkedProjectObservation[],
+  manualOverride?: ProjectManualOverride,
+): SessionProjection {
+  if (manualOverride) {
+    return {
+      ...session,
+      primary_project_id: manualOverride.project_id,
+    };
+  }
+
   const preferredTurn = selectPrimaryProjectTurn(turns);
-  if (!preferredTurn?.project_id) {
+  if (preferredTurn?.project_id) {
+    return {
+      ...session,
+      primary_project_id: preferredTurn.project_id,
+    };
+  }
+
+  const preferredObservation = selectPrimaryProjectObservation(observations);
+  if (!preferredObservation?.project_id) {
     return session;
   }
 
   return {
     ...session,
-    primary_project_id: preferredTurn.project_id,
+    primary_project_id: preferredObservation.project_id,
   };
+}
+
+function selectPrimaryProjectObservation(
+  observations: readonly LinkedProjectObservation[],
+): LinkedProjectObservation | undefined {
+  const linked = observations.filter((observation) => Boolean(observation.project_id));
+  if (linked.length === 0) {
+    return undefined;
+  }
+
+  const committed = linked.filter((observation) => observation.linkage_state === "committed");
+  const pool = committed.length > 0 ? committed : linked;
+  return [...pool].sort((left, right) => right.observed_at.localeCompare(left.observed_at))[0];
+}
+
+function buildDelegatedParentByChild(
+  sessions: readonly SessionProjection[],
+  relatedWork: readonly SessionRelatedWorkProjection[],
+): Map<string, string> {
+  const sessionIds = new Set(sessions.map((session) => session.id));
+  const parentByChild = new Map<string, string>();
+  const inboundChildren = new Set<string>();
+
+  for (const entry of relatedWork) {
+    if (entry.relation_kind !== "delegated_session") {
+      continue;
+    }
+    const parentId = entry.parent_session_ref;
+    const childId = entry.child_session_ref;
+    if (!parentId || !childId || parentId === childId) {
+      continue;
+    }
+    if (!sessionIds.has(parentId) || !sessionIds.has(childId)) {
+      continue;
+    }
+    if (entry.direction === "inbound") {
+      parentByChild.set(childId, parentId);
+      inboundChildren.add(childId);
+    } else if (!inboundChildren.has(childId) && !parentByChild.has(childId)) {
+      parentByChild.set(childId, parentId);
+    }
+  }
+
+  return parentByChild;
+}
+
+function resolveDelegatedInheritedProjects(
+  sessions: readonly SessionProjection[],
+  parentByChild: ReadonlyMap<string, string>,
+  projectById: ReadonlyMap<string, ProjectIdentity>,
+): Map<string, string> {
+  if (parentByChild.size === 0) {
+    return new Map();
+  }
+  const sessionById = new Map(sessions.map((session) => [session.id, session]));
+  const inherited = new Map<string, string>();
+
+  for (const session of sessions) {
+    if (session.primary_project_id) {
+      continue;
+    }
+    const visited = new Set<string>([session.id]);
+    let current = parentByChild.get(session.id);
+    while (current && !visited.has(current)) {
+      visited.add(current);
+      const ancestorProjectId = sessionById.get(current)?.primary_project_id;
+      if (ancestorProjectId && projectById.has(ancestorProjectId)) {
+        inherited.set(session.id, ancestorProjectId);
+        break;
+      }
+      current = parentByChild.get(current);
+    }
+  }
+
+  return inherited;
 }
 
 function selectObservationForTurn(

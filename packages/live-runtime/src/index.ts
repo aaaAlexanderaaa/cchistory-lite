@@ -83,6 +83,7 @@ import {
   resolveUsageTimezone,
   searchSessionsInMemory,
   searchTurnsInMemory,
+  resolveSessionTokenUsage,
   resolveTurnUsage,
   summarizeSessionUsage,
   type ProjectionAuditIssue,
@@ -619,6 +620,11 @@ export class LiveHistorySnapshot {
   getSessionUsage(sessionRef: string): SessionUsageProjection | undefined {
     const session = this.getSession(sessionRef);
     return session ? summarizeSessionUsage(this.sessionTurnBuckets().get(session.id) ?? [], session) : undefined;
+  }
+
+  getSessionTokenUsage(sessionRef: string): TurnUsageProjection | undefined {
+    const session = this.getSession(sessionRef);
+    return session ? resolveSessionTokenUsage(this.sessionTurnBuckets().get(session.id) ?? [], session) : undefined;
   }
 
   listProjectTurns(projectRef: string, options: LiveDirectoryScopeOptions = {}): UserTurnProjection[] {
@@ -1234,17 +1240,18 @@ export function buildLiveSnapshot(probe: { host: Host; sources: readonly LiveSou
       return blob ? [blob] : [];
     }),
   });
-  const linked = deriveProjectLinkSnapshot({
-    sessions,
-    turns,
-    candidates: [...candidates, ...fallbackCandidates],
-  });
   const relatedWork = probe.sources.flatMap((payload) => materializeRelatedWork(payload));
   const family = mergeSessionFamilyInventories(probe.sources.map((payload) => familyInventoryForLivePayload(payload)));
   const familyRelatedWork = [
     ...relatedWork,
-    ...listDelegatedRelationsForFamilyChildren(linked.sessions, family.children, relatedWork),
+    ...listDelegatedRelationsForFamilyChildren(sessions, family.children, relatedWork),
   ];
+  const linked = deriveProjectLinkSnapshot({
+    sessions,
+    turns,
+    candidates: [...candidates, ...fallbackCandidates],
+    related_work: familyRelatedWork,
+  });
 
   return new LiveHistorySnapshot(normalizeJsonShapeForJsonOutputMutating({
     host: probe.host,

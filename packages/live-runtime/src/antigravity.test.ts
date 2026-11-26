@@ -5,7 +5,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { compileSql, scanLiteHistory, type ScanLiteHistoryOptions } from "./index.js";
+import { UNASSIGNED_PROJECT_KEY, compileSql, scanLiteHistory, type ScanLiteHistoryOptions } from "./index.js";
 import { LiveHistoryReader } from "./history-reader.js";
 
 const fixtureRoot = fileURLToPath(new URL("../../../mock_data/fixtures/antigravity-sqlite/", import.meta.url));
@@ -97,4 +97,22 @@ test("Antigravity model rollups attribute each call and count mixed-model turns 
     assert.equal(snapshot.getUsageRollup("model", { project_id: project }).rows
       .find(row => row.key === cases.mixed_model_generation.model)?.total_tokens, cases.mixed_model_generation.total_tokens);
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Antigravity turn-less assistant and delegated sessions link to their project when workspace metadata exists", async () => {
+  const snapshot = await scanLiteHistory(options(fixtureRoot));
+  assert.deepEqual(snapshot.projectionIssues, []);
+  const parentSession = snapshot.getSession(parent);
+  const childSession = snapshot.getSession(child);
+  const assistantOnlySession = snapshot.getSession(`sess:antigravity:${cases.assistant_only_id}`);
+  assert.ok(parentSession?.primary_project_id);
+  assert.equal(childSession?.primary_project_id, parentSession.primary_project_id);
+  assert.equal(assistantOnlySession?.turn_count, 0);
+  if (assistantOnlySession?.working_directory) {
+    assert.ok(assistantOnlySession.primary_project_id, "turn-less session with cwd should resolve primary_project_id");
+    assert.equal(
+      snapshot.getUsageRollup("project").rows.find((row) => row.key === UNASSIGNED_PROJECT_KEY),
+      undefined,
+    );
+  }
 });

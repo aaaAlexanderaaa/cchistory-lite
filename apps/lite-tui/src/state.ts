@@ -457,7 +457,7 @@ export function getSearchGroups(model: LiteBrowserModel, state: LiteBrowserState
     const key = result.project?.project_id ?? "__unlinked__";
     let group = byKey.get(key);
     if (!group) {
-      group = { projectKey: key, projectName: result.project?.display_name ?? "Unlinked", results: [] };
+      group = { projectKey: key, projectName: result.project?.display_name ?? "Unassigned", results: [] };
       byKey.set(key, group);
       groups.push(group);
     }

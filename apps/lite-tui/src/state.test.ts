@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { LiveHistorySnapshot, scanLiteHistory } from "@cchistory/live-runtime";
 import { resolveLiteInputEffect } from "./input.js";
 import { LiteBrowserModel, UNLINKED_PROJECT_KEY } from "./model.js";
+import { resolveStatsViewData } from "./stats-state.js";
 import {
   clampState,
   createLiteBrowserState,
@@ -55,10 +56,20 @@ test("the model buckets project-less turns into one unlinked entry", async () =>
   const unlinked = model.projects.find((entry) => entry.key === UNLINKED_PROJECT_KEY);
   // The fixture corpus intentionally contains a candidate-only session.
   assert.ok(unlinked, "expected an unlinked bucket for candidate-only turns");
+  assert.equal(unlinked.displayName, "Unassigned");
   assert.ok(unlinked.turns.length > 0);
   assert.equal(unlinked.project, undefined);
   // Unlinked turns are excluded from the linked project count.
   assert.equal(model.counts.projects, model.projects.length - 1);
+
+  const unlinkedTurnText = unlinked.turns[0]?.turn.canonical_text.trim().split(/\s+/u).find((word) => word.length >= 4);
+  if (unlinkedTurnText) {
+    const searchState = apply(model, createLiteBrowserState(model), { type: "open-search", query: unlinkedTurnText });
+    const unlinkedGroup = getSearchGroups(model, searchState).find((group) => group.projectKey === UNLINKED_PROJECT_KEY);
+    if (unlinkedGroup) {
+      assert.equal(unlinkedGroup.projectName, "Unassigned");
+    }
+  }
 });
 
 test("focus cycles projects → turns → detail and back", async () => {
@@ -520,4 +531,65 @@ test("contextOverlay refreshes stale entries, preserves base contexts, and bound
   }
   assert.equal(model.getTurnContext(overlayTurnId), undefined);
   assert.equal(model.getTurnContext("turn:evict-69")?.assistant_replies[0]?.id, "reply-69");
+});
+
+test("top-level turn-less sessions with token usage remain visible in the session browser and open from stats", async () => {
+  const antigravityRoot = path.join(repoRoot, "mock_data", "fixtures", "antigravity-sqlite");
+  const snapshot = await scanLiteHistory({
+    homeDir: path.join(repoRoot, "mock_data", "empty-home"),
+    hostname: "cchistory-lite-tui-turnless-usage-host",
+    sourceRoots: [{ sourceRef: "antigravity", baseDir: antigravityRoot }],
+    sourceRefs: ["antigravity"],
+    safeMode: true,
+    contextMode: "none",
+  });
+  // Add an empty 0-turn, 0-usage stub session alongside the real fixture sessions to verify it stays excluded.
+  const template = snapshot.data.sessions[0]!;
+  const stubSession = {
+    ...template,
+    id: "sess:antigravity:empty-stub-no-usage",
+    source_session_id: "empty-stub-no-usage",
+    turn_count: 0,
+    usage_events: undefined,
+  };
+  const augmented = new LiveHistorySnapshot({
+    ...snapshot.data,
+    sessions: [...snapshot.data.sessions, stubSession],
+  });
+  const model = new LiteBrowserModel(augmented);
+
+  const assistantOnly = augmented.data.sessions.find(
+    (s) => s.turn_count === 0 && (s.usage_events?.length ?? 0) > 0 && augmented.listSessionRelatedWork(s.id).length === 0,
+  );
+  assert.ok(assistantOnly, "expected a turn-less top-level session with usage events in the Antigravity fixture");
+  assert.ok(
+    model.sessions.some((entry) => entry.session.id === assistantOnly.id),
+    "turn-less top-level session with usage must appear in the TUI session browser",
+  );
+  assert.equal(
+    model.sessions.some((entry) => entry.session.id === stubSession.id),
+    false,
+    "empty 0-turn session without usage or related work should stay hidden",
+  );
+
+  // Navigating from Stats -> Top Sessions -> Enter on that turn-less session opens its detail view cleanly.
+  let state = apply(
+    model,
+    createLiteBrowserState(model),
+    { type: "toggle-stats" },
+    { type: "stats-set-view", view: "sessions" },
+  );
+  const sessionRows = resolveStatsViewData(model, state.stats).sessionRows;
+  const targetIdx = sessionRows.findIndex((row) => (row.session_meta?.session_id ?? row.key) === assistantOnly.id);
+  assert.ok(targetIdx >= 0, "turn-less session with usage should appear in stats Top Sessions");
+  state = {
+    ...state,
+    stats: { ...state.stats, cursors: { ...state.stats.cursors, sessions: targetIdx } },
+  };
+  const opened = reduceLiteBrowserState(model, state, { type: "open-stats-session" });
+  assert.equal(opened.overlay, "none");
+  assert.equal(opened.browseScope, "sessions");
+  assert.equal(opened.focusPane, "detail");
+  assert.equal(model.sessions[opened.selectedSessionIndex]?.session.id, assistantOnly.id);
+  assert.equal(opened.status?.kind, "info");
 });
