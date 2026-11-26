@@ -458,3 +458,116 @@ test("TUI S:Sessions marks delegated child sessions with sub in wide Signals col
   }
   assert.doesNotMatch(narrowFrame, /\[sub\]/, "narrow layout should keep title width intact");
 });
+
+test("Trace blocks invisible E/$ edit mode and reuses cached breakdown and trace objects across moves", async () => {
+  configureColorPolicy({ color: false });
+  const claudeRoot = path.join(repoRoot, "mock_data", ".claude", "projects");
+  const snapshot = await scanLiteHistory({
+    homeDir: path.join(repoRoot, "mock_data", "empty-home"),
+    hostname: "cchistory-lite-tui-trace-cache-test",
+    sourceRefs: ["claude_code", "codex"],
+    sourceRoots: [
+      { sourceRef: "claude_code", baseDir: claudeRoot },
+      { sourceRef: "codex", baseDir: codexRoot },
+    ],
+    contextMode: "none",
+    safeMode: true,
+  });
+  const model = new LiteBrowserModel(snapshot);
+
+  const firstBreakdown = model.getUsageBreakdown();
+  const secondBreakdown = model.getUsageBreakdown();
+  assert.equal(secondBreakdown, firstBreakdown, "back-to-back live breakdown calls should reuse the cached snapshot");
+
+  let state = applyAll(
+    model,
+    createLiteBrowserState(model),
+    { type: "toggle-stats" },
+    { type: "stats-set-view", view: "anomalies" },
+    { type: "open-stats-trace" },
+  );
+  assert.equal(state.stats.view, "trace");
+  assert.ok(state.stats.traceSessionId);
+
+  const firstTrace = model.getSessionTrace({ sessionId: state.stats.traceSessionId });
+  const secondTrace = model.getSessionTrace({ sessionId: state.stats.traceSessionId });
+  assert.ok(firstTrace);
+  assert.equal(secondTrace, firstTrace, "repeated trace lookups for the same session/flags should hit cache");
+
+  const anomaliesOnlyTrace = model.getSessionTrace({
+    sessionId: state.stats.traceSessionId,
+    onlyAnomalies: true,
+  });
+  assert.notEqual(anomaliesOnlyTrace, firstTrace, "changing trace flags should bypass the previous cache entry");
+
+  // E and $ have no visible edit bar in Trace, so they must not enter editing mode.
+  assert.deepEqual(resolveLiteInputEffect(state, { input: "E", ctrl: false, shift: true }), { type: "none" });
+  assert.deepEqual(resolveLiteInputEffect(state, { input: "$", ctrl: false, shift: false }), { type: "none" });
+  assert.equal(state.stats.editing, undefined);
+
+  // Subsequent Trace controls continue working normally.
+  const toggleEffect = resolveLiteInputEffect(state, { input: "f", ctrl: false, shift: false });
+  assert.equal(toggleEffect.type, "action");
+  state = reduceLiteBrowserState(model, state, toggleEffect.action);
+  assert.equal(state.stats.traceOnlyAnomalies, true);
+});
+
+test("runLiteTui stays responsive after burst scrolling in Trace and recovers from broken CSI before Ctrl+C", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-tui-trace-burst-"));
+  try {
+    const claudeRoot = path.join(repoRoot, "mock_data", ".claude", "projects");
+    const snapshot = await scanLiteHistory({
+      homeDir: path.join(repoRoot, "mock_data", "empty-home"),
+      hostname: "cchistory-lite-tui-trace-burst-test",
+      sourceRefs: ["claude_code", "codex"],
+      sourceRoots: [
+        { sourceRef: "claude_code", baseDir: claudeRoot },
+        { sourceRef: "codex", baseDir: codexRoot },
+      ],
+      contextMode: "none",
+      safeMode: true,
+    });
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    let stage = 0;
+
+    const runPromise = runLiteTui([], {
+      cwd: tempDir,
+      homeDir: tempDir,
+      stdout: (text) => {
+        stdout.push(text);
+        const plain = stripAnsi(text);
+        if (stage === 0 && plain.includes("▸ Projects")) {
+          stage = 1;
+          input.push("ia\r");
+        } else if (stage === 1 && plain.includes("▸ Trace")) {
+          stage = 2;
+          input.push(`${"\x1b[B".repeat(50)}${"\x1b[<65;40;12M".repeat(10)}fu`);
+        } else if (stage === 2 && plain.includes("[f:AnomOnly]") && plain.includes("u:NoSub")) {
+          stage = 3;
+          // Trailing broken CSI prefix before Ctrl+C must not swallow exit.
+          input.push("\x1b[\x03");
+        }
+      },
+      stderr: (text) => stderr.push(text),
+      isInteractiveTerminal: true,
+      input,
+      output,
+      columns: 132,
+      rows: 30,
+      scan: async () => snapshot,
+    });
+
+    const exitCode = await runPromise;
+    assert.equal(exitCode, 0, stderr.join(""));
+    assert.equal(stage, 3, "expected Trace burst scroll, toggles, and Ctrl+C exit to complete");
+    const joined = stripAnsi(stdout.join(""));
+    assert.match(joined, /▸ Trace/);
+    assert.match(joined, /\[f:AnomOnly\]/);
+    assert.match(joined, /u:NoSub/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

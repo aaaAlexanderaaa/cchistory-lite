@@ -28,9 +28,16 @@ export interface LiteKey {
   shift?: boolean;
 }
 
-const CSI_FINAL = /[A-Za-z~]/u;
 /** An escape sequence longer than this is treated as noise, not a pending key. */
-const MAX_SEQUENCE_LENGTH = 16;
+const MAX_SEQUENCE_LENGTH = 20;
+
+function isCsiParamOrIntermediate(code: number): boolean {
+  return code >= 0x20 && code <= 0x3f;
+}
+
+function isCsiFinal(code: number): boolean {
+  return code >= 0x40 && code <= 0x7e;
+}
 
 export class KeyDecoder {
   private buffer = "";
@@ -56,9 +63,16 @@ export class KeyDecoder {
    * ambiguity on an idle tick.
    */
   flushPendingEscape(): LiteKey | undefined {
-    if (this.buffer !== "\x1b") return undefined;
-    this.buffer = "";
-    return { input: "", name: "escape" };
+    if (this.buffer === "\x1b") {
+      this.buffer = "";
+      return { input: "", name: "escape" };
+    }
+    // Discard an incomplete escape sequence (such as a stray CSI prefix) on
+    // idle timeout so it can never swallow subsequent key presses.
+    if (this.buffer.startsWith("\x1b")) {
+      this.buffer = "";
+    }
+    return undefined;
   }
 
   get pending(): string {
@@ -101,21 +115,38 @@ export class KeyDecoder {
     if (second === "\x1b") {
       return { consumed: 1, key: { input: "", name: "escape" } };
     }
-    if (second !== "[" && second !== "O") {
+    if (second === "O") {
+      if (buffer.length < 3) return undefined;
+      const thirdCode = buffer.charCodeAt(2);
+      // An aborted SS3 prefix followed by a control byte (such as Ctrl+C or a
+      // fresh ESC) drops the prefix and leaves the control byte intact.
+      if (thirdCode < 0x20 || thirdCode > 0x7e) {
+        return { consumed: 2 };
+      }
+      return { consumed: 3, key: decodeSequence(buffer.slice(0, 3)) };
+    }
+    if (second !== "[") {
       // ESC followed by a printable character: Alt+<key>. Ignore the modifier
       // rather than guessing; the Lite TUI binds no Alt chords.
       return { consumed: 2, key: { input: second } };
     }
 
     let index = 2;
-    while (index < buffer.length && !CSI_FINAL.test(buffer[index]!)) index += 1;
-    if (index >= buffer.length) {
-      if (buffer.length > MAX_SEQUENCE_LENGTH) return { consumed: buffer.length };
-      return undefined; // incomplete sequence, wait for more bytes
+    while (index < buffer.length) {
+      const code = buffer.charCodeAt(index);
+      if (isCsiFinal(code)) {
+        const sequence = buffer.slice(0, index + 1);
+        return { consumed: sequence.length, key: decodeSequence(sequence) };
+      }
+      if (!isCsiParamOrIntermediate(code)) {
+        // Control bytes (such as Ctrl+C or another ESC) terminate a broken CSI
+        // sequence immediately instead of being swallowed into the prefix.
+        return { consumed: index };
+      }
+      index += 1;
     }
-
-    const sequence = buffer.slice(0, index + 1);
-    return { consumed: sequence.length, key: decodeSequence(sequence) };
+    if (buffer.length > MAX_SEQUENCE_LENGTH) return { consumed: buffer.length };
+    return undefined; // incomplete sequence, wait for more bytes
   }
 }
 
@@ -156,6 +187,13 @@ function decodeSequence(sequence: string): LiteKey | undefined {
     const shift = ((Number(modified[1]) - 1) & 1) === 1;
     const name = letter === "A" ? "up" : letter === "B" ? "down" : letter === "C" ? "right" : "left";
     return { input: "", name, shift };
+  }
+  // SGR mouse wheel sequences (e.g. CSI <64;col;rowM / <65;col;rowM).
+  const sgrMouse = /^<(\d+);\d+;\d+[Mm]$/u.exec(body);
+  if (sgrMouse) {
+    const button = Number(sgrMouse[1]);
+    if (button === 64) return { input: "", name: "up" };
+    if (button === 65) return { input: "", name: "down" };
   }
   return undefined;
 }

@@ -260,8 +260,22 @@ async function runInteractive(options: InteractiveOptions): Promise<number> {
     io.stdout(`${CURSOR_HOME}${painted}${ERASE_BELOW}`);
   };
 
+  let deferNavigationPaint = false;
+  let pendingPaint = false;
+
+  const flushDeferredPaint = () => {
+    if (!pendingPaint || finished) return;
+    pendingPaint = false;
+    paint();
+  };
+
   const dispatch = (action: LiteBrowserAction) => {
     state = reduceLiteBrowserState(model, state, action);
+    if (deferNavigationPaint && isRepeatableNavigationAction(action)) {
+      pendingPaint = true;
+      return;
+    }
+    pendingPaint = false;
     paint();
   };
 
@@ -516,6 +530,12 @@ async function runInteractive(options: InteractiveOptions): Promise<number> {
 
   const handleKey = (key: LiteKey) => {
     const effect = resolveLiteInputEffect(state, key);
+    if (effect.type === "none") return;
+    if (effect.type === "action") {
+      dispatch(effect.action);
+      return;
+    }
+    flushDeferredPaint();
     if (effect.type === "exit") {
       finish();
       return;
@@ -528,10 +548,6 @@ async function runInteractive(options: InteractiveOptions): Promise<number> {
       }
       exitPrintLine = session.resume_command ?? session.id;
       finish();
-      return;
-    }
-    if (effect.type === "action") {
-      dispatch(effect.action);
       return;
     }
     if (effect.type === "refresh") {
@@ -564,11 +580,18 @@ async function runInteractive(options: InteractiveOptions): Promise<number> {
       clearTimeout(escapeTimer);
       escapeTimer = undefined;
     }
-    for (const key of decoder.push(typeof chunk === "string" ? chunk : chunk.toString("utf8"))) {
-      handleKey(key);
-      if (finished) return;
+    const keys = decoder.push(typeof chunk === "string" ? chunk : chunk.toString("utf8"));
+    deferNavigationPaint = keys.length > 1;
+    try {
+      for (const key of keys) {
+        handleKey(key);
+        if (finished) return;
+      }
+    } finally {
+      deferNavigationPaint = false;
+      flushDeferredPaint();
     }
-    if (decoder.pending === "\x1b") {
+    if (decoder.pending.startsWith("\x1b")) {
       escapeTimer = setTimeout(() => {
         const pending = decoder.flushPendingEscape();
         if (pending) handleKey(pending);
@@ -889,6 +912,16 @@ function defaultIo(): LiteTuiIo {
     input: process.stdin,
     output: process.stdout,
   };
+}
+
+function isRepeatableNavigationAction(action: LiteBrowserAction): boolean {
+  return (
+    action.type === "move-up" ||
+    action.type === "move-down" ||
+    action.type === "page-up" ||
+    action.type === "page-down" ||
+    action.type === "stats-move"
+  );
 }
 
 function errorMessage(error: unknown): string {

@@ -79,7 +79,7 @@ export function renderStatsDashboard(
   state: LiteBrowserState,
   width: number,
   contentHeight: number,
-  now: number,
+  now?: number,
 ): string[] {
   const stats = state.stats;
   const data = resolveStatsViewData(model, stats, now);
@@ -93,6 +93,8 @@ export function renderStatsDashboard(
       const diagLine = renderTuiDiagnosticsBar(data, width);
       if (diagLine) lines.push(diagLine);
     }
+    lines.push(renderFilterOrEditBar(data, stats, width));
+  } else if (stats.editing) {
     lines.push(renderFilterOrEditBar(data, stats, width));
   }
 

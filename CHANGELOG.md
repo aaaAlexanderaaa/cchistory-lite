@@ -24,6 +24,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   search groups, and turn details align on the `Unassigned` label; and
   zero-turn session detail panels display a canonical `Tokens:` breakdown when
   usage is present.
+- TUI Stats and Trace input responsiveness: cached minute-quantized live
+  `UsageBreakdownSnapshot` and `SessionTraceReport` lookups in
+  `LiteBrowserModel`, scoped `buildSessionTraceReport` extraction to the target
+  session family, memoized per-minute date formatting in
+  `extractUnfilteredUsageRows`, coalesced redundant repaints during multi-key
+  navigation bursts, blocked invisible `E`/`$` edit mode in `Trace`, and
+  hardened `KeyDecoder` so SGR mouse wheel events scroll cleanly and broken
+  escape prefixes never swallow `Ctrl+C`, `Esc`, or subsequent keys.
 
 ## [0.9.1] - 2026-11-25
 

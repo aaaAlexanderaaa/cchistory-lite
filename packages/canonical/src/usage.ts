@@ -360,6 +360,10 @@ export function extractUnfilteredUsageRows(
     return raw.replace(/\s+/gu, " ");
   };
 
+  const localPartsByMinute = new Map<number, ReturnType<typeof extractLocalTimeParts>>();
+  const rollingWeekByOffset = new Map<number, { key: string; label: string }>();
+  const rollingWindowMs = 7 * 86_400_000;
+
   const bucketTime = (isoTimestamp: string) => {
     const parsedMs = Date.parse(isoTimestamp);
     if (!Number.isFinite(parsedMs)) {
@@ -376,8 +380,25 @@ export function extractUnfilteredUsageRows(
         month: fallbackMonth,
       };
     }
-    const local = extractLocalTimeParts(parsedMs, timeZone);
-    const week = resolveWeekBucket(parsedMs, { timeZone, weekMode, weekStartDay, weekResetHour, nowMs });
+    const minuteBucket = Math.floor(parsedMs / 60_000);
+    let local = localPartsByMinute.get(minuteBucket);
+    if (!local) {
+      local = extractLocalTimeParts(parsedMs, timeZone);
+      localPartsByMinute.set(minuteBucket, local);
+    }
+    let week: { key: string; label: string };
+    if (weekMode === "rolling_7d") {
+      const offsetBuckets = Math.floor((nowMs - parsedMs) / rollingWindowMs);
+      const cachedWeek = rollingWeekByOffset.get(offsetBuckets);
+      if (cachedWeek) {
+        week = cachedWeek;
+      } else {
+        week = resolveWeekBucket(parsedMs, { timeZone, weekMode, weekStartDay, weekResetHour, nowMs });
+        rollingWeekByOffset.set(offsetBuckets, week);
+      }
+    } else {
+      week = resolveWeekBucket(parsedMs, { timeZone, weekMode, weekStartDay, weekResetHour, nowMs });
+    }
     return {
       timestamp_ms: parsedMs,
       local_hour: local.hour,

@@ -243,7 +243,7 @@ function resolveStatsInputEffect(state: LiteBrowserState, key: LiteKey): LiteInp
     case "m":
       return action({ type: "stats-toggle-view", view: "multipliers" });
     case "E":
-      return action({ type: "stats-start-edit", target: "export_path" });
+      return stats.view === "trace" ? { type: "none" } : action({ type: "stats-start-edit", target: "export_path" });
     case "t":
       return action({ type: "stats-cycle-time-preset" });
     case "b":
@@ -255,7 +255,7 @@ function resolveStatsInputEffect(state: LiteBrowserState, key: LiteKey): LiteInp
     case "c":
       return action({ type: "stats-clear-filters" });
     case "$":
-      return action({ type: "stats-start-edit", target: "quota" });
+      return stats.view === "trace" ? { type: "none" } : action({ type: "stats-start-edit", target: "quota" });
     default:
       return { type: "none" };
   }

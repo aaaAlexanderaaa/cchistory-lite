@@ -88,7 +88,14 @@ export function buildSessionTraceReport(
   }
 
   const familySessionIds = new Set<string>([targetSession.id, ...childSessionIds]);
-  const allBaseRows = extractUnfilteredUsageRows(sourceData, filters);
+  const familySessions = sessions.filter((s) => familySessionIds.has(s.id));
+  const familyTurns = sourceData.listResolvedTurns().filter((t) => familySessionIds.has(t.session_id));
+  const scopedSourceData: UsageSourceData = {
+    ...sourceData,
+    listResolvedSessions: () => familySessions,
+    listResolvedTurns: () => familyTurns,
+  };
+  const allBaseRows = extractUnfilteredUsageRows(scopedSourceData, filters);
   const familyRows = filterUsageRows(
     allBaseRows,
     { ...filters, session_ids: [...familySessionIds] },
@@ -112,9 +119,8 @@ export function buildSessionTraceReport(
     : scopeEvaluated;
 
   // Chronological turns for target session (and children when includeSubagents).
-  const allTurns = sourceData
-    .listResolvedTurns()
-    .filter((t) => (includeSubagents ? familySessionIds.has(t.session_id) : t.session_id === targetSession.id))
+  const allTurns = familyTurns
+    .filter((t) => (includeSubagents ? true : t.session_id === targetSession.id))
     .sort(compareTurnsByChronology);
   const turnIndexById = new Map<string, number>();
   const turnById = new Map<string, UserTurnProjection>();

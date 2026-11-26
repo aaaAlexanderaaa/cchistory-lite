@@ -107,6 +107,8 @@ export class LiteBrowserModel {
     (page, query) => page.results.reduce((total, row) => total + 1 + row.highlights.length * 2, Math.ceil(query.length / 128)));
   private readonly conversationSearchCache = new BoundedCache<string, LiteSearchPage>(32, 20_000,
     (page, query) => page.results.reduce((total, row) => total + 1 + row.highlights.length * 2, Math.ceil(query.length / 128)));
+  private readonly usageBreakdownCache = new BoundedCache<string, UsageBreakdownSnapshot>(24, 24, () => 1);
+  private readonly sessionTraceCache = new BoundedCache<string, { report: SessionTraceReport | undefined }>(16, 16, () => 1);
 
   constructor(
     snapshot: LiveHistorySnapshot,
@@ -304,7 +306,35 @@ export class LiteBrowserModel {
     const weekMode = options.weekMode ?? this.pricingConfig?.quota?.week_mode ?? "rolling_7d";
     const timePreset = options.timePreset ?? "all";
     const timeBucket = options.timeBucket ?? "day";
-    const nowMs = options.nowMs ?? Date.now();
+    // Quantize live interactive clocks to whole minutes so cursor moves and
+    // back-to-back reduce/render passes reuse cached breakdowns instead of
+    // re-aggregating every call on each keypress. Explicit caller `nowMs` stays exact.
+    const nowMs = options.nowMs ?? Math.floor(Date.now() / 60_000) * 60_000;
+    const matrixDimensions = options.matrixDimensions ?? ["project", "model", "source", timeBucket];
+    const sortBy = options.sortBy ?? "adjusted_cost";
+    const nowCachePart =
+      timePreset === "all" && weekMode !== "rolling_7d" && timeBucket !== "week"
+        ? ""
+        : String(nowMs);
+    const cacheKey = JSON.stringify([
+      timePreset,
+      timeBucket,
+      weekMode,
+      timeZone,
+      nowCachePart,
+      options.projectIds ?? null,
+      options.models ?? null,
+      options.sourceIds ?? null,
+      options.timeKeys ?? null,
+      matrixDimensions,
+      sortBy,
+      options.customAliases ?? null,
+      options.multiplierOverrides ?? null,
+      options.quotaUsdOverride ?? null,
+    ]);
+    const cached = this.usageBreakdownCache.get(cacheKey);
+    if (cached) return cached;
+
     const bounds = resolveTimeWindowBounds(timePreset, {
       timezone: timeZone,
       week_mode: weekMode,
@@ -341,12 +371,14 @@ export class LiteBrowserModel {
       pricing: effectivePricing,
       quota_limit_usd: resolveEffectiveQuotaLimitUsd(effectivePricing, timePreset, effectiveQuotaUsd),
     };
-    return this.snapshot.getUsageBreakdown({
+    const result = this.snapshot.getUsageBreakdown({
       filters,
       time_dimension: timeBucket,
-      matrix_dimensions: options.matrixDimensions ?? ["project", "model", "source", timeBucket],
-      sort_by: options.sortBy ?? "adjusted_cost",
+      matrix_dimensions: matrixDimensions,
+      sort_by: sortBy,
     });
+    this.usageBreakdownCache.set(cacheKey, result);
+    return result;
   }
 
   getSessionTrace(options: {
@@ -361,7 +393,23 @@ export class LiteBrowserModel {
   }): SessionTraceReport | undefined {
     const timeZone = resolveUsageTimezone(options.timezone ?? this.defaultTimezone);
     const weekMode = options.weekMode ?? this.pricingConfig?.quota?.week_mode ?? "rolling_7d";
+    const includeSubagents = options.includeSubagents ?? true;
+    const onlyAnomalies = options.onlyAnomalies ?? false;
     const effectiveQuotaUsd = options.quotaUsdOverride ?? this.quotaLimitUsd;
+    const cacheKey = JSON.stringify([
+      options.sessionId,
+      includeSubagents,
+      onlyAnomalies,
+      timeZone,
+      weekMode,
+      options.customAliases ?? null,
+      options.multiplierOverrides ?? null,
+      effectiveQuotaUsd ?? null,
+    ]);
+    const cached = this.sessionTraceCache.get(cacheKey);
+    if (cached) {
+      return cached.report;
+    }
     const effectivePricing = mergeUsagePricingConfigs(this.pricingConfig, {
       schema: "cchistory-lite-pricing/v1",
       timezone: timeZone,
@@ -372,10 +420,10 @@ export class LiteBrowserModel {
         ...(effectiveQuotaUsd !== undefined ? { custom_usd: effectiveQuotaUsd } : {}),
       },
     });
-    return this.snapshot.getSessionTrace({
+    const report = this.snapshot.getSessionTrace({
       sessionId: options.sessionId,
-      includeSubagents: options.includeSubagents ?? true,
-      onlyAnomalies: options.onlyAnomalies ?? false,
+      includeSubagents,
+      onlyAnomalies,
       limit: 1000,
       offset: 0,
       filters: {
@@ -384,6 +432,8 @@ export class LiteBrowserModel {
         pricing: effectivePricing,
       },
     });
+    this.sessionTraceCache.set(cacheKey, { report });
+    return report;
   }
 }
 

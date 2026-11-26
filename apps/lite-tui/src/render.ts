@@ -102,9 +102,10 @@ export function renderLiteFrame(
   const width = Math.max(40, dimensions.width ?? DEFAULT_WIDTH);
   const height = Math.max(CHROME_LINES + MIN_CONTENT_HEIGHT, dimensions.height ?? DEFAULT_HEIGHT);
   const now = dimensions.now ?? Date.now();
+  const statsNow = dimensions.now;
   const contentHeight = height - CHROME_LINES;
 
-  const body = renderBody(model, state, { width, contentHeight, now }, scroll);
+  const body = renderBody(model, state, { width, contentHeight, now, statsNow }, scroll);
   while (body.length < contentHeight) body.push("");
 
   const lines = [
@@ -123,6 +124,7 @@ interface BodyOptions {
   width: number;
   contentHeight: number;
   now: number;
+  statsNow?: number;
 }
 
 function renderBody(
@@ -134,7 +136,7 @@ function renderBody(
   if (state.overlay === "help") return renderHelpOverlay(options.width, options.contentHeight);
   if (state.overlay === "sources") return renderSourcesOverlay(model, options, state, scroll);
   if (state.overlay === "stats") {
-    return renderStatsDashboard(model, state, options.width, options.contentHeight, options.now);
+    return renderStatsDashboard(model, state, options.width, options.contentHeight, options.statsNow);
   }
   if (state.focusPane === "conversation") return renderConversation(model, state, options, scroll);
   return renderTwoColumn(model, state, options, scroll);

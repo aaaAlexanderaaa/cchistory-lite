@@ -72,3 +72,38 @@ test("drops an over-long unterminated escape sequence instead of stalling input"
   assert.deepEqual(decoder.push(`\x1b[${"0".repeat(20)}`), []);
   assert.equal(decoder.pending, "");
 });
+
+test("terminates broken CSI and SS3 prefixes on control bytes without swallowing Ctrl+C or Esc", () => {
+  const decoder = new KeyDecoder();
+  assert.deepEqual(decoder.push("\x1b[\x03"), [{ input: "c", ctrl: true }]);
+  assert.equal(decoder.pending, "");
+
+  assert.deepEqual(decoder.push("\x1b[1;\x03"), [{ input: "c", ctrl: true }]);
+  assert.equal(decoder.pending, "");
+
+  assert.deepEqual(decoder.push("\x1b[\x1b"), []);
+  assert.equal(decoder.pending, "\x1b");
+  assert.deepEqual(decoder.flushPendingEscape(), { input: "", name: "escape" });
+
+  assert.deepEqual(decoder.push("\x1bO\x03"), [{ input: "c", ctrl: true }]);
+  assert.equal(decoder.pending, "");
+});
+
+test("decodes SGR mouse wheel events as up/down and ignores other SGR mouse reports", () => {
+  const decoder = new KeyDecoder();
+  assert.deepEqual(decoder.push("\x1b[<64;120;40M\x1b[<65;120;40M"), [
+    { input: "", name: "up" },
+    { input: "", name: "down" },
+  ]);
+  assert.deepEqual(decoder.push("\x1b[<0;12;8M\x1b[<0;12;8m"), []);
+  assert.equal(decoder.pending, "");
+});
+
+test("flushing an incomplete multi-byte escape prefix discards it instead of keeping input wedged", () => {
+  const decoder = new KeyDecoder();
+  assert.deepEqual(decoder.push("\x1b[1;"), []);
+  assert.equal(decoder.pending, "\x1b[1;");
+  assert.equal(decoder.flushPendingEscape(), undefined);
+  assert.equal(decoder.pending, "");
+  assert.deepEqual(decoder.push("q"), [{ input: "q" }]);
+});
