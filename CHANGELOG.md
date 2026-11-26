@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-11-26
+
 ### Fixed
 
 - Project attribution for turn-less and delegated subagent sessions:
