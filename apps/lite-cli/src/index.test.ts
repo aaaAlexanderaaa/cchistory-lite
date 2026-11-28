@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import {
   FULL_SCAN_MEMORY_MULTIPLIER,
   LIGHT_SCAN_MEMORY_MULTIPLIER,
+  LIGHT_SCAN_RETAINED_MEMORY_MULTIPLIER,
   LiveHistorySnapshot,
   SCAN_GUARD_REFUSE_AVAILABLE_FRACTION,
   SCAN_GUARD_WARN_AVAILABLE_FRACTION,
@@ -1746,6 +1747,7 @@ test("Lite CLI agent prints the machine-readable contract without scanning", asy
       scan_guard: {
         kill_switch: { env: string; value: string };
         light_scan_memory_multiplier: number;
+        light_scan_retained_memory_multiplier: number;
         full_scan_memory_multiplier: number;
         warn_available_fraction: number;
         refuse_available_fraction: number;
@@ -1780,6 +1782,7 @@ test("Lite CLI agent prints the machine-readable contract without scanning", asy
   // The documented guard numbers are the runtime constants, not copies.
   const guard = contract.cost_model.scan_guard;
   assert.equal(guard.light_scan_memory_multiplier, LIGHT_SCAN_MEMORY_MULTIPLIER);
+  assert.equal(guard.light_scan_retained_memory_multiplier, LIGHT_SCAN_RETAINED_MEMORY_MULTIPLIER);
   assert.equal(guard.full_scan_memory_multiplier, FULL_SCAN_MEMORY_MULTIPLIER);
   assert.equal(guard.warn_available_fraction, SCAN_GUARD_WARN_AVAILABLE_FRACTION);
   assert.equal(guard.refuse_available_fraction, SCAN_GUARD_REFUSE_AVAILABLE_FRACTION);

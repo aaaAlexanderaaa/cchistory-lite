@@ -6,6 +6,7 @@
  */
 
 import type { CallTraceRow, SessionTraceReport, UsageToolSummary } from "@cchistory/domain";
+import { TOOL_OUTPUT_NOTABLE_BYTES } from "@cchistory/live-runtime";
 import {
   activeItem,
   activeSectionTitle,
@@ -83,7 +84,7 @@ function shortSubagentTag(
 function formatToolBrief(tool: UsageToolSummary): string {
   const target = tool.target_signature ? `(${compact(tool.target_signature, 18)})` : "";
   const err = tool.status === "error" ? danger("!") : "";
-  const out = tool.output_bytes && tool.output_bytes >= 16 * 1024 ? `[${formatBytes(tool.output_bytes)}]` : "";
+  const out = tool.output_bytes && tool.output_bytes >= TOOL_OUTPUT_NOTABLE_BYTES ? `[${formatBytes(tool.output_bytes)}]` : "";
   return `${tool.tool_name}${target}${err}${out}`;
 }
 

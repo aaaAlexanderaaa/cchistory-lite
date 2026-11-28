@@ -111,7 +111,7 @@
         },
         "scan_guard": {
           "type": "object",
-          "required": ["kill_switch", "light_scan_memory_multiplier", "full_scan_memory_multiplier", "warn_available_fraction", "refuse_available_fraction", "estimate_policy", "read_budget_policy", "lock_wait_ms", "watchdog_floor", "lock", "bypass", "error_codes"],
+          "required": ["kill_switch", "light_scan_memory_multiplier", "light_scan_retained_memory_multiplier", "full_scan_memory_multiplier", "warn_available_fraction", "refuse_available_fraction", "estimate_policy", "read_budget_policy", "lock_wait_ms", "watchdog_floor", "lock", "bypass", "error_codes"],
           "properties": {
             "kill_switch": {
               "type": "object",
@@ -123,6 +123,7 @@
               "additionalProperties": false
             },
             "light_scan_memory_multiplier": { "type": "integer", "minimum": 1 },
+            "light_scan_retained_memory_multiplier": { "type": "number", "exclusiveMinimum": 0 },
             "full_scan_memory_multiplier": { "type": "integer", "minimum": 1 },
             "warn_available_fraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
             "refuse_available_fraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },

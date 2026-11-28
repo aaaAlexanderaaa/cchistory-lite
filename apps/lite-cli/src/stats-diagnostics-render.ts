@@ -12,6 +12,10 @@ import type {
   UsageDiagnosticsReport,
 } from "@cchistory/domain";
 import {
+  CACHE_MISS_LOW_HIT_RATIO,
+  CONTEXT_BLOAT_MIN_OUTPUT_BYTES,
+} from "@cchistory/live-runtime";
+import {
   formatCacheHitText,
   formatCompactTokens as formatCompact,
   formatDurationBrief as formatDuration,
@@ -205,8 +209,8 @@ export function renderToolPatternSection(
     const minHit = styleCacheHit(formatCacheHitText(p.min_cache_hit_ratio), p.min_cache_hit_ratio, palette);
     const flags: string[] = [];
     if (p.is_loop) flags.push(palette.yellow("loop"));
-    if (p.max_output_bytes >= 32 * 1024) flags.push(palette.magenta("bloat"));
-    if (p.min_cache_hit_ratio !== null && p.min_cache_hit_ratio < 0.2) flags.push(palette.red("miss"));
+    if (p.max_output_bytes >= CONTEXT_BLOAT_MIN_OUTPUT_BYTES) flags.push(palette.magenta("bloat"));
+    if (p.min_cache_hit_ratio !== null && p.min_cache_hit_ratio < CACHE_MISS_LOW_HIT_RATIO) flags.push(palette.red("miss"));
     const flagStr = flags.length > 0 ? flags.join(",") : palette.dim("—");
     if (wide) {
       return [

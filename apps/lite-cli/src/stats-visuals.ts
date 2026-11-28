@@ -11,6 +11,10 @@ import type {
   UsageEfficiencyMetrics,
   UsageHourlyProfileCell,
 } from "@cchistory/domain";
+import {
+  AGGREGATE_CACHE_HIT_GOOD_RATIO,
+  AGGREGATE_CACHE_HIT_WARN_RATIO,
+} from "@cchistory/live-runtime";
 
 export interface StatsVisualPalette {
   useColor: boolean;
@@ -164,13 +168,13 @@ export function renderHourlyProfileLines(
 export function formatCacheHitText(ratio: number | null): string {
   if (ratio === null || !Number.isFinite(ratio)) return "—";
   const pct = `${(ratio * 100).toFixed(1)}%`;
-  return ratio < 0.4 ? `${pct}!` : pct;
+  return ratio < AGGREGATE_CACHE_HIT_WARN_RATIO ? `${pct}!` : pct;
 }
 
 export function styleCacheHit(text: string, ratio: number | null, palette: StatsVisualPalette): string {
   if (ratio === null || !Number.isFinite(ratio)) return palette.dim(text);
-  if (ratio >= 0.7) return palette.green(text);
-  if (ratio >= 0.4) return palette.yellow(text);
+  if (ratio >= AGGREGATE_CACHE_HIT_GOOD_RATIO) return palette.green(text);
+  if (ratio >= AGGREGATE_CACHE_HIT_WARN_RATIO) return palette.yellow(text);
   return palette.red(text);
 }
 

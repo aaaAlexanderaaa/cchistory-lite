@@ -1,4 +1,4 @@
-import { readBudgetedSqliteRows, type SourceReadBudget } from "../../core/read-budget.js";
+import { readBudgetedSqliteRows, SQLITE_ROW_OVERHEAD_BYTES, type SourceReadBudget } from "../../core/read-budget.js";
 import { encodeRecordValue as encodeRecord } from "../../core/decoded-record.js";
 import { DatabaseSync } from "node:sqlite";
 import { maxIso } from "@cchistory/domain";
@@ -106,9 +106,10 @@ export function* iterateZcodeSqliteSeeds(
     const partWhere = targetIds.length ? `WHERE session_id IN (${placeholders})` : "";
     // Price only the retained locator inventory. Its numeric size field needs at
     // most 24 bytes; estimating it must not evaluate every large body or sort again.
-    const inventoryAdmission = `SELECT coalesce(sum(152 + coalesce(length(CAST(${locator} AS BLOB)), 0)
+    const inventoryRowOverheadBytes = SQLITE_ROW_OVERHEAD_BYTES + 24;
+    const inventoryAdmission = `SELECT coalesce(sum(${inventoryRowOverheadBytes} + coalesce(length(CAST(${locator} AS BLOB)), 0)
       + coalesce(length(CAST(message_id AS BLOB)), 0)), 0) AS bytes FROM part ${partWhere}`;
-    const partInventory = readBudgetedSqliteRows(db, `SELECT ${locator} AS native_locator, message_id, 128 + ${lengths} AS native_bytes
+    const partInventory = readBudgetedSqliteRows(db, `SELECT ${locator} AS native_locator, message_id, ${SQLITE_ROW_OVERHEAD_BYTES} + ${lengths} AS native_bytes
       FROM part ${partWhere}
       ORDER BY session_id, time_created, id`, ["native_locator", "message_id", "native_bytes"], targetIds, budget,
     `${filePath}:part inventory`, inventoryAdmission);

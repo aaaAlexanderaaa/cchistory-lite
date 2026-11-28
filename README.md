@@ -196,6 +196,7 @@ for details; disabling the guard is not required for normal use.
 - Finite SQL, bound templates, and shell lifetime: [`docs/guide/query.md`](docs/guide/query.md)
 - CLI, flags, `--json`, `query`, from-source build: [`docs/guide/lite.md`](docs/guide/lite.md)
 - Architecture: [`ARCHITECTURE.md`](ARCHITECTURE.md)
+- Empirical constants and heuristics registry: [`docs/contracts/empirical-constants.md`](docs/contracts/empirical-constants.md)
 - Releases: [`RELEASING.md`](RELEASING.md)
 
 MIT — see [LICENSE](LICENSE).

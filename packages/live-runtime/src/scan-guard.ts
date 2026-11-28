@@ -19,11 +19,15 @@ export type ScanGuardProfile = "light" | "full";
 export type ScanGuardStatus = "ok" | "warn" | "refuse";
 
 // JS object graphs run several times larger than the raw bytes they were
-// parsed from, and even a light scan peaks during per-session parsing (the
-// probe builds full turn context before contextMode "none" discards it). A
-// full scan additionally retains every turn's context until exit. Both
-// multipliers are conservative planning heuristics, not proven allocation bounds.
+// parsed from, and even a light scan peaks during per-unit parsing (the
+// probe builds full turn context before contextMode "none" discards it).
+// Because Lite scans sources sequentially (and logical-session sources one
+// session group at a time), a light scan holds one active unit's transient
+// parsing peak (×4) plus the compacted snapshot retained from the remaining
+// units (×0.5). A full scan retains every turn's context until exit (×8).
+// Both multipliers remain conservative planning heuristics, not proven bounds.
 export const LIGHT_SCAN_MEMORY_MULTIPLIER = 4;
+export const LIGHT_SCAN_RETAINED_MEMORY_MULTIPLIER = 0.5;
 export const FULL_SCAN_MEMORY_MULTIPLIER = 8;
 
 // Preflight only warns. Per-read admission uses the smaller of system
@@ -55,14 +59,20 @@ export const SCAN_WATCHDOG_CHECK_INTERVAL_MS = 1_000;
 export interface ScanRiskRoot {
   path: string;
   bytes: number;
+  /** Largest single sequential processing unit under this root when smaller than bytes. */
+  peakUnitBytes?: number;
   slot_id?: string;
 }
 
 export interface ScanRiskAssessment {
   status: ScanGuardStatus;
-  /** The profile whose multiplier produced estimatedBytes. */
+  /** The profile whose multipliers produced estimatedBytes. */
   profile: ScanGuardProfile;
-  /** scannedBytes × the profile multiplier — the conservative peak estimate. */
+  /**
+   * Conservative peak estimate:
+   * - light: peakUnitBytes × 4 + (scannedBytes - peakUnitBytes) × 0.5
+   * - full:  scannedBytes × 8
+   */
   estimatedBytes: number;
   /** Effective admission headroom: smaller of the system estimate and V8 heap. */
   availableBytes?: number;
@@ -73,6 +83,8 @@ export interface ScanRiskAssessment {
   limitingResource?: "system" | "heap";
   /** Bytes the scan would probe under the selected roots, pre-multiplier. */
   scannedBytes: number;
+  /** Largest single sequential processing unit across selected roots, pre-multiplier. */
+  peakUnitBytes?: number;
   /** Per-root walk totals that summed to scannedBytes. */
   roots?: readonly ScanRiskRoot[];
   /**
@@ -84,7 +96,7 @@ export interface ScanRiskAssessment {
   detail: string;
 }
 
-export type AssessScanRiskRoot = string | { path: string; slot_id?: string };
+export type AssessScanRiskRoot = string | { path: string; slot_id?: string; peakUnitBytes?: number };
 
 export interface AssessScanRiskInput {
   /** Resolved adapter base dirs, after --source/--source-root selection. */
@@ -110,26 +122,43 @@ export async function assessScanRisk(
   input: AssessScanRiskInput,
   deps: AssessScanRiskDeps = {},
 ): Promise<ScanRiskAssessment> {
-  const multiplier = input.profile === "full" ? FULL_SCAN_MEMORY_MULTIPLIER : LIGHT_SCAN_MEMORY_MULTIPLIER;
   const walk = deps.walkRootBytes ?? walkRegularFileBytes;
   const normalizedRoots = input.roots.map((root) => (
     typeof root === "string" ? { path: root } : root
   ));
   const roots: ScanRiskRoot[] = [];
   let scannedBytes = 0;
+  let peakUnitBytes = 0;
   let walkFailed = false;
   for (const root of normalizedRoots) {
     try {
       const bytes = await walk(root.path, input.limitFiles, root.slot_id);
-      roots.push({ path: root.path, bytes, ...(root.slot_id ? { slot_id: root.slot_id } : {}) });
+      const rawPeak = root.peakUnitBytes;
+      const rootPeak = rawPeak !== undefined && Number.isFinite(rawPeak)
+        ? Math.max(0, Math.min(rawPeak, bytes))
+        : bytes;
+      roots.push({
+        path: root.path,
+        bytes,
+        ...(rawPeak !== undefined && rootPeak < bytes ? { peakUnitBytes: rootPeak } : {}),
+        ...(root.slot_id ? { slot_id: root.slot_id } : {}),
+      });
       scannedBytes += bytes;
+      if (rootPeak > peakUnitBytes) peakUnitBytes = rootPeak;
     } catch {
       // An incomplete walk cannot produce a sound estimate; degrade to ok.
       walkFailed = true;
       break;
     }
   }
-  const estimatedBytes = scannedBytes * multiplier;
+  const clampedPeakUnitBytes = Math.min(peakUnitBytes, scannedBytes);
+  const retainedBytes = Math.max(0, scannedBytes - clampedPeakUnitBytes);
+  const estimatedBytes = input.profile === "full"
+    ? scannedBytes * FULL_SCAN_MEMORY_MULTIPLIER
+    : Math.ceil(
+      clampedPeakUnitBytes * LIGHT_SCAN_MEMORY_MULTIPLIER
+      + retainedBytes * LIGHT_SCAN_RETAINED_MEMORY_MULTIPLIER,
+    );
   let memory: AvailableMemoryReading | { bytes?: number; source: "injected" | "unknown" };
   try {
     memory = deps.readAvailableBytes
@@ -150,6 +179,7 @@ export async function assessScanRisk(
     memorySignal: systemAvailableBytes === undefined ? "unknown" : memory.source,
     limitingResource: systemAvailableBytes === undefined || heapBytes <= systemAvailableBytes ? "heap" : "system",
     scannedBytes,
+    peakUnitBytes: clampedPeakUnitBytes,
     roots,
     ...(input.directoryScoped ? { directoryScoped: true } : {}),
   } as const;
@@ -544,13 +574,29 @@ export function formatScanGuardBytes(bytes: number): string {
   return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
 }
 
+function formatScanEstimateBasis(assessment: ScanRiskAssessment | undefined): string {
+  const profile = assessment?.profile ?? "light";
+  const scanned = assessment?.scannedBytes ?? 0;
+  if (
+    profile === "light"
+    && assessment?.peakUnitBytes !== undefined
+    && assessment.peakUnitBytes < scanned
+  ) {
+    const retained = Math.max(0, scanned - assessment.peakUnitBytes);
+    return `${profile} scan of ${formatScanGuardBytes(scanned)} source bytes: ` +
+      `${formatScanGuardBytes(assessment.peakUnitBytes)} peak unit ×${LIGHT_SCAN_MEMORY_MULTIPLIER} + ` +
+      `${formatScanGuardBytes(retained)} retained ×${LIGHT_SCAN_RETAINED_MEMORY_MULTIPLIER}`;
+  }
+  const multiplier = profile === "full" ? FULL_SCAN_MEMORY_MULTIPLIER : LIGHT_SCAN_MEMORY_MULTIPLIER;
+  return `${profile} scan of ${formatScanGuardBytes(scanned)} source bytes, ×${multiplier}`;
+}
+
 export function formatScanGuardWarning(assessment: ScanRiskAssessment): string {
   const available = assessment.availableBytes === undefined
     ? "an unknown amount of"
     : formatScanGuardBytes(assessment.availableBytes);
-  const multiplier = assessment.profile === "full" ? FULL_SCAN_MEMORY_MULTIPLIER : LIGHT_SCAN_MEMORY_MULTIPLIER;
   return `Scan guard warning: estimated peak memory ${formatScanGuardBytes(assessment.estimatedBytes)} ` +
-    `(${assessment.profile} scan of ${formatScanGuardBytes(assessment.scannedBytes)} source bytes, ×${multiplier}) ` +
+    `(${formatScanEstimateBasis(assessment)}) ` +
     `exceeds 50% of the ${available} admission headroom; proceeding. ${formatMemorySignals(assessment)}`;
 }
 
@@ -571,7 +617,6 @@ function buildRefusalMessage(init: {
       `Wait for that scan to finish, or reuse its \`shell\` / \`query\` session.`;
   }
   const assessment = init.assessment;
-  const multiplier = assessment?.profile === "full" ? FULL_SCAN_MEMORY_MULTIPLIER : LIGHT_SCAN_MEMORY_MULTIPLIER;
   const available = assessment?.availableBytes === undefined
     ? "unknown"
     : formatScanGuardBytes(assessment.availableBytes);
@@ -579,7 +624,7 @@ function buildRefusalMessage(init: {
     ? "--dir already limited this estimate to files that may match that working directory."
     : "--dir also bounds the estimate when a collection command uses it; this scan has no --dir filter.";
   return `Refusing to scan: estimated peak memory ${formatScanGuardBytes(assessment?.estimatedBytes ?? 0)} ` +
-    `(${assessment?.profile ?? "light"} scan of ${formatScanGuardBytes(assessment?.scannedBytes ?? 0)} source bytes, ×${multiplier}) ` +
+    `(${formatScanEstimateBasis(assessment)}) ` +
     `exceeds 75% of the ${available} admission headroom. ${formatMemorySignals(assessment)}` +
     `${formatSelectedSourceRoots(assessment)} ` +
     `${directoryNote} ` +

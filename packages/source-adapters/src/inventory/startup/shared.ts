@@ -47,10 +47,15 @@ export function createReadTracker(client: AgentInventoryClient): StartupReadTrac
   return { client, filesRead: [], seenFiles: new Set(), diagnostics: [] };
 }
 
-export function estimateTokens(bytes: number): number {
-  if (!Number.isFinite(bytes) || bytes <= 0) return 0;
-  return Math.ceil(bytes / 4);
-}
+export {
+  ASCII_CHARS_PER_TOKEN,
+  CJK_TOKENS_PER_CHAR_BY_PROFILE,
+  OTHER_NON_ASCII_TOKENS_PER_CHAR,
+  estimateTextTokens,
+  estimateTokens,
+  sliceUtf8Prefix,
+  type TokenEstimatorProfile,
+} from "./token-estimate.js";
 
 export async function resolveOfflineGitRoot(projectDir: string | null): Promise<string | null> {
   if (!projectDir || !(await pathExists(projectDir))) return null;

@@ -11,6 +11,7 @@ import type {
   UsageToolSummary,
 } from "@cchistory/domain";
 import {
+  TOOL_OUTPUT_NOTABLE_BYTES,
   resolveUsageTimezone,
   type LiveHistorySnapshot,
   type UsageFilters,
@@ -293,7 +294,7 @@ export function renderTraceReport(
     }
     const nonLoopTools = trace.tool_patterns.filter((p) => !p.is_loop).slice(0, 5);
     for (const tool of nonLoopTools) {
-      const outTag = tool.max_output_bytes >= 16 * 1024 ? ` · maxOut ${formatBytes(tool.max_output_bytes)}` : "";
+      const outTag = tool.max_output_bytes >= TOOL_OUTPUT_NOTABLE_BYTES ? ` · maxOut ${formatBytes(tool.max_output_bytes)}` : "";
       const errTag = tool.error_count > 0 ? ` · ${palette.red(`${tool.error_count}err`)}` : "";
       lines.push(
         `  - ${tool.tool_name}("${tool.target_signature}") ×${tool.exec_count}${errTag}${outTag} · ${tool.attributed_call_count} calls · ${formatCompact(tool.attributed_tokens)} tok · ${formatVisualUsd(tool.attributed_cost_usd)} · minHit ${formatCacheHitText(tool.min_cache_hit_ratio)}`,
@@ -453,7 +454,7 @@ function formatCallAnnotation(
 function formatShortTool(tool: UsageToolSummary, palette: StatsVisualPalette): string {
   const target = tool.target_signature ? `(${tool.target_signature.slice(0, 24)})` : "";
   const err = tool.status === "error" ? palette.red("!") : "";
-  const out = tool.output_bytes && tool.output_bytes >= 16 * 1024 ? `[${formatBytes(tool.output_bytes)}]` : "";
+  const out = tool.output_bytes && tool.output_bytes >= TOOL_OUTPUT_NOTABLE_BYTES ? `[${formatBytes(tool.output_bytes)}]` : "";
   return `${tool.tool_name}${target}${err}${out}`;
 }
 

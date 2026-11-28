@@ -125,6 +125,7 @@ export {
   FULL_SCAN_MEMORY_MULTIPLIER,
   isScanGuardEnabled,
   LIGHT_SCAN_MEMORY_MULTIPLIER,
+  LIGHT_SCAN_RETAINED_MEMORY_MULTIPLIER,
   SCAN_GUARD_REFUSE_AVAILABLE_FRACTION,
   SCAN_GUARD_WARN_AVAILABLE_FRACTION,
   SCAN_WATCHDOG_MAX_RESERVE_BYTES,
@@ -1073,7 +1074,14 @@ async function beginScanGuard(
     });
     const assessment = await assessScanRisk(
       {
-        roots: sources.map((source) => ({ path: source.base_dir, slot_id: source.slot_id })),
+        roots: sources.map((source) => {
+          const plan = prepared.get(source.slot_id);
+          return {
+            path: source.base_dir,
+            slot_id: source.slot_id,
+            ...(plan ? { peakUnitBytes: computePlanPeakUnitBytes(plan) } : {}),
+          };
+        }),
         limitFiles: scanOptions.limitFiles,
         profile: request.profile,
         ...(directoryScoped ? { directoryScoped: true } : {}),
@@ -1282,6 +1290,31 @@ interface PreparedSourceScan {
   selectSessionFiles?: boolean;
   groups?: readonly LogicalSessionScanGroup[];
   fallbackFiles?: readonly string[];
+}
+
+function computePlanPeakUnitBytes(plan: PreparedSourceScan): number {
+  if (!plan.groups || plan.groups.length === 0) return plan.readPlan.bytes;
+  let maxGroupBytes = 0;
+  for (const group of plan.groups) {
+    const evidence = new Set<string>();
+    for (const rawFile of group.files) {
+      const file = path.normalize(rawFile);
+      evidence.add(file);
+      for (const companion of plan.readPlan.companions[file] ?? []) {
+        evidence.add(companion);
+      }
+      for (const suffix of ["-wal", "-shm"]) {
+        const sidecar = `${file}${suffix}`;
+        if (sidecar in plan.readPlan.versions) evidence.add(sidecar);
+      }
+    }
+    let groupBytes = 0;
+    for (const entry of evidence) {
+      groupBytes += plan.readPlan.versions[entry]?.size ?? 0;
+    }
+    if (groupBytes > maxGroupBytes) maxGroupBytes = groupBytes;
+  }
+  return Math.min(maxGroupBytes, plan.readPlan.bytes);
 }
 
 type GetSourceScanPlan = (source: SourceDefinition, options: ScanLiteHistoryOptions) => Promise<PreparedSourceScan>;
@@ -1632,6 +1665,7 @@ async function scanLogicalSessionGroups(
 
   if (requiresSourceCollector) {
     plan.readPlan = await sourceAdapters.createSourceFileReadPlan(source, plan.fallbackFiles!, options.safeMode ?? false);
+    plan.groups = undefined;
     await assessExpandedPlan();
     if (selection) selection.stopped = false;
     if (work) work.fallbackReason = "duplicate_identity";
@@ -2334,6 +2368,16 @@ export {
   computeQuotaPace,
   densifyHourOfDayRollupRows,
   densifyShortHourlyRollupRows,
+  AGGREGATE_CACHE_HIT_GOOD_RATIO,
+  AGGREGATE_CACHE_HIT_WARN_RATIO,
+  CACHE_MISS_LOW_HIT_RATIO,
+  CALL_CACHE_HIT_DEGRADED_RATIO,
+  CALL_CACHE_HIT_HEALTHY_RATIO,
+  CONTEXT_BLOAT_MIN_OUTPUT_BYTES,
+  DEEPSEEK_DISK_CACHE_IDLE_GAP_MS,
+  DEFAULT_IDLE_TTL_GAP_MS,
+  TOOL_OUTPUT_NOTABLE_BYTES,
+  resolveProviderIdleTtlGapMs,
 } from "@cchistory/canonical";
 export type {
   DenseTimePoint,

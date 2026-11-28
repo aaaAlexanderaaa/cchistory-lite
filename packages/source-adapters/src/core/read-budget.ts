@@ -13,6 +13,9 @@ export class SourceReadBudgetExceededError extends Error {
   }
 }
 
+/** Fixed per-row JS object allowance used by SQLite pre-retrieval byte admission. */
+export const SQLITE_ROW_OVERHEAD_BYTES = 128;
+
 /**
  * Read value lengths inside SQLite before crossing into JS. The caller owns a read
  * transaction so admission and retrieval see the same rows. The fixed per-row
@@ -27,7 +30,7 @@ export function readBudgetedSqliteRows(
 ): Record<string, SQLOutputValue>[] {
   if (budget) {
     const lengths = columns.map(column => `coalesce(length(CAST("${column.replaceAll('"', '""')}" AS BLOB)), 0)`).join(" + ");
-    const size = db.prepare(admissionQuery ?? `SELECT coalesce(sum(128 + ${lengths}), 0) AS bytes FROM (${query})`).get(...params);
+    const size = db.prepare(admissionQuery ?? `SELECT coalesce(sum(${SQLITE_ROW_OVERHEAD_BYTES} + ${lengths}), 0) AS bytes FROM (${query})`).get(...params);
     budget.admit(Number(size?.bytes), unit);
   }
   // Admission bounds the retained rows; iterate avoids a second all()-allocated array.

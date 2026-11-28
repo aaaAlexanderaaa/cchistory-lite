@@ -25,11 +25,37 @@ import {
   type ResolvedModelPricing,
 } from "./usage-pricing.js";
 
-const IDLE_TTL_GAP_MS = 5 * 60 * 1_000;
+/** Per-call warm cache hit ratio buckets. */
+export const CALL_CACHE_HIT_HEALTHY_RATIO = 0.9;
+export const CALL_CACHE_HIT_DEGRADED_RATIO = 0.5;
+/** Context drop heuristic when a native compaction event is absent. */
+export const COMPACTION_DROP_MIN_CONTEXT_TOKENS = 20_000;
+export const COMPACTION_DROP_MAX_RETAINED_RATIO = 0.65;
+/**
+ * Default idle gap threshold for attributing an observed cache miss to TTL expiry.
+ * Matches Anthropic's 5-minute default ephemeral TTL and the start of OpenAI's
+ * documented 5–10 minute inactivity eviction window.
+ */
+export const DEFAULT_IDLE_TTL_GAP_MS = 5 * 60 * 1_000;
+/**
+ * DeepSeek uses disk-backed cluster KV caching that persists hours to days under
+ * LRU eviction rather than expiring after 5 minutes of inactivity.
+ */
+export const DEEPSEEK_DISK_CACHE_IDLE_GAP_MS = 60 * 60 * 1_000;
+
+export function resolveProviderIdleTtlGapMs(provider: string | undefined, model: string): number {
+  const normProvider = provider?.trim().toLowerCase() ?? "";
+  const normModel = model.trim().toLowerCase();
+  if (normProvider === "deepseek" || normModel.includes("deepseek")) {
+    return DEEPSEEK_DISK_CACHE_IDLE_GAP_MS;
+  }
+  return DEFAULT_IDLE_TTL_GAP_MS;
+}
 
 export interface EvaluatedUsageRow {
   rowIndex: number;
   row: UsageAggregationRow;
+  provider?: string;
   listCostUsd: number;
   adjustedCostUsd: number;
   highContextTier: boolean;
@@ -130,6 +156,7 @@ export function evaluateUsageRowsForDiagnostics(
     return {
       rowIndex,
       row,
+      provider: resolved.provider,
       listCostUsd: cost.list_cost_usd,
       adjustedCostUsd: cost.adjusted_cost_usd,
       highContextTier: (cost.high_context_call_count ?? 0) > 0,
@@ -176,11 +203,11 @@ export function evaluateUsageRowsForDiagnostics(
       if (cur.totalInputTokens === 0) {
         cur.cacheStatus = "no_input";
       } else if (!prev) {
-        cur.cacheStatus = cur.cacheHitRatio !== null && cur.cacheHitRatio >= 0.5 ? "hit" : "cold_start";
+        cur.cacheStatus = cur.cacheHitRatio !== null && cur.cacheHitRatio >= CALL_CACHE_HIT_DEGRADED_RATIO ? "hit" : "cold_start";
         if (cur.cacheStatus === "cold_start") cur.missCause = "cold_start";
-      } else if (cur.cacheHitRatio !== null && cur.cacheHitRatio >= 0.9) {
+      } else if (cur.cacheHitRatio !== null && cur.cacheHitRatio >= CALL_CACHE_HIT_HEALTHY_RATIO) {
         cur.cacheStatus = "hit";
-      } else if (cur.cacheHitRatio !== null && cur.cacheHitRatio >= 0.5) {
+      } else if (cur.cacheHitRatio !== null && cur.cacheHitRatio >= CALL_CACHE_HIT_DEGRADED_RATIO) {
         cur.cacheStatus = "degraded";
       } else {
         cur.cacheStatus = "miss";
@@ -196,13 +223,16 @@ export function evaluateUsageRowsForDiagnostics(
 
 function classifyCacheMissCause(prev: EvaluatedUsageRow, cur: EvaluatedUsageRow): CacheMissCause {
   if (cur.row.compaction_before) return "compaction";
-  if (prev.contextInputTokens >= 20_000 && cur.contextInputTokens <= prev.contextInputTokens * 0.65) {
+  if (
+    prev.contextInputTokens >= COMPACTION_DROP_MIN_CONTEXT_TOKENS &&
+    cur.contextInputTokens <= prev.contextInputTokens * COMPACTION_DROP_MAX_RETAINED_RATIO
+  ) {
     return "compaction";
   }
   if (prev.row.model !== "unknown" && cur.row.model !== "unknown" && prev.row.model !== cur.row.model) {
     return "model_switch";
   }
-  if (cur.gapMs !== null && cur.gapMs >= IDLE_TTL_GAP_MS) {
+  if (cur.gapMs !== null && cur.gapMs >= resolveProviderIdleTtlGapMs(cur.provider, cur.row.model)) {
     return "idle_ttl_gap";
   }
   return "prefix_invalidation";
@@ -235,7 +265,11 @@ export function computeCacheHitDistribution(evaluated: readonly EvaluatedUsageRo
     evaluatedCount += 1;
     totalCost += item.adjustedCostUsd;
     const key =
-      item.cacheHitRatio >= 0.9 ? "healthy" : item.cacheHitRatio >= 0.5 ? "degraded" : "cold_or_miss";
+      item.cacheHitRatio >= CALL_CACHE_HIT_HEALTHY_RATIO
+        ? "healthy"
+        : item.cacheHitRatio >= CALL_CACHE_HIT_DEGRADED_RATIO
+          ? "degraded"
+          : "cold_or_miss";
     const bucket = buckets[key];
     bucket.count += 1;
     if (item.row.cache_read_input_tokens === 0) bucket.zeroCount += 1;

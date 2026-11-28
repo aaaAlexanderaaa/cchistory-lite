@@ -27,20 +27,33 @@ import {
 import { computeToolPatternsAndLoops } from "./usage-tool-patterns.js";
 
 export {
+  CALL_CACHE_HIT_DEGRADED_RATIO,
+  CALL_CACHE_HIT_HEALTHY_RATIO,
+  COMPACTION_DROP_MAX_RETAINED_RATIO,
+  COMPACTION_DROP_MIN_CONTEXT_TOKENS,
+  DEEPSEEK_DISK_CACHE_IDLE_GAP_MS,
+  DEFAULT_IDLE_TTL_GAP_MS,
   buildDelegationIndex,
   computeCacheHitDistribution,
   computeFamilyUsageRows,
   computeUsageRoleSplit,
   evaluateUsageRowsForDiagnostics,
+  resolveProviderIdleTtlGapMs,
   type DelegationIndex,
   type EvaluatedUsageRow,
 } from "./usage-call-evaluation.js";
 export { computeToolPatternsAndLoops } from "./usage-tool-patterns.js";
 
-const CACHE_MISS_MIN_CONTEXT = 10_000;
-const CONTEXT_BLOAT_MIN_DELTA = 20_000;
-const CONTEXT_BLOAT_MIN_OUTPUT_BYTES = 32 * 1024;
-const CONTEXT_BLOAT_LARGE_OUTPUT_BYTES = 64 * 1024;
+/** Single-source diagnostic thresholds shared with CLI and TUI surfaces. */
+export const CACHE_MISS_LOW_HIT_RATIO = 0.2;
+export const CACHE_MISS_MIN_CONTEXT = 10_000;
+export const CONTEXT_BLOAT_MIN_DELTA = 20_000;
+export const CONTEXT_BLOAT_MIN_OUTPUT_BYTES = 32 * 1024;
+export const CONTEXT_BLOAT_LARGE_OUTPUT_BYTES = 64 * 1024;
+export const TOOL_OUTPUT_NOTABLE_BYTES = 16 * 1024;
+/** Aggregate session/day/rollup cache-hit display bands (averages sit lower than warm per-call ≥90%). */
+export const AGGREGATE_CACHE_HIT_GOOD_RATIO = 0.7;
+export const AGGREGATE_CACHE_HIT_WARN_RATIO = 0.4;
 
 export function detectUsageAnomalies(params: {
   evaluated: readonly EvaluatedUsageRow[];
@@ -115,7 +128,7 @@ export function detectUsageAnomalies(params: {
         prev &&
         cur.cacheStatus === "miss" &&
         cur.cacheHitRatio !== null &&
-        cur.cacheHitRatio < 0.2 &&
+        cur.cacheHitRatio < CACHE_MISS_LOW_HIT_RATIO &&
         (prev.contextInputTokens >= CACHE_MISS_MIN_CONTEXT || cur.totalInputTokens >= CACHE_MISS_MIN_CONTEXT) &&
         (prev.cacheHitRatio === null || prev.cacheHitRatio >= 0.5 || cur.row.input_tokens + cur.row.cache_creation_input_tokens >= CACHE_MISS_MIN_CONTEXT)
       ) {
@@ -133,7 +146,7 @@ export function detectUsageAnomalies(params: {
                 ? `compaction ${formatTokBrief(prev.contextInputTokens)} → ${formatTokBrief(cur.contextInputTokens)}`
                 : `prefix invalidation (${formatDurationBrief(cur.gapMs ?? 0)} gap, same model)`;
         const hitTransition =
-          prev.cacheHitRatio !== null && prev.cacheHitRatio < 0.2
+          prev.cacheHitRatio !== null && prev.cacheHitRatio < CACHE_MISS_LOW_HIT_RATIO
             ? `hit ${curHitPct} (still cold)`
             : `hit ${prevHitPct}→${curHitPct}`;
         anomalies.push({

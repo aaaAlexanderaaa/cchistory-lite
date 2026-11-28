@@ -9,6 +9,11 @@ import type {
   UserTurnProjection,
 } from "@cchistory/domain";
 import { normalizeToolTargetSignature } from "./tool-call-summary.js";
+import {
+  DEEPSEEK_DISK_CACHE_IDLE_GAP_MS,
+  DEFAULT_IDLE_TTL_GAP_MS,
+  resolveProviderIdleTtlGapMs,
+} from "./usage-call-evaluation.js";
 import { computeUsageBreakdown } from "./usage-breakdown.js";
 import { buildSessionTraceReport } from "./usage-trace.js";
 
@@ -454,4 +459,66 @@ test("usage_scope separates session aggregates from turn-less per-call events wi
 
   const childTrace = buildSessionTraceReport(sourceData, { sessionId: codexChildId, filters: { timezone: "UTC" } });
   assert.equal(childTrace?.usage_granularity, "call", "turn-less per-call sessions remain call-granular");
+});
+
+test("provider idle TTL distinguishes DeepSeek disk-backed cache from 5-minute ephemeral caches", () => {
+  assert.equal(resolveProviderIdleTtlGapMs("anthropic", "claude-sonnet-4-5"), DEFAULT_IDLE_TTL_GAP_MS);
+  assert.equal(resolveProviderIdleTtlGapMs("openai", "gpt-5"), DEFAULT_IDLE_TTL_GAP_MS);
+  assert.equal(resolveProviderIdleTtlGapMs("deepseek", "deepseek-chat"), DEEPSEEK_DISK_CACHE_IDLE_GAP_MS);
+  assert.equal(resolveProviderIdleTtlGapMs(undefined, "deepseek-v3.2"), DEEPSEEK_DISK_CACHE_IDLE_GAP_MS);
+
+  const sessionId = "sess:deepseek_harness:ttl-check";
+  const turn = makeTurn("turn-dsh", sessionId, "2026-11-20T14:00:00.000Z", "Check cache TTL", 0);
+  const session: SessionProjection = {
+    id: sessionId,
+    source_id: "src-claude",
+    source_platform: "deepseek_harness",
+    host_id: "host-1",
+    title: "DeepSeek TTL check",
+    created_at: "2026-11-20T14:00:00.000Z",
+    updated_at: "2026-11-20T15:20:00.000Z",
+    turn_count: 1,
+    sync_axis: "current",
+    usage_events: [
+      {
+        id: "d1",
+        seq: 1,
+        turn_id: "turn-dsh",
+        created_at: "2026-11-20T14:00:00.000Z",
+        model: "deepseek-chat",
+        token_usage: { input_tokens: 20_000, cache_read_input_tokens: 0, output_tokens: 200, total_tokens: 20_200 },
+      },
+      // 10m later: miss on DeepSeek is NOT a 5m TTL expiration -> prefix_invalidation.
+      {
+        id: "d2",
+        seq: 2,
+        turn_id: "turn-dsh",
+        created_at: "2026-11-20T14:10:00.000Z",
+        model: "deepseek-chat",
+        token_usage: { input_tokens: 21_000, cache_read_input_tokens: 0, output_tokens: 200, total_tokens: 21_200 },
+      },
+      // 65m later: exceeds DeepSeek 60m threshold -> idle_ttl_gap.
+      {
+        id: "d3",
+        seq: 3,
+        turn_id: "turn-dsh",
+        created_at: "2026-11-20T15:15:00.000Z",
+        model: "deepseek-chat",
+        token_usage: { input_tokens: 22_000, cache_read_input_tokens: 0, output_tokens: 200, total_tokens: 22_200 },
+      },
+    ],
+  };
+
+  const trace = buildSessionTraceReport(
+    {
+      listResolvedTurns: () => [turn],
+      listResolvedSessions: () => [session],
+      listSources: () => [makeSource()],
+      listProjects: () => [makeProject()],
+    },
+    { sessionId, filters: { timezone: "UTC" } },
+  );
+  assert.ok(trace);
+  assert.equal(trace.calls.find((c) => c.seq === 2)?.miss_cause, "prefix_invalidation");
+  assert.equal(trace.calls.find((c) => c.seq === 3)?.miss_cause, "idle_ttl_gap");
 });

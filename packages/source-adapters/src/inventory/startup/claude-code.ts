@@ -32,7 +32,6 @@ import {
   asRecord,
   buildRedactedMcpEntry,
   createReadTracker,
-  estimateTokens,
   listSkillEntriesInDir,
   normalizeComparablePath,
   readTrackedJsonObject,
@@ -320,21 +319,27 @@ export async function resolveClaudeCodeStartup(
 
   // 7. Startup context footprint
   let alwaysBytes = 0;
+  let alwaysEstimatedTokens = 0;
   let resolvedImports = 0;
   let missingImports = 0;
   for (const entry of claudeMdChain) {
     alwaysBytes += entry.size_bytes;
+    alwaysEstimatedTokens += entry.estimated_tokens;
     for (const imp of entry.imports) {
       if (imp.exists && !imp.cycle) {
         resolvedImports += 1;
         alwaysBytes += imp.size_bytes ?? 0;
+        alwaysEstimatedTokens += imp.estimated_tokens ?? 0;
       } else if (!imp.exists) {
         missingImports += 1;
       }
     }
   }
   const alwaysRules = rules.filter((r) => r.mode === "always");
-  for (const r of alwaysRules) alwaysBytes += r.size_bytes;
+  for (const r of alwaysRules) {
+    alwaysBytes += r.size_bytes;
+    alwaysEstimatedTokens += r.estimated_tokens;
+  }
 
   const native: ClaudeCodeStartupContext = {
     client: "claude_code",
@@ -359,7 +364,7 @@ export async function resolveClaudeCodeStartup(
     hooks,
     startup_footprint: {
       always_loaded_bytes: alwaysBytes,
-      always_loaded_estimated_tokens: estimateTokens(alwaysBytes),
+      always_loaded_estimated_tokens: alwaysEstimatedTokens,
       claude_md_count: claudeMdChain.length,
       resolved_import_count: resolvedImports,
       missing_import_count: missingImports,

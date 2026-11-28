@@ -11,7 +11,10 @@ import {
   createScanWatchdog,
   defaultScanLockPath,
   formatScanGuardBytes,
+  formatScanGuardWarning,
   isScanGuardEnabled,
+  LIGHT_SCAN_MEMORY_MULTIPLIER,
+  LIGHT_SCAN_RETAINED_MEMORY_MULTIPLIER,
   readAvailableMemoryBytes,
   scanLiteHistory,
   ScanGuardAbortedError,
@@ -84,14 +87,69 @@ test("scan guard assessment records per-root bytes and slot labels", async () =>
   ]);
 });
 
-test("scan guard multiplier: full scans estimate 8×, light scans 4×", async () => {
+test("scan guard multiplier: single-unit light scans estimate 4× and full scans 8×", async () => {
   const deps = { walkRootBytes: async () => 100, readAvailableBytes: () => 1024 };
   const light = await assessScanRisk({ roots: ["/root"], profile: "light" }, deps);
   assert.equal(light.estimatedBytes, 400);
+  assert.equal(light.peakUnitBytes, 100);
   assert.equal(light.status, "ok");
   const full = await assessScanRisk({ roots: ["/root"], profile: "full" }, deps);
   assert.equal(full.estimatedBytes, 800);
   assert.equal(full.status, "warn");
+});
+
+test("scan guard light estimate splits sequential peak unit (×4) from compacted retained bytes (×0.5)", async () => {
+  const multiRoot = await assessScanRisk(
+    {
+      roots: [
+        { path: "/codex", slot_id: "codex", peakUnitBytes: 20 * MIB },
+        { path: "/zcode", slot_id: "zcode" },
+      ],
+      profile: "light",
+    },
+    {
+      walkRootBytes: async (root) => (root === "/codex" ? 200 * MIB : 100 * MIB),
+      readAvailableBytes: () => 2 * GIB,
+      readHeapBytes: () => 4 * GIB,
+    },
+  );
+  // Sequential sources: largest unit is /zcode (100 MiB), remaining 200 MiB are compacted at ×0.5.
+  assert.equal(multiRoot.scannedBytes, 300 * MIB);
+  assert.equal(multiRoot.peakUnitBytes, 100 * MIB);
+  assert.equal(
+    multiRoot.estimatedBytes,
+    Math.ceil(100 * MIB * LIGHT_SCAN_MEMORY_MULTIPLIER + 200 * MIB * LIGHT_SCAN_RETAINED_MEMORY_MULTIPLIER),
+  );
+  assert.equal(multiRoot.status, "ok");
+  assert.equal(multiRoot.roots?.[0]?.peakUnitBytes, 20 * MIB);
+  assert.equal(multiRoot.roots?.[1]?.peakUnitBytes, undefined);
+
+  const groupedWarn = await assessScanRisk(
+    { roots: [{ path: "/codex", slot_id: "codex", peakUnitBytes: 25 * MIB }], profile: "light" },
+    {
+      walkRootBytes: async () => 1000 * MIB,
+      readAvailableBytes: () => 1024 * MIB,
+      readHeapBytes: () => 4 * GIB,
+    },
+  );
+  // 25 MiB × 4 + 975 MiB × 0.5 = 587.5 MiB > 50% of 1024 MiB, far below naive 4000 MiB.
+  assert.equal(groupedWarn.peakUnitBytes, 25 * MIB);
+  assert.equal(groupedWarn.estimatedBytes, Math.ceil(25 * MIB * 4 + 975 * MIB * 0.5));
+  assert.equal(groupedWarn.status, "warn");
+  const warning = formatScanGuardWarning(groupedWarn);
+  assert.match(warning, /25\.0 MiB peak unit ×4 \+ 975 MiB retained ×0\.5/);
+
+  // Full scans retain every turn context until exit, so the full ×8 multiplier still applies.
+  const fullGrouped = await assessScanRisk(
+    { roots: [{ path: "/codex", slot_id: "codex", peakUnitBytes: 25 * MIB }], profile: "full" },
+    {
+      walkRootBytes: async () => 1000 * MIB,
+      readAvailableBytes: () => 1024 * MIB,
+      readHeapBytes: () => 4 * GIB,
+    },
+  );
+  assert.equal(fullGrouped.estimatedBytes, 1000 * MIB * 8);
+  assert.match(formatScanGuardWarning(fullGrouped), /full scan of 1000 MiB source bytes, ×8/);
 });
 
 test("scan estimates distinguish adapter slots sharing the same root", async () => {
@@ -945,6 +1003,55 @@ test("process available memory wins over host totals and preserves actual exhaus
   for (const available of [0, 128 * MIB]) {
     assert.equal(readAvailableMemoryBytes({ totalmem: () => 64 * GIB, availableMemory: () => available, platform: "linux",
       constrainedMemory: () => GIB, readMeminfo: () => "MemAvailable: 16777216 kB\n", freemem: () => 16 * GIB }), available);
+  }
+});
+
+test("logical-session Codex light scans estimate peak from the largest session group plus retained bytes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-group-estimate-"));
+  try {
+    const sessions = path.join(root, "sessions");
+    await mkdir(sessions);
+    const small = path.join(sessions, "small.jsonl");
+    const large = path.join(sessions, "large.jsonl");
+    await cp(path.join(mockDataRoot, "fixtures/source-shapes/codex/ordinary-fork.jsonl"), small);
+    await cp(path.join(codexRoot, "2026/04/12/rollout-2026-04-12T09-00-00-codex-delegation-parent.jsonl"), large);
+    const smallBytes = (await stat(small)).size;
+    const largeBytes = (await stat(large)).size;
+    const totalBytes = smallBytes + largeBytes;
+    const expectedPeakUnit = Math.max(smallBytes, largeBytes);
+    const expectedEstimate = Math.ceil(
+      expectedPeakUnit * LIGHT_SCAN_MEMORY_MULTIPLIER
+      + (totalBytes - expectedPeakUnit) * LIGHT_SCAN_RETAINED_MEMORY_MULTIPLIER,
+    );
+    assert.ok(expectedEstimate < totalBytes * LIGHT_SCAN_MEMORY_MULTIPLIER);
+
+    const events: ScanGuardEvent[] = [];
+    const snapshot = await scanLiteHistory({
+      homeDir: emptyHome,
+      hostname: "cchistory-lite-group-estimate-host",
+      sourceRefs: ["codex"],
+      sourceRoots: [{ sourceRef: "codex", baseDir: sessions }],
+      safeMode: true,
+      contextMode: "none",
+      scanGuard: { profile: "light" },
+      scanGuardDeps: {
+        lock: { lockPath: path.join(root, "scan.lock") },
+        // Choose headroom so the split estimate warns (50% < estimate) while verifying exact breakdown.
+        readAvailableBytes: () => expectedEstimate,
+        readHeapBytes: () => GIB,
+        watchdog: { readAvailableBytes: () => GIB },
+      },
+      onScanGuardEvent: (event) => events.push(event),
+    });
+    assert.equal(snapshot.listResolvedSessions().length, 2);
+    assert.deepEqual(snapshot.projectionIssues, []);
+    assert.equal(events.length, 1);
+    assert.equal(events[0]?.assessment.scannedBytes, totalBytes);
+    assert.equal(events[0]?.assessment.peakUnitBytes, expectedPeakUnit);
+    assert.equal(events[0]?.assessment.estimatedBytes, expectedEstimate);
+    assert.match(formatScanGuardWarning(events[0]!.assessment), /peak unit ×4 \+ .* retained ×0\.5/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

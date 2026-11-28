@@ -69,6 +69,20 @@ export {
   type DenseTimePoint,
 } from "./usage-diagnostics.js";
 export {
+  AGGREGATE_CACHE_HIT_GOOD_RATIO,
+  AGGREGATE_CACHE_HIT_WARN_RATIO,
+  CACHE_MISS_LOW_HIT_RATIO,
+  CACHE_MISS_MIN_CONTEXT,
+  CALL_CACHE_HIT_DEGRADED_RATIO,
+  CALL_CACHE_HIT_HEALTHY_RATIO,
+  COMPACTION_DROP_MAX_RETAINED_RATIO,
+  COMPACTION_DROP_MIN_CONTEXT_TOKENS,
+  CONTEXT_BLOAT_LARGE_OUTPUT_BYTES,
+  CONTEXT_BLOAT_MIN_DELTA,
+  CONTEXT_BLOAT_MIN_OUTPUT_BYTES,
+  DEEPSEEK_DISK_CACHE_IDLE_GAP_MS,
+  DEFAULT_IDLE_TTL_GAP_MS,
+  TOOL_OUTPUT_NOTABLE_BYTES,
   buildDelegationIndex,
   computeCacheHitDistribution,
   computeFamilyUsageRows,
@@ -77,6 +91,7 @@ export {
   computeUsageRoleSplit,
   detectUsageAnomalies,
   evaluateUsageRowsForDiagnostics,
+  resolveProviderIdleTtlGapMs,
   type DelegationIndex,
   type EvaluatedUsageRow,
 } from "./usage-anomalies.js";

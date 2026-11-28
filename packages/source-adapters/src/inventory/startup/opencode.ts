@@ -20,7 +20,7 @@ import {
   asRecord,
   buildRedactedMcpEntry,
   createReadTracker,
-  estimateTokens,
+  estimateTextTokens,
   listSkillEntriesInDir,
   normalizeComparablePath,
   parseMarkdownFrontmatter,
@@ -478,7 +478,7 @@ async function tryAddInstruction(
     path: resolved,
     source,
     size_bytes: file.sizeBytes,
-    estimated_tokens: estimateTokens(file.sizeBytes),
+    estimated_tokens: estimateTextTokens(file.content, "default"),
   });
   return true;
 }

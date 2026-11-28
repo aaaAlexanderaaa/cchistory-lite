@@ -14,6 +14,10 @@ import type {
   UsageTimeBucket,
 } from "@cchistory/domain";
 import {
+  AGGREGATE_CACHE_HIT_GOOD_RATIO,
+  AGGREGATE_CACHE_HIT_WARN_RATIO,
+} from "@cchistory/live-runtime";
+import {
   activeItem,
   activeSectionTitle,
   blue,
@@ -144,9 +148,9 @@ export function renderTuiHourlyProfileBadge(profile: readonly UsageHourlyProfile
 export function renderTuiCacheHit(ratio: number | null, compactForm = false): string {
   if (ratio === null || !Number.isFinite(ratio)) return dim("—");
   const pct = compactForm ? `${Math.round(ratio * 100)}%` : `${(ratio * 100).toFixed(0)}%`;
-  const text = ratio < 0.4 ? `${pct}!` : pct;
-  if (ratio >= 0.7) return green(text);
-  if (ratio >= 0.4) return yellow(text);
+  const text = ratio < AGGREGATE_CACHE_HIT_WARN_RATIO ? `${pct}!` : pct;
+  if (ratio >= AGGREGATE_CACHE_HIT_GOOD_RATIO) return green(text);
+  if (ratio >= AGGREGATE_CACHE_HIT_WARN_RATIO) return yellow(text);
   return danger(text);
 }
 
@@ -240,7 +244,11 @@ export function renderTuiDiagnosticsBar(
   if (eff) {
     if (eff.cache_hit_ratio !== null) {
       const barColor =
-        eff.cache_hit_ratio >= 0.7 ? green : eff.cache_hit_ratio >= 0.4 ? yellow : danger;
+        eff.cache_hit_ratio >= AGGREGATE_CACHE_HIT_GOOD_RATIO
+          ? green
+          : eff.cache_hit_ratio >= AGGREGATE_CACHE_HIT_WARN_RATIO
+            ? yellow
+            : danger;
       parts.push(`Hit ${renderTuiCacheHit(eff.cache_hit_ratio)} [${renderTuiBar(eff.cache_hit_ratio, 5, barColor)}]`);
     }
     if (eff.cache_adjusted_savings_usd > 0) {

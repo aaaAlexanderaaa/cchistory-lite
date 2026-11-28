@@ -197,10 +197,13 @@ Additional runtime policies include:
   heap to half available memory, preserving explicit Node settings; library calls keep
   the caller's heap. macOS estimates available memory
   from free + inactive pages; Linux combines MemAvailable with known cgroup headroom.
-  Preflight estimates warn and proceed. Per-input admission considers the smaller of that
-  estimate and remaining V8 heap; oversized inputs leave diagnostics while other history
-  remains readable. The watchdog reserves 25% of the initial system estimate, capped at
-  512 MiB. Unavailable macOS telemetry stays unknown; heap admission still applies.
+  Preflight estimates warn and proceed using the active sequential unit (×4) plus compacted
+  retained bytes (×0.5) for light scans, or total bytes (×8) for full scans. Per-input admission
+  considers the smaller of that estimate and remaining V8 heap; oversized inputs leave diagnostics
+  while other history remains readable. The watchdog reserves 25% of the initial system estimate,
+  capped at 512 MiB. Unavailable macOS telemetry stays unknown; heap admission still applies.
+  All empirical multipliers, diagnostic thresholds, cache bounds, and upstream spec constants are
+  indexed in [`docs/contracts/empirical-constants.md`](docs/contracts/empirical-constants.md).
 - **Source-root guarding** (`assertLiteSourceRoot`): refuses any path containing a `.cchistory`
   segment, any `cchistory.sqlite`, any path overlapping `~/.cchistory`, and any Full bundle root
   (a directory holding both `manifest.json` and `payloads`).

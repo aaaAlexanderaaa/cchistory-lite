@@ -19,7 +19,7 @@ import {
   asRecord,
   buildRedactedMcpEntry,
   createReadTracker,
-  estimateTokens,
+  estimateTextTokens,
   listSkillEntriesInDir,
   pathExists,
   readTrackedJsonObject,
@@ -127,7 +127,7 @@ export async function resolveDeepSeekHarnessStartup(
       path: homeAgentsMd,
       layer: "dsh_home",
       size_bytes: homeAgentsFile.sizeBytes,
-      estimated_tokens: estimateTokens(homeAgentsFile.sizeBytes),
+      estimated_tokens: estimateTextTokens(homeAgentsFile.content, "deepseek"),
     });
   }
   for (let i = 0; i < input.ancestorDirsRootToCwd.length; i += 1) {
@@ -140,7 +140,7 @@ export async function resolveDeepSeekHarnessStartup(
         path: filePath,
         layer,
         size_bytes: file.sizeBytes,
-        estimated_tokens: estimateTokens(file.sizeBytes),
+        estimated_tokens: estimateTextTokens(file.content, "deepseek"),
       });
     }
   }

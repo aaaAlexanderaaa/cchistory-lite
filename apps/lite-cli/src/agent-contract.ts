@@ -1,6 +1,7 @@
 import {
   FULL_SCAN_MEMORY_MULTIPLIER,
   LIGHT_SCAN_MEMORY_MULTIPLIER,
+  LIGHT_SCAN_RETAINED_MEMORY_MULTIPLIER,
   SCAN_GUARD_REFUSE_AVAILABLE_FRACTION,
   SCAN_GUARD_WARN_AVAILABLE_FRACTION,
   SCAN_WATCHDOG_MAX_RESERVE_BYTES,
@@ -44,6 +45,7 @@ export interface AgentContract {
     scan_guard: {
       kill_switch: { env: "CCHISTORY_SCAN_GUARD"; value: "0" };
       light_scan_memory_multiplier: number;
+      light_scan_retained_memory_multiplier: number;
       full_scan_memory_multiplier: number;
       warn_available_fraction: number;
       refuse_available_fraction: number;
@@ -423,6 +425,7 @@ export function buildAgentContract(version: string): AgentContract {
       scan_guard: {
         kill_switch: { env: "CCHISTORY_SCAN_GUARD", value: "0" },
         light_scan_memory_multiplier: LIGHT_SCAN_MEMORY_MULTIPLIER,
+        light_scan_retained_memory_multiplier: LIGHT_SCAN_RETAINED_MEMORY_MULTIPLIER,
         full_scan_memory_multiplier: FULL_SCAN_MEMORY_MULTIPLIER,
         warn_available_fraction: SCAN_GUARD_WARN_AVAILABLE_FRACTION,
         refuse_available_fraction: SCAN_GUARD_REFUSE_AVAILABLE_FRACTION,

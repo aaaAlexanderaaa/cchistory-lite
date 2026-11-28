@@ -22,7 +22,7 @@ import {
   asNonEmptyString,
   asRecord,
   buildRedactedMcpEntry,
-  estimateTokens,
+  estimateTextTokens,
   listSkillEntriesInDir,
   parseMarkdownFrontmatter,
   readTrackedJsonObject,
@@ -48,7 +48,7 @@ export async function loadClaudeMdEntry(
     path: path.resolve(filePath),
     layer,
     size_bytes: file.sizeBytes,
-    estimated_tokens: estimateTokens(file.sizeBytes),
+    estimated_tokens: estimateTextTokens(file.content, "claude"),
     imports,
   };
 }
@@ -83,7 +83,7 @@ async function resolveClaudeImports(
       resolved_path: resolved,
       exists: true,
       size_bytes: imported.sizeBytes,
-      estimated_tokens: estimateTokens(imported.sizeBytes),
+      estimated_tokens: estimateTextTokens(imported.content, "claude"),
       depth,
     });
     await resolveClaudeImports(tracker, resolved, imported.content, homeDir, depth + 1, visited, out);
@@ -133,7 +133,7 @@ export async function collectClaudeRules(
       mode: pathsList.length > 0 ? "path_scoped" : "always",
       ...(pathsList.length > 0 ? { paths: pathsList } : {}),
       size_bytes: file.sizeBytes,
-      estimated_tokens: estimateTokens(file.sizeBytes),
+      estimated_tokens: estimateTextTokens(file.content, "claude"),
     });
   }
 }

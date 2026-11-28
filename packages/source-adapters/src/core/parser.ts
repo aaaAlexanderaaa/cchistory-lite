@@ -1684,7 +1684,9 @@ async function dropInheritedPiForkPrefix(
       ],
     };
   }
-  const maxParentBytes = Math.min(budget?.maximumUnitBytes?.() ?? 64 * 1024 * 1024, 64 * 1024 * 1024);
+  // Match probe.ts: 64 MiB is only the unguarded fallback cap when no live read budget is installed.
+  const FALLBACK_MAX_FORK_PARENT_BYTES = 64 * 1024 * 1024;
+  const maxParentBytes = budget?.maximumUnitBytes?.() ?? FALLBACK_MAX_FORK_PARENT_BYTES;
   let parentText: string;
   try {
     const stats = await fs.stat(realParentPath);

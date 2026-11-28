@@ -51,9 +51,13 @@ Resource admission applies to sample and exact-id reads as well as full reads:
 
 1. Full scans share an advisory lock (30s maximum wait). Sample and exact-id reads
    skip only that queue; they still undergo all memory checks.
-2. Preflight estimates selected native bytes ×4 (light) or ×8 (full). Above 50% of
-   the smaller of system availability and remaining heap, they warn and proceed.
-   Aggregate file sizes are not proof that the snapshot cannot fit.
+2. Preflight estimates peak memory from the selected execution units. For a light scan,
+   sources (and logical-session groups on `codex` / `claude_code`) run sequentially and
+   release raw records and full contexts after each unit, so preflight estimates the
+   largest sequential unit ×4 plus the remaining selected bytes ×0.5. For a full scan,
+   every turn's context stays in memory until exit, so preflight estimates selected native
+   bytes ×8. Above 50% of the smaller of system availability and remaining heap, preflight
+   warns and proceeds. Aggregate file sizes do not establish that a snapshot cannot fit.
 3. Each payload read checks current headroom, leaving 25% in reserve and applying
    the profile's expansion factor. Temporary input bytes are not permanently charged.
    SQLite readers check selected value lengths and row overhead inside a read transaction.

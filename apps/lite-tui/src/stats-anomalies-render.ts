@@ -13,6 +13,10 @@ import type {
   UsageRoleSplit,
 } from "@cchistory/domain";
 import {
+  CACHE_MISS_LOW_HIT_RATIO,
+  CONTEXT_BLOAT_MIN_OUTPUT_BYTES,
+} from "@cchistory/live-runtime";
+import {
   activeItem,
   activeSectionTitle,
   bold,
@@ -296,8 +300,8 @@ function renderToolsTable(
     const flags: string[] = [];
     if (t.is_loop) flags.push(warning("loop"));
     if (t.error_count > 0) flags.push(danger("err"));
-    if (t.min_cache_hit_ratio !== null && t.min_cache_hit_ratio < 0.2) flags.push(danger("miss"));
-    if (t.max_output_bytes >= 32 * 1024) flags.push(yellow("bloat"));
+    if (t.min_cache_hit_ratio !== null && t.min_cache_hit_ratio < CACHE_MISS_LOW_HIT_RATIO) flags.push(danger("miss"));
+    if (t.max_output_bytes >= CONTEXT_BLOAT_MIN_OUTPUT_BYTES) flags.push(yellow("bloat"));
     const labelRaw = padLine(compact(`${t.tool_name}: ${t.target_signature}`, sigW), sigW);
     const labelCell = isCursor ? activeItem(labelRaw) : labelRaw;
     const errCell = t.error_count > 0 ? danger(String(t.error_count).padStart(3)) : dim("  0");

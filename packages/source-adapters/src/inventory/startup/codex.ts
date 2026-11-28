@@ -21,12 +21,13 @@ import {
   asRecord,
   buildRedactedMcpEntry,
   createReadTracker,
-  estimateTokens,
+  estimateTextTokens,
   listSkillEntriesInDir,
   normalizeComparablePath,
   readTrackedTextFile,
   readTrackedTomlObject,
   safeReadDir,
+  sliceUtf8Prefix,
   stripMcpResolutionFields,
   type NativeStartupResolverInput,
   type StartupReadTracker,
@@ -128,12 +129,12 @@ export async function resolveCodexStartup(
     layer: CodexInstructionEntry["layer"],
     candidates: Array<{ fileName: string; kind: CodexInstructionEntry["kind"] }>,
   ) => {
-    const found: Array<{ fileName: string; filePath: string; kind: CodexInstructionEntry["kind"]; sizeBytes: number }> = [];
+    const found: Array<{ fileName: string; filePath: string; kind: CodexInstructionEntry["kind"]; sizeBytes: number; content: string }> = [];
     for (const cand of candidates) {
       const filePath = path.join(dir, cand.fileName);
       const file = await readTrackedTextFile(tracker, filePath, "codex_instructions");
       if (file && file.sizeBytes > 0) {
-        found.push({ fileName: cand.fileName, filePath, kind: cand.kind, sizeBytes: file.sizeBytes });
+        found.push({ fileName: cand.fileName, filePath, kind: cand.kind, sizeBytes: file.sizeBytes, content: file.content });
       }
     }
     if (found.length === 0) return;
@@ -168,7 +169,9 @@ export async function resolveCodexStartup(
       size_bytes: winner.sizeBytes,
       included_bytes: includedBytes,
       dropped_bytes: droppedBytes,
-      estimated_tokens: estimateTokens(includedBytes),
+      estimated_tokens: includedBytes > 0
+        ? estimateTextTokens(sliceUtf8Prefix(winner.content, includedBytes), "openai")
+        : 0,
     });
 
     for (let i = 1; i < found.length; i += 1) {
@@ -326,6 +329,7 @@ export async function resolveCodexStartup(
   }
 
   const loadedBytes = instructionChain.reduce((sum, entry) => sum + entry.included_bytes, 0);
+  const loadedEstimatedTokens = instructionChain.reduce((sum, entry) => sum + entry.estimated_tokens, 0);
   const truncatedCount = instructionChain.filter((e) => e.status === "truncated").length;
   const exhaustedCount = instructionChain.filter((e) => e.status === "budget_exhausted").length;
 
@@ -355,7 +359,7 @@ export async function resolveCodexStartup(
       loaded_bytes: loadedBytes,
       budget_bytes: projectDocMaxBytes,
       budget_used_ratio: projectDocMaxBytes > 0 ? Number((loadedBytes / projectDocMaxBytes).toFixed(4)) : 0,
-      estimated_tokens: estimateTokens(loadedBytes),
+      estimated_tokens: loadedEstimatedTokens,
       truncated_file_count: truncatedCount,
       budget_exhausted_file_count: exhaustedCount,
     },

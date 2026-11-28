@@ -29,13 +29,14 @@ import {
   asRecord,
   buildRedactedMcpEntry,
   createReadTracker,
-  estimateTokens,
+  estimateTextTokens,
   listSkillEntriesInDir,
   parseMarkdownFrontmatter,
   pathExists,
   readTrackedJsonObject,
   readTrackedTextFile,
   safeReadDir,
+  sliceUtf8Prefix,
   stripMcpResolutionFields,
   type NativeStartupResolverInput,
 } from "./shared.js";
@@ -227,7 +228,7 @@ export async function resolveAntigravityStartup(
 
     const includes = await extractAntigravityIncludes(filePath, file.content, input.homeDir);
     const cappedBytes = Math.min(file.sizeBytes, AGY_PER_FILE_CAP_BYTES);
-    const estTokens = estimateTokens(cappedBytes);
+    const estTokens = estimateTextTokens(sliceUtf8Prefix(file.content, cappedBytes), "gemini");
     let budgetStatus: AntigravityRuleEntry["budget_status"];
     if (trigger !== "always_on") {
       budgetStatus = "on_demand";

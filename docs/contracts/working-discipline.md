@@ -27,6 +27,7 @@ This document owns reasoning, work selection, review, and execution discipline, 
 | System chain, runtime flow, failure paths, state ownership, context discipline | [Architecture](../../ARCHITECTURE.md) |
 | Public schemas and accepted feature contracts | [schemas/](../../schemas) and [docs/design/](../design) |
 | Current execution state, milestones, and active owner decisions | [PLAN.md](../../PLAN.md) |
+| Empirical multipliers, thresholds, cache bounds, and upstream spec constants | [Empirical constants registry](empirical-constants.md) |
 | Historical benchmarks and learning comparisons | [docs/research/](../research/README.md) |
 
 ## Priority order and pre-code judgment

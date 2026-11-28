@@ -40,3 +40,4 @@ import "./platforms/grok.test.js";
 import "./platforms/grok-bot.test.js";
 import "./inventory/agent-config-reader.test.js";
 import "./inventory/startup/startup.test.js";
+import "./inventory/startup/token-estimate.test.js";
